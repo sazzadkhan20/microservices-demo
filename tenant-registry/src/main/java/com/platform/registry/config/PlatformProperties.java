@@ -76,6 +76,7 @@ public class PlatformProperties {
         private DbTarget payroll = new DbTarget();
         private DbTarget files = new DbTarget();
         private DbTarget notification = new DbTarget();
+        private DbTarget report = new DbTarget();
         private Minio minio = new Minio();
 
         public DbTarget getHrms() {
@@ -108,6 +109,14 @@ public class PlatformProperties {
 
         public void setNotification(DbTarget notification) {
             this.notification = notification;
+        }
+
+        public DbTarget getReport() {
+            return report;
+        }
+
+        public void setReport(DbTarget report) {
+            this.report = report;
         }
 
         public Minio getMinio() {

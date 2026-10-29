@@ -6,7 +6,8 @@ import java.util.regex.Pattern;
 /**
  * Validates and normalizes tenant identifiers used in DB names and Redis keys.
  *
- * <p>DB names become {@code hrms_<normalized>} / {@code payroll_<normalized>}.
+ * <p>Every product service uses database-per-tenant naming (config-driven, reusable):
+ * {@code hrms_*} / {@code payroll_*} / {@code files_*} / {@code notif_*} / {@code reports_*}.
  * Only lowercase letters, digits, and underscore are allowed after normalization.
  */
 public final class TenantIds {
@@ -49,8 +50,15 @@ public final class TenantIds {
         return "notif_" + normalize(tenantId);
     }
 
-    /** MinIO bucket name — lowercase, DNS-safe (tenant id already normalized). */
+    public static String reportsDbName(String tenantId) {
+        return "reports_" + normalize(tenantId);
+    }
+
+    /**
+     * MinIO/S3 bucket name — DNS-safe labels only (lowercase letters, digits, hyphens).
+     * Tenant ids use underscores for DBs ({@code qii_creative}); buckets use hyphens ({@code t-qii-creative}).
+     */
     public static String filesBucket(String tenantId) {
-        return "t-" + normalize(tenantId);
+        return "t-" + normalize(tenantId).replace('_', '-');
     }
 }

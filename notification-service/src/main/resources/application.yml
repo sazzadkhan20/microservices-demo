@@ -4,36 +4,40 @@ server:
 spring:
   application:
     name: notification-service
-  datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:5436/notif_platform}
-    driver-class-name: org.postgresql.Driver
-    username: ${SPRING_DATASOURCE_USER:platform}
-    password: ${SPRING_DATASOURCE_PASSWORD:platform}
+  liquibase:
+    enabled: false
   jpa:
     open-in-view: false
     hibernate:
-      ddl-auto: update
+      ddl-auto: none
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc:
           time_zone: UTC
+        boot:
+          allow_jdbc_metadata_access: false
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
 
 platform:
+  service-name: notification
   security:
-    # Requests must carry X-Service-Key = this value (stamped by the gateway or HRMS).
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
     service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
-
-notification:
+    internal-key: ${PLATFORM_INTERNAL_KEY:local-internal-key-change-me}
   registry:
     base-url: ${REGISTRY_BASE_URL:http://127.0.0.1:8080}
     service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
-  service-name: notification
+  datasource:
+    maximum-pool-size: 5
+    minimum-idle: 1
+    max-lifetime-ms: 1800000
+  cache:
+    l1-max-size: 50
+    l1-expire-after-access-minutes: 5
 
 springdoc:
   swagger-ui:

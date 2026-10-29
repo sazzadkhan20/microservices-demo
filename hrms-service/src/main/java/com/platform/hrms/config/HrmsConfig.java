@@ -1,6 +1,8 @@
 package com.platform.hrms.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.platform.hrms.infrastructure.multitenancy.TenantDataSourceManager;
 import com.platform.hrms.infrastructure.multitenancy.TenantRoutingDataSource;
 import com.platform.hrms.infrastructure.redis.RoutingInvalidateListener;
@@ -32,9 +34,18 @@ public class HrmsConfig {
         return new StringRedisTemplate(factory);
     }
 
+    /**
+     * ISO-8601 dates for FE (not Jackson default LocalDate arrays like [2026,4,14]).
+     * Must stay primary so MVC + Redis JSON share the same contract.
+     */
     @Bean
+    @Primary
     public ObjectMapper objectMapper() {
-        return new ObjectMapper().findAndRegisterModules();
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        mapper.findAndRegisterModules();
+        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        return mapper;
     }
 
     @Bean

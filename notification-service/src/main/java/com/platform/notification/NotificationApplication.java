@@ -2,22 +2,15 @@ package com.platform.notification;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 
 /**
  * Notification service — stores and delivers in-app notifications per tenant.
  *
- * <p>Layers:
- * <ul>
- *   <li>{@code api}            — REST adapters + DTOs</li>
- *   <li>{@code application}    — use cases</li>
- *   <li>{@code domain}         — JPA entities</li>
- *   <li>{@code infrastructure} — persistence + tenant filter</li>
- *   <li>{@code config}         — OpenAPI + properties</li>
- * </ul>
- *
- * <p>Uses H2 file-mode DB by default; override {@code SPRING_DATASOURCE_URL} for PostgreSQL.
+ * <p>DataSource auto-config is excluded because we supply a tenant-routing DataSource
+ * (database-per-tenant {@code notif_*}, same pattern as HRMS/payroll).
  */
-@SpringBootApplication
+@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
 public class NotificationApplication {
 
     public static void main(String[] args) {

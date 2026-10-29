@@ -1,12 +1,14 @@
 package com.platform.payroll.api.dto;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
 import java.util.Map;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record CalculatePayrollRequest(
         @NotNull Long employeeId,
         @NotBlank String periodLabel,

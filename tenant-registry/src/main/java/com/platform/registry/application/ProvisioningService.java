@@ -12,6 +12,7 @@ import com.platform.registry.infrastructure.provision.MinioBucketProvisioner;
 import com.platform.registry.infrastructure.provision.PostgresDatabaseProvisioner;
 import com.platform.registry.infrastructure.provision.PracticeBusinessSeeder;
 import com.platform.registry.infrastructure.provision.QiiBusinessSeeder;
+import com.platform.registry.infrastructure.provision.TenantDataMigrator;
 import com.platform.registry.infrastructure.redis.RoutingCachePublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -74,13 +75,16 @@ public class ProvisioningService {
 
         String hrmsDb = TenantIds.hrmsDbName(tenantId);
         String payrollDb = TenantIds.payrollDbName(tenantId);
+        String filesDb = TenantIds.filesDbName(tenantId);
+        String notifDb = TenantIds.notificationDbName(tenantId);
+        String reportsDb = TenantIds.reportsDbName(tenantId);
 
+        // Database-per-tenant for every product service (reusable / config-driven — no shared app DBs).
         String hrmsJdbc = provisioner.createAndMigrate(hrmsDb, properties.getProvision().getHrms());
         String payrollJdbc = provisioner.createAndMigrate(payrollDb, properties.getProvision().getPayroll());
-        // Files/notifications: shared Postgres DBs (tenant_id column) + MinIO bucket per tenant.
-        // HRMS/Payroll stay database-per-tenant. Both patterns are reusable across businesses.
-        String filesJdbc = provisioner.createAndMigrate("files_platform", properties.getProvision().getFiles());
-        String notifJdbc = provisioner.createAndMigrate("notif_platform", properties.getProvision().getNotification());
+        String filesJdbc = provisioner.createAndMigrate(filesDb, properties.getProvision().getFiles());
+        String notifJdbc = provisioner.createAndMigrate(notifDb, properties.getProvision().getNotification());
+        String reportsJdbc = provisioner.createAndMigrate(reportsDb, properties.getProvision().getReport());
         minioBucketProvisioner.ensureTenantBucket(tenantId);
 
         String pack = request.resolvedBusinessPack();
@@ -94,8 +98,8 @@ public class ProvisioningService {
                 properties.getProvision().getFiles(), version, now);
         TenantRouting notifRouting = saveRouting(SERVICE_NOTIFICATION, tenantId, notifJdbc,
                 properties.getProvision().getNotification(), version, now);
-        TenantRouting reportRouting = saveRouting(SERVICE_REPORT, tenantId,
-                "jdbc:platform:shared/reports", properties.getProvision().getHrms(), version, now);
+        TenantRouting reportRouting = saveRouting(SERVICE_REPORT, tenantId, reportsJdbc,
+                properties.getProvision().getReport(), version, now);
 
         cachePublisher.publishRouting(hrmsRouting);
         cachePublisher.publishRouting(payrollRouting);
@@ -103,8 +107,8 @@ public class ProvisioningService {
         cachePublisher.publishRouting(notifRouting);
         cachePublisher.publishRouting(reportRouting);
 
-        log.info("Provisioned tenant {} → {} , {} + files/notif platform DBs + MinIO (pack={})",
-                tenantId, hrmsDb, payrollDb, pack);
+        log.info("Provisioned tenant {} → {}, {}, {}, {}, {} + MinIO (pack={})",
+                tenantId, hrmsDb, payrollDb, filesDb, notifDb, reportsDb, pack);
 
         return new ProvisionResponse(
                 tenantId,
@@ -151,7 +155,7 @@ public class ProvisioningService {
             }
             seedBusinessPack(pack, hrms.getJdbcUrl(), null);
         }
-        ensureSharedServiceRouting(normalized);
+        ensureSatelliteServiceRouting(normalized);
         cachePublisher.publishRouting(hrms);
         return Map.of(
                 "tenantId", normalized,
@@ -178,17 +182,54 @@ public class ProvisioningService {
         );
     }
 
-    /** Idempotent: ensure shared files/notif Postgres + MinIO bucket + registry rows exist. */
-    private void ensureSharedServiceRouting(String tenantId) {
+    /**
+     * Creates/migrates per-tenant files/notif/reports DBs, copies rows from legacy shared
+     * {@code *_platform} DBs when present, and rewrites registry routing.
+     */
+    @Transactional
+    public Map<String, Object> upgradeSatelliteSchemas(String tenantId) {
+        String normalized = TenantIds.normalize(tenantId);
+        Map<String, Object> result = ensureSatelliteServiceRouting(normalized);
+        result.put("tenantId", normalized);
+        result.put("message", "Satellite services upgraded to database-per-tenant (files/notif/reports).");
+        return result;
+    }
+
+    /**
+     * Idempotent: database-per-tenant for file / notification / report + MinIO bucket + registry rows.
+     * Migrates data out of legacy shared {@code files_platform} / {@code notif_platform} when those exist.
+     */
+    private Map<String, Object> ensureSatelliteServiceRouting(String tenantId) {
         long version = System.currentTimeMillis();
         Instant now = Instant.now();
-        String filesJdbc = provisioner.createAndMigrate("files_platform", properties.getProvision().getFiles());
-        String notifJdbc = provisioner.createAndMigrate("notif_platform", properties.getProvision().getNotification());
+        String filesDb = TenantIds.filesDbName(tenantId);
+        String notifDb = TenantIds.notificationDbName(tenantId);
+        String reportsDb = TenantIds.reportsDbName(tenantId);
+
+        String filesJdbc = provisioner.createAndMigrate(filesDb, properties.getProvision().getFiles());
+        String notifJdbc = provisioner.createAndMigrate(notifDb, properties.getProvision().getNotification());
+        String reportsJdbc = provisioner.createAndMigrate(reportsDb, properties.getProvision().getReport());
         minioBucketProvisioner.ensureTenantBucket(tenantId);
+
+        int filesCopied = TenantDataMigrator.copyFileObjects(
+                properties.getProvision().getFiles(), "files_platform", filesJdbc, tenantId);
+        int notifCopied = TenantDataMigrator.copyNotifications(
+                properties.getProvision().getNotification(), "notif_platform", notifJdbc, tenantId);
+
         ensureOneRouting(SERVICE_FILE, tenantId, filesJdbc, properties.getProvision().getFiles(), version, now);
         ensureOneRouting(SERVICE_NOTIFICATION, tenantId, notifJdbc, properties.getProvision().getNotification(), version, now);
-        ensureOneRouting(SERVICE_REPORT, tenantId, "jdbc:platform:shared/reports",
-                properties.getProvision().getHrms(), version, now);
+        ensureOneRouting(SERVICE_REPORT, tenantId, reportsJdbc, properties.getProvision().getReport(), version, now);
+
+        return new java.util.LinkedHashMap<>(Map.of(
+                "filesDb", filesDb,
+                "notifDb", notifDb,
+                "reportsDb", reportsDb,
+                "filesCopied", filesCopied,
+                "notificationsCopied", notifCopied,
+                "filesJdbc", filesJdbc,
+                "notifJdbc", notifJdbc,
+                "reportsJdbc", reportsJdbc
+        ));
     }
 
     private void ensureOneRouting(
@@ -201,13 +242,23 @@ public class ProvisioningService {
         var existing = repository.findByServiceNameAndTenantId(service, tenantId);
         if (existing.isPresent()) {
             TenantRouting row = existing.get();
-            if (jdbc != null && !jdbc.equals(row.getJdbcUrl()) && !jdbc.startsWith("jdbc:platform:shared/")) {
+            String current = row.getJdbcUrl() == null ? "" : row.getJdbcUrl();
+            // Replace legacy shared *_platform / placeholder URLs, or any mismatch vs provisioned DB
+            boolean needsUpdate = jdbc != null && (
+                    !jdbc.equals(current)
+                            || current.contains("_platform")
+                            || current.contains("placeholder"));
+            if (needsUpdate) {
                 row.setJdbcUrl(jdbc);
                 row.setUsername(target.getUsername());
                 row.setPassword(target.getPassword());
+                row.setStatus("ACTIVE");
                 row.setVersion(version);
                 row.setUpdatedAt(now);
                 repository.save(row);
+                cachePublisher.publishRouting(row);
+            } else {
+                // Ensure L2 Redis stays warm after schema migrate even when JDBC unchanged
                 cachePublisher.publishRouting(row);
             }
             return;

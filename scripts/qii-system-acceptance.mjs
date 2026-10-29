@@ -198,20 +198,21 @@ async function main() {
     expected: '200', actual: String(holidays.status),
   });
 
+  // Stable acceptance period; useHrmsAttendance=false so calc is deterministic without attendance rows.
   const payrollCalc = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
     headers: { Authorization: `Bearer ${tokA}` },
     body: {
       employeeId: idE,
-      // Unique period so re-runs are not blocked by an earlier FINALIZED payslip (409).
-      periodLabel: `2026-11`,
-      hoursWorked: 160,
+      periodLabel: '2026-12',
       regularHours: 160,
       overtimeHours: 0,
       weekendHours: 0,
+      useHrmsAttendance: false,
     },
   });
-  check('INT', 'PAYROLL-CALC', payrollCalc.status === 200 || payrollCalc.status === 201,
-    `status=${payrollCalc.status} emp=${idE}`);
+  check('INT', 'PAYROLL-CALC',
+    (payrollCalc.status === 200 || payrollCalc.status === 201) && Number(payrollCalc.json?.grossAmount || 0) > 0,
+    `status=${payrollCalc.status} emp=${idE} gross=${payrollCalc.json?.grossAmount}`);
 
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'qii-hrms', 'package.json'), 'utf8'));
   check('UT', 'FE-TEST-SCRIPT', !!pkg.scripts?.test, pkg.scripts?.test ? 'scripts.test present' : 'scripts.test missing');

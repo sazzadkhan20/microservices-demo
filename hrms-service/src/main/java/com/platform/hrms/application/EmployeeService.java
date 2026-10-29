@@ -108,15 +108,17 @@ public class EmployeeService {
         if (resolvedDepartmentId == null) {
             throw new IllegalArgumentException("departmentId is required (or choose a team)");
         }
-        if (request.designationId() == null) {
-            throw new IllegalArgumentException("designationId is required");
-        }
+        // designationId is optional — tenants without a designation catalog (or jobTitle-only packs)
+        // still create employees; when provided it must exist (config-driven org structure).
         final Long departmentId = resolvedDepartmentId;
 
         Department department = departmentRepository.findById(departmentId)
                 .orElseThrow(() -> new IllegalArgumentException("Department not found: " + departmentId));
-        Designation designation = designationRepository.findById(request.designationId())
-                .orElseThrow(() -> new IllegalArgumentException("Designation not found: " + request.designationId()));
+        Designation designation = null;
+        if (request.designationId() != null) {
+            designation = designationRepository.findById(request.designationId())
+                    .orElseThrow(() -> new IllegalArgumentException("Designation not found: " + request.designationId()));
+        }
 
         Employee manager = null;
         if (request.managerId() != null) {
@@ -154,10 +156,11 @@ public class EmployeeService {
         employee.setFullName(request.fullName());
         employee.setEmail(email);
         employee.setPreferredName(request.preferredName());
+        String fallbackTitle = designation != null ? designation.getName() : "Employee";
         employee.setJobTitle(request.jobTitle() != null && !request.jobTitle().isBlank()
-                ? request.jobTitle() : designation.getName());
+                ? request.jobTitle() : fallbackTitle);
         employee.setDepartmentId(department.getId());
-        employee.setDesignationId(designation.getId());
+        employee.setDesignationId(designation != null ? designation.getId() : null);
         employee.setManagerId(request.managerId());
         employee.setTeamId(request.teamId());
         employee.setLocationId(request.locationId());

@@ -7,6 +7,7 @@ import http from "node:http";
 
 const GW = process.env.GATEWAY_URL || "http://127.0.0.1:8090";
 const FE = process.env.FE_URL || "http://127.0.0.1:3000";
+const DEMO = process.env.DEMO_AUTH_KEY || process.env.GATEWAY_SERVICE_KEY || "local-service-key-change-me";
 const findings = [];
 
 function find(sev, area, id, title, evidence, impact) {
@@ -54,6 +55,7 @@ function req(method, url, { headers = {}, body, timeout = 15000 } = {}) {
 
 async function token(employeeId) {
   const r = await req("POST", `${GW}/api/registry/token`, {
+    headers: { "X-Demo-Auth-Key": DEMO },
     body: { tenantId: "qii_creative", employeeId: Number(employeeId) },
   });
   return r.json?.accessToken || r.json?.token || null;
@@ -299,9 +301,12 @@ async function main() {
     });
   }
 
-  // TechShop tenant still provisioned?
+  // TechShop tenant still provisioned? (canonical id = techshop_retail)
   {
-    const r = await req("POST", `${GW}/api/registry/token`, { body: { tenantId: "techshop", employeeId: 1 } });
+    const r = await req("POST", `${GW}/api/registry/token`, {
+      headers: { "X-Demo-Auth-Key": DEMO },
+      body: { tenantId: "techshop_retail", employeeId: 1 },
+    });
     if (r.status >= 200 && r.status < 300 && (r.json?.accessToken || r.json?.token)) {
       const tt = r.json.accessToken || r.json.token;
       const em = await req("GET", `${GW}/hrms/api/employees?page=1&size=1`, { headers: auth(tt) });
@@ -329,8 +334,19 @@ async function main() {
     }
   }
 
-  // FE BFF session
+  // FE BFF session (skip when Next.js is not running — backend QA still valid)
   {
+    const feProbe = await req("GET", `${FE}/api/auth/accounts`, { timeout: 2000 });
+    if (feProbe.status === 0) {
+      findings.push({
+        sev: "Info",
+        area: "Frontend",
+        id: "FE-SKIPPED",
+        title: "FE not running — BFF checks skipped",
+        evidence: { error: feProbe.error },
+        impact: "Backend adversarial coverage still applies",
+      });
+    } else {
     const login = await req("POST", `${FE}/api/auth/login`, { body: { employeeId: "1" } });
     const setCookie = login.headers?.["set-cookie"];
     if (login.status !== 200) {
@@ -383,6 +399,7 @@ async function main() {
     if (leak.status === 200 && leak.json?.baseSalary != null) {
       find("Critical", "Frontend", "FE-PROXY-SALARY", "BFF proxies salary of other employee to low-privilege session", { salary: leak.json.baseSalary }, "UI may hide but API still leaks");
     }
+    } // end FE-up else
   }
 
   // Leave approve as wrong role

@@ -52,6 +52,7 @@ public class TaskController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
+    // org:manage is the config-driven admin capability used across tenants for task catalog writes
     @RequiresPermission(feature = "org", action = "manage")
     @Operation(summary = "Create a new task (title, description→clientName, priority→externalRef)")
     public WorkTask create(@RequestBody Map<String, Object> body) {

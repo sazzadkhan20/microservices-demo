@@ -24,12 +24,16 @@ public class LeaveNotificationHook {
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
 
     private final String serviceKey;
+    private final String internalKey;
 
     public LeaveNotificationHook(
             @Value("${platform.notification.base-url:http://127.0.0.1:8083}") String baseUrl,
-            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey) {
+            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
+            @Value("${platform.security.internal-key:"
+                    + com.platform.common.security.InternalCalls.DEFAULT_DEV_KEY + "}") String internalKey) {
         this.baseUrl = baseUrl == null ? "" : baseUrl.trim();
         this.serviceKey = serviceKey;
+        this.internalKey = internalKey;
     }
 
     public void notifyLeaveDecision(Long employeeId, Long applicationId, String status, String title) {
@@ -49,8 +53,9 @@ public class LeaveNotificationHook {
                     .uri(URI.create(baseUrl.replaceAll("/$", "") + "/api/notifications"))
                     .timeout(Duration.ofSeconds(3))
                     .header("Content-Type", "application/json")
-                    // Trusted service-to-service: service key + recipient identity (controller binds to AuthContext)
+                    // Gateway-equivalent service key + internal key so create may target recipient
                     .header(com.platform.common.constants.PlatformHeaders.SERVICE_KEY, serviceKey)
+                    .header(com.platform.common.security.InternalCalls.HEADER, internalKey)
                     .header(com.platform.common.constants.PlatformHeaders.TENANT_ID, tenant)
                     .POST(HttpRequest.BodyPublishers.ofString(body));
             if (employeeId != null) {

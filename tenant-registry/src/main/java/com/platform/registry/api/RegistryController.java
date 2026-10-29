@@ -87,6 +87,15 @@ public class RegistryController {
         return provisioningService.upgradePayrollSchema(tenantId);
     }
 
+    @PostMapping("/tenants/{tenantId}/upgrade-satellites")
+    @Operation(summary = "Migrate file/notification/report to database-per-tenant (requires X-Platform-Admin-Key)")
+    public Map<String, Object> upgradeSatellites(
+            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey,
+            @PathVariable String tenantId) {
+        platformAuth.requireAdmin(adminKey);
+        return provisioningService.upgradeSatelliteSchemas(tenantId);
+    }
+
     @GetMapping("/routing/{service}/{tenantId}")
     @Operation(summary = "Public routing view (no credentials)")
     public TenantRoutingView routing(@PathVariable String service, @PathVariable String tenantId) {

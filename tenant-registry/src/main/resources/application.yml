@@ -65,6 +65,14 @@ platform:
       username: ${NOTIF_PG_USER:platform}
       password: ${NOTIF_PG_PASSWORD:platform}
       changelog: classpath:db/tenant-changelog/notification/db.changelog-master.yaml
+    # Same postgres-platform host as files/notif — database-per-tenant (reports_<tenantId>)
+    report:
+      admin-url: ${REPORT_PG_ADMIN_URL:jdbc:postgresql://127.0.0.1:5436/postgres}
+      host: ${REPORT_PG_HOST:127.0.0.1}
+      port: ${REPORT_PG_PORT:5436}
+      username: ${REPORT_PG_USER:platform}
+      password: ${REPORT_PG_PASSWORD:platform}
+      changelog: classpath:db/tenant-changelog/report/db.changelog-master.yaml
     minio:
       enabled: ${MINIO_PROVISION_ENABLED:true}
       endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9000}

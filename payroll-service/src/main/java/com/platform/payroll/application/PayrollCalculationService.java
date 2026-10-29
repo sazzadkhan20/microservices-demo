@@ -85,9 +85,12 @@ public class PayrollCalculationService {
         }
 
         PayrollConfigEntity config = configLoader.loadOrDefault();
+        // Config-driven: use hourlyRate when set; otherwise derive from baseSalary / monthlyHours
+        // (or full monthly base when no hours) — works for any tenant pack without code forks.
         SalaryCalcEngine.SalaryResult salary = salaryCalcEngine.calculate(
                 config,
                 employee.hourlyRate(),
+                employee.baseSalary(),
                 regular,
                 request.overtimeHours(),
                 request.weekendHours()

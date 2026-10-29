@@ -14,7 +14,11 @@ import org.springframework.beans.factory.annotation.Value;
 /**
  * gRPC equivalent of TenantFilter: authenticates the caller with the shared service key
  * ({@code x-service-key}) and binds {@code x-tenant-id} metadata → TenantContext.
- * Always clears in finally to avoid ThreadLocal leaks on gRPC worker threads.
+ *
+ * <p>TenantContext is rebound on every listener callback (onMessage / onHalfClose / …).
+ * Netty may deliver those callbacks on a different thread than {@code interceptCall},
+ * so a one-shot ThreadLocal set at intercept time races and causes intermittent
+ * {@code Could not open JPA EntityManager} failures on gRPC → JPA paths (RBAC, payroll).
  */
 @GrpcGlobalServerInterceptor
 public class TenantGrpcInterceptor implements ServerInterceptor {
@@ -53,44 +57,49 @@ public class TenantGrpcInterceptor implements ServerInterceptor {
             };
         }
 
-        TenantContext.setTenantId(tenantId.trim());
-        ServerCall.Listener<ReqT> delegate = next.startCall(call, headers);
+        final String boundTenant = tenantId.trim();
+        // Bind immediately for any sync work during startCall; rebind in each callback below.
+        TenantContext.setTenantId(boundTenant);
+        final ServerCall.Listener<ReqT> delegate;
+        try {
+            delegate = next.startCall(call, headers);
+        } finally {
+            TenantContext.clear();
+        }
+
         return new ServerCall.Listener<>() {
+            private void withTenant(Runnable action) {
+                TenantContext.setTenantId(boundTenant);
+                try {
+                    action.run();
+                } finally {
+                    TenantContext.clear();
+                }
+            }
+
             @Override
             public void onMessage(ReqT message) {
-                delegate.onMessage(message);
+                withTenant(() -> delegate.onMessage(message));
             }
 
             @Override
             public void onHalfClose() {
-                try {
-                    delegate.onHalfClose();
-                } finally {
-                    TenantContext.clear();
-                }
+                withTenant(delegate::onHalfClose);
             }
 
             @Override
             public void onCancel() {
-                try {
-                    delegate.onCancel();
-                } finally {
-                    TenantContext.clear();
-                }
+                withTenant(delegate::onCancel);
             }
 
             @Override
             public void onComplete() {
-                try {
-                    delegate.onComplete();
-                } finally {
-                    TenantContext.clear();
-                }
+                withTenant(delegate::onComplete);
             }
 
             @Override
             public void onReady() {
-                delegate.onReady();
+                withTenant(delegate::onReady);
             }
         };
     }

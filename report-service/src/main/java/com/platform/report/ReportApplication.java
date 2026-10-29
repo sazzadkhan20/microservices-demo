@@ -2,23 +2,17 @@ package com.platform.report;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 
 /**
- * Report service — generates downloadable reports for tenant data.
+ * Report service — generates downloadable reports and archives export metadata.
  *
- * <p>Layers:
- * <ul>
- *   <li>{@code api}            — REST adapters + DTOs</li>
- *   <li>{@code application}    — report generation use cases</li>
- *   <li>{@code infrastructure} — tenant filter</li>
- *   <li>{@code config}         — OpenAPI + properties</li>
- * </ul>
+ * <p>DataSource auto-config is excluded because we supply a tenant-routing DataSource
+ * (database-per-tenant {@code reports_*}, same pattern as HRMS/payroll).
  *
- * <p>v1: Attendance monthly report as CSV.
- * Set {@code HRMS_BASE_URL} to pull live attendance data from hrms-service;
- * otherwise a placeholder CSV with correct headers is returned.
+ * <p>v1: Attendance monthly report as CSV (live data via {@code HRMS_BASE_URL}).
  */
-@SpringBootApplication
+@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
 public class ReportApplication {
 
     public static void main(String[] args) {

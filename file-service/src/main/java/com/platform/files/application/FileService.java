@@ -52,10 +52,10 @@ public class FileService {
             throw new IllegalArgumentException(
                     "File exceeds maximum allowed size of 10 MB (got " + file.getSize() + " bytes)");
         }
-        String contentType = file.getContentType();
+        String contentType = normalizeContentType(file.getContentType(), file.getOriginalFilename());
         if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType)) {
             throw new IllegalArgumentException(
-                    "Unsupported content type '" + contentType + "'. Allowed: PDF, JPG, PNG, DOCX");
+                    "Unsupported content type '" + file.getContentType() + "'. Allowed: PDF, JPG, PNG, DOCX");
         }
 
         String normalized = TenantIds.normalize(tenantId);
@@ -152,6 +152,28 @@ public class FileService {
 
     public void ensureTenantBucket(String tenantId) throws IOException {
         storage.ensureBucket(TenantIds.filesBucket(tenantId));
+    }
+
+    /** Strip charset params; map common aliases; fall back to extension when browsers send octet-stream. */
+    static String normalizeContentType(String raw, String filename) {
+        String ct = raw == null ? "" : raw.trim().toLowerCase(java.util.Locale.ROOT);
+        int semi = ct.indexOf(';');
+        if (semi >= 0) {
+            ct = ct.substring(0, semi).trim();
+        }
+        if ("image/jpg".equals(ct)) {
+            ct = "image/jpeg";
+        }
+        if (ct.isBlank() || "application/octet-stream".equals(ct)) {
+            String name = filename == null ? "" : filename.toLowerCase(java.util.Locale.ROOT);
+            if (name.endsWith(".pdf")) return "application/pdf";
+            if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+            if (name.endsWith(".png")) return "image/png";
+            if (name.endsWith(".docx")) {
+                return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            }
+        }
+        return ct.isBlank() ? null : ct;
     }
 
     private FileObject findByTenantId(String tenantId, Long id) {

@@ -81,14 +81,36 @@ public class WorkLogController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(feature = "attendance", action = "checkin")
-    @Operation(summary = "Log time against a task")
-    public WorkLog create(@RequestBody WorkLog request) {
+    @Operation(summary = "Log time against a task (minutes preferred; hours accepted and converted)")
+    public WorkLog create(@RequestBody Map<String, Object> body) {
         WorkLog log = new WorkLog();
         log.setEmployeeId(AuthContext.requireEmployeeId());
-        log.setWorkDate(request.getWorkDate());
-        log.setTaskId(request.getTaskId());
-        log.setMinutes(request.getMinutes());
-        log.setNote(request.getNote());
+        Object date = body.get("workDate");
+        if (date == null || String.valueOf(date).isBlank()) {
+            throw new IllegalArgumentException("workDate is required");
+        }
+        log.setWorkDate(java.time.LocalDate.parse(String.valueOf(date)));
+        Object taskId = body.get("taskId");
+        if (taskId == null || String.valueOf(taskId).isBlank()) {
+            throw new IllegalArgumentException("taskId is required");
+        }
+        log.setTaskId(Long.valueOf(String.valueOf(taskId)));
+        int minutes;
+        if (body.get("minutes") != null && !String.valueOf(body.get("minutes")).isBlank()) {
+            minutes = (int) Math.round(Double.parseDouble(String.valueOf(body.get("minutes"))));
+        } else if (body.get("hours") != null && !String.valueOf(body.get("hours")).isBlank()) {
+            minutes = (int) Math.round(Double.parseDouble(String.valueOf(body.get("hours"))) * 60.0);
+        } else {
+            throw new IllegalArgumentException("minutes (or hours) is required");
+        }
+        if (minutes <= 0) {
+            throw new IllegalArgumentException("minutes must be > 0");
+        }
+        log.setMinutes(minutes);
+        Object note = body.get("note");
+        if (note != null && !String.valueOf(note).isBlank()) {
+            log.setNote(String.valueOf(note).trim());
+        }
         log.setCreatedAt(Instant.now());
         return workLogRepository.save(log);
     }

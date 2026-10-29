@@ -171,9 +171,7 @@ services:
     ports:
       - "8083:8083"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-platform:5432/notif_platform
-      SPRING_DATASOURCE_USER: platform
-      SPRING_DATASOURCE_PASSWORD: platform
+      # JDBC resolved per-tenant via registry routing → notif_<tenantId> on postgres-platform
       REDIS_HOST: redis
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
@@ -190,9 +188,7 @@ services:
     ports:
       - "8084:8084"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-platform:5432/files_platform
-      SPRING_DATASOURCE_USER: platform
-      SPRING_DATASOURCE_PASSWORD: platform
+      # JDBC resolved per-tenant via registry routing → files_<tenantId> on postgres-platform
       FILE_STORAGE_TYPE: minio
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -214,11 +210,16 @@ services:
     ports:
       - "8085:8085"
     environment:
+      # JDBC resolved per-tenant via registry routing → reports_<tenantId> on postgres-platform
       HRMS_BASE_URL: http://hrms-service:8081
+      REDIS_HOST: redis
+      REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
       - tenant-registry
       - hrms-service
+      - postgres-platform
+      - redis
 
   # Object storage for file-service (bucket-per-tenant at provision)
   # Profile minio — started by scripts/up-local.sh with apps

@@ -1,10 +1,9 @@
 package com.platform.payroll.infrastructure.multitenancy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import com.platform.common.constants.RedisKeys;
 import com.platform.common.redis.RoutingPayload;
+import com.platform.common.tenant.TenantPoolLifecycle;
 import com.platform.payroll.config.PayrollProperties;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -17,13 +16,10 @@ import org.springframework.web.client.RestClient;
 
 import javax.sql.DataSource;
 import java.time.Duration;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Resolves per-tenant DataSources: Caffeine L1 → Redis L2 → Registry L3.
- *
- * <p>Also closes pools on invalidate / shutdown to avoid connection leaks.
+ * Resolves per-tenant DataSources: L1 → Redis L2 → Registry L3.
+ * Pool lifecycle via {@link TenantPoolLifecycle} (no Caffeine close race).
  */
 @Component
 public class TenantDataSourceManager {
@@ -34,8 +30,7 @@ public class TenantDataSourceManager {
     private final ObjectMapper objectMapper;
     private final PayrollProperties properties;
     private final RestClient registryClient;
-    private final Cache<String, HikariDataSource> l1;
-    private final Map<String, HikariDataSource> allPools = new ConcurrentHashMap<>();
+    private final TenantPoolLifecycle pools = new TenantPoolLifecycle();
 
     public TenantDataSourceManager(
             StringRedisTemplate redis,
@@ -46,54 +41,44 @@ public class TenantDataSourceManager {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.registryClient = restClientBuilder.baseUrl(properties.getRegistry().getBaseUrl()).build();
-        this.l1 = Caffeine.newBuilder()
-                .maximumSize(properties.getCache().getL1MaxSize())
-                .expireAfterAccess(Duration.ofMinutes(properties.getCache().getL1ExpireAfterAccessMinutes()))
-                .removalListener((key, value, cause) -> {
-                    // When Caffeine evicts, close the pool if still mapped
-                    if (key != null) {
-                        closeQuietly(allPools.remove(key.toString()));
-                    }
-                })
-                .build();
     }
 
     public DataSource resolve(String tenantId) {
-        HikariDataSource cached = l1.getIfPresent(tenantId);
-        if (cached != null && !cached.isClosed()) {
-            return cached;
-        }
+        return pools.resolve(tenantId, this::createPoolFor);
+    }
 
+    public void invalidate(String tenantId) {
+        pools.invalidate(tenantId);
+        log.info("Invalidated tenant DataSource for {}", tenantId);
+    }
+
+    public void invalidateAll() {
+        pools.invalidateAll();
+        log.info("Invalidated all tenant DataSources");
+    }
+
+    private HikariDataSource createPoolFor(String tenantId) {
         RoutingPayload payload = loadPayload(tenantId);
         if (!payload.isActive()) {
             throw new IllegalStateException("Tenant routing is not ACTIVE: " + tenantId);
         }
-
-        HikariDataSource ds = createPool(tenantId, payload);
-        allPools.put(tenantId, ds);
-        l1.put(tenantId, ds);
-        return ds;
-    }
-
-    public void invalidate(String tenantId) {
-        l1.invalidate(tenantId);
-        closeQuietly(allPools.remove(tenantId));
-        log.info("Invalidated tenant DataSource L1 for {}", tenantId);
-    }
-
-    public void invalidateAll() {
-        l1.invalidateAll();
-        allPools.keySet().forEach(this::invalidate);
+        HikariConfig config = new HikariConfig();
+        config.setPoolName("payroll-" + tenantId);
+        config.setJdbcUrl(payload.jdbcUrl());
+        config.setUsername(payload.username());
+        config.setPassword(payload.password());
+        config.setMaximumPoolSize(properties.getDatasource().getMaximumPoolSize());
+        config.setMinimumIdle(properties.getDatasource().getMinimumIdle());
+        config.setMaxLifetime(properties.getDatasource().getMaxLifetimeMs());
+        config.setDriverClassName("org.postgresql.Driver");
+        return new HikariDataSource(config);
     }
 
     private RoutingPayload loadPayload(String tenantId) {
-        // L2 Redis
         String json = redis.opsForValue().get(RedisKeys.routingKey(properties.getServiceName(), tenantId));
         if (json != null) {
             return read(json);
         }
-
-        // L3 Registry (includes credentials)
         log.warn("Redis L2 miss for tenant {} — falling back to Registry L3", tenantId);
         InternalRouting body = registryClient.get()
                 .uri("/api/registry/internal/routing/{service}/{tenantId}", properties.getServiceName(), tenantId)
@@ -111,22 +96,9 @@ public class TenantDataSourceManager {
                     objectMapper.writeValueAsString(payload),
                     Duration.ofHours(24));
         } catch (Exception ignored) {
-            // cache fill is best-effort
+            // best-effort
         }
         return payload;
-    }
-
-    private HikariDataSource createPool(String tenantId, RoutingPayload payload) {
-        HikariConfig config = new HikariConfig();
-        config.setPoolName("payroll-" + tenantId);
-        config.setJdbcUrl(payload.jdbcUrl());
-        config.setUsername(payload.username());
-        config.setPassword(payload.password());
-        config.setMaximumPoolSize(properties.getDatasource().getMaximumPoolSize());
-        config.setMinimumIdle(properties.getDatasource().getMinimumIdle());
-        config.setMaxLifetime(properties.getDatasource().getMaxLifetimeMs());
-        config.setDriverClassName("org.postgresql.Driver");
-        return new HikariDataSource(config);
     }
 
     private RoutingPayload read(String json) {
@@ -134,12 +106,6 @@ public class TenantDataSourceManager {
             return objectMapper.readValue(json, RoutingPayload.class);
         } catch (Exception e) {
             throw new IllegalStateException("Invalid routing JSON in Redis", e);
-        }
-    }
-
-    private void closeQuietly(HikariDataSource ds) {
-        if (ds != null && !ds.isClosed()) {
-            ds.close();
         }
     }
 

@@ -1,0 +1,102 @@
+databaseChangeLog:
+  # Real org structure: department, designation, manager hierarchy.
+  # Approval roles are linked to designation.approver_role (config), not free-text names.
+  - changeSet:
+      id: hrms-003-department
+      author: platform
+      changes:
+        - createTable:
+            tableName: department
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: code
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: name
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: hrms-003-designation
+      author: platform
+      changes:
+        - createTable:
+            tableName: designation
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: code
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: name
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: approver_role
+                  type: VARCHAR(64)
+                  remarks: "Matches leave_policy.approval_chain role, e.g. STORE_MANAGER / REGIONAL_HR. NULL = cannot approve."
+
+  - changeSet:
+      id: hrms-003-employee-org-columns
+      author: platform
+      changes:
+        - addColumn:
+            tableName: employee
+            columns:
+              - column:
+                  name: department_id
+                  type: BIGINT
+              - column:
+                  name: designation_id
+                  type: BIGINT
+              - column:
+                  name: manager_id
+                  type: BIGINT
+                  remarks: "Reports-to employee id (real manager user)"
+        - addForeignKeyConstraint:
+            baseTableName: employee
+            baseColumnNames: department_id
+            referencedTableName: department
+            referencedColumnNames: id
+            constraintName: fk_employee_department
+        - addForeignKeyConstraint:
+            baseTableName: employee
+            baseColumnNames: designation_id
+            referencedTableName: designation
+            referencedColumnNames: id
+            constraintName: fk_employee_designation
+        - addForeignKeyConstraint:
+            baseTableName: employee
+            baseColumnNames: manager_id
+            referencedTableName: employee
+            referencedColumnNames: id
+            constraintName: fk_employee_manager
+
+  - changeSet:
+      id: hrms-003-leave-approval-actor-employee
+      author: platform
+      changes:
+        - addColumn:
+            tableName: leave_approval
+            columns:
+              - column:
+                  name: approver_employee_id
+                  type: BIGINT
+                  remarks: "Real employee who approved/rejected this step"

@@ -1,0 +1,116 @@
+databaseChangeLog:
+  - changeSet:
+      id: payroll-001-core
+      author: platform
+      changes:
+        # Platform default payroll multipliers / deductions (override later per business).
+        - createTable:
+            tableName: payroll_config
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: overtime_multiplier
+                  type: NUMERIC(10, 4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: weekend_multiplier
+                  type: NUMERIC(10, 4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: deduction_rules
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+        - createTable:
+            tableName: payslip
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: period_label
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: regular_hours
+                  type: NUMERIC(10, 2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: overtime_hours
+                  type: NUMERIC(10, 2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: weekend_hours
+                  type: NUMERIC(10, 2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: gross_amount
+                  type: NUMERIC(19, 4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: deduction_amount
+                  type: NUMERIC(19, 4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: net_amount
+                  type: NUMERIC(19, 4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: details_json
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+        - createIndex:
+            tableName: payslip
+            indexName: idx_payslip_employee
+            columns:
+              - column:
+                  name: employee_id
+
+        - insert:
+            tableName: payroll_config
+            columns:
+              - column:
+                  name: overtime_multiplier
+                  valueNumeric: 1.5
+              - column:
+                  name: weekend_multiplier
+                  valueNumeric: 1.0
+              - column:
+                  name: deduction_rules
+                  value: '[]'
+              - column:
+                  name: updated_at
+                  valueComputed: NOW()

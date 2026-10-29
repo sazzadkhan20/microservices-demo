@@ -1,0 +1,15 @@
+databaseChangeLog:
+  # Applied to EACH newly provisioned HRMS tenant database (hrms_<tenantId>).
+  - include:
+      file: db/tenant-changelog/hrms/changes/001-core-schema.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/002-leave-workflow.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/003-org-structure.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/004-configurable-leave-types.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/005-qii-product-core.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/006-attendance-capture.yaml
+

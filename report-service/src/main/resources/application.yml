@@ -1,0 +1,25 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: report-service
+
+report:
+  hrms-base-url: ${HRMS_BASE_URL:}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    persistAuthorization: true
+    tryItOutEnabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.platform.report: INFO

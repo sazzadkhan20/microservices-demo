@@ -1,0 +1,267 @@
+databaseChangeLog:
+  # Product HRMS core: RBAC, locations, teams, schedules, attendance, tasks, work logs,
+  # rich leave categories, audit, settings. Shared by all tenants; Qii seeds full pack.
+  - changeSet:
+      id: hrms-005-role
+      author: platform
+      changes:
+        - createTable:
+            tableName: app_role
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: code, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: description, type: VARCHAR(512) }
+              - column: { name: system_role, type: BOOLEAN, defaultValueBoolean: false, constraints: { nullable: false } }
+              - column: { name: active, type: BOOLEAN, defaultValueBoolean: true, constraints: { nullable: false } }
+
+  - changeSet:
+      id: hrms-005-permission
+      author: platform
+      changes:
+        - createTable:
+            tableName: app_permission
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: feature, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: action, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: description, type: VARCHAR(256) }
+        - addUniqueConstraint:
+            tableName: app_permission
+            columnNames: feature, action
+            constraintName: uk_app_permission_feature_action
+
+  - changeSet:
+      id: hrms-005-role-permission
+      author: platform
+      changes:
+        - createTable:
+            tableName: app_role_permission
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: role_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: permission_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: data_scope, type: VARCHAR(16), defaultValue: OWN, constraints: { nullable: false } }
+        - addUniqueConstraint:
+            tableName: app_role_permission
+            columnNames: role_id, permission_id
+            constraintName: uk_role_permission
+
+  - changeSet:
+      id: hrms-005-user-role
+      author: platform
+      changes:
+        - createTable:
+            tableName: app_user_role
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: employee_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: role_id, type: BIGINT, constraints: { nullable: false } }
+        - addUniqueConstraint:
+            tableName: app_user_role
+            columnNames: employee_id, role_id
+            constraintName: uk_user_role
+
+  - changeSet:
+      id: hrms-005-location
+      author: platform
+      changes:
+        - createTable:
+            tableName: location
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: code, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: country, type: VARCHAR(64) }
+              - column: { name: time_zone, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: default_currency, type: VARCHAR(8), constraints: { nullable: false } }
+
+  - changeSet:
+      id: hrms-005-team
+      author: platform
+      changes:
+        - createTable:
+            tableName: team
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: code, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: department_id, type: BIGINT }
+              - column: { name: lead_employee_id, type: BIGINT }
+              - column: { name: max_on_leave, type: INT, defaultValueNumeric: 1, constraints: { nullable: false } }
+              - column: { name: clash_action, type: VARCHAR(16), defaultValue: ALERT, constraints: { nullable: false } }
+
+  - changeSet:
+      id: hrms-005-employee-product-columns
+      author: platform
+      changes:
+        - addColumn:
+            tableName: employee
+            columns:
+              - column: { name: preferred_name, type: VARCHAR(128) }
+              - column: { name: job_title, type: VARCHAR(128) }
+              - column: { name: location_id, type: BIGINT }
+              - column: { name: team_id, type: BIGINT }
+              - column: { name: employment_type, type: VARCHAR(32) }
+              - column: { name: start_date, type: DATE }
+              - column: { name: probation_end, type: DATE }
+              - column: { name: contract_end, type: DATE }
+              - column: { name: pay_currency, type: VARCHAR(8) }
+              - column: { name: status, type: VARCHAR(32), defaultValue: Active }
+              - column: { name: phone, type: VARCHAR(64) }
+              - column: { name: personal_email, type: VARCHAR(256) }
+              - column: { name: work_pattern, type: VARCHAR(32), defaultValue: FIXED }
+
+  - changeSet:
+      id: hrms-005-work-schedule
+      author: platform
+      changes:
+        - createTable:
+            tableName: work_schedule
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: scope_type, type: VARCHAR(16), constraints: { nullable: false } }
+              - column: { name: scope_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: mode, type: VARCHAR(16), defaultValue: FIXED, constraints: { nullable: false } }
+              - column: { name: working_days, type: JSONB, constraints: { nullable: false } }
+              - column: { name: start_time, type: VARCHAR(8) }
+              - column: { name: end_time, type: VARCHAR(8) }
+              - column: { name: grace_minutes, type: INT, defaultValueNumeric: 15 }
+              - column: { name: half_day_hours, type: "NUMERIC(6,2)", defaultValueNumeric: 4 }
+              - column: { name: checkout_cutoff, type: VARCHAR(8), defaultValue: "23:59" }
+              - column: { name: weekly_hours, type: "NUMERIC(6,2)" }
+
+  - changeSet:
+      id: hrms-005-attendance
+      author: platform
+      changes:
+        - createTable:
+            tableName: attendance_record
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: employee_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: work_date, type: DATE, constraints: { nullable: false } }
+              - column: { name: check_in_at, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: check_out_at, type: TIMESTAMP WITH TIME ZONE }
+              - column: { name: status_code, type: VARCHAR(8) }
+              - column: { name: status_label, type: VARCHAR(64) }
+              - column: { name: ip_address, type: VARCHAR(64) }
+              - column: { name: device, type: VARCHAR(128) }
+              - column: { name: location_label, type: VARCHAR(256) }
+              - column: { name: note, type: VARCHAR(512) }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+        - addUniqueConstraint:
+            tableName: attendance_record
+            columnNames: employee_id, work_date
+            constraintName: uk_attendance_emp_date
+
+  - changeSet:
+      id: hrms-005-task
+      author: platform
+      changes:
+        - createTable:
+            tableName: work_task
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: title, type: VARCHAR(256), constraints: { nullable: false } }
+              - column: { name: client_name, type: VARCHAR(128) }
+              - column: { name: status, type: VARCHAR(32), defaultValue: OPEN, constraints: { nullable: false } }
+              - column: { name: due_date, type: DATE }
+              - column: { name: created_by, type: BIGINT }
+              - column: { name: external_ref, type: VARCHAR(64) }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+
+  - changeSet:
+      id: hrms-005-task-assignee
+      author: platform
+      changes:
+        - createTable:
+            tableName: work_task_assignee
+            columns:
+              - column: { name: task_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: employee_id, type: BIGINT, constraints: { nullable: false } }
+        - addPrimaryKey:
+            tableName: work_task_assignee
+            columnNames: task_id, employee_id
+            constraintName: pk_task_assignee
+
+  - changeSet:
+      id: hrms-005-work-log
+      author: platform
+      changes:
+        - createTable:
+            tableName: work_log
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: employee_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: work_date, type: DATE, constraints: { nullable: false } }
+              - column: { name: task_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: minutes, type: INT, constraints: { nullable: false } }
+              - column: { name: note, type: VARCHAR(1024) }
+              - column: { name: created_at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+
+  - changeSet:
+      id: hrms-005-leave-category
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_category
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: code, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: quota_days, type: "NUMERIC(10,2)", constraints: { nullable: false } }
+              - column: { name: period_start, type: DATE }
+              - column: { name: period_end, type: DATE }
+              - column: { name: paid, type: BOOLEAN, defaultValueBoolean: true, constraints: { nullable: false } }
+              - column: { name: half_day_allowed, type: BOOLEAN, defaultValueBoolean: true, constraints: { nullable: false } }
+              - column: { name: attachment_mode, type: VARCHAR(16), defaultValue: NEVER }
+              - column: { name: attachment_after_days, type: INT, defaultValueNumeric: 0 }
+              - column: { name: notice_days, type: INT, defaultValueNumeric: 0 }
+              - column: { name: max_per_request, type: INT, defaultValueNumeric: 0 }
+              - column: { name: negative_cap, type: "NUMERIC(10,2)", defaultValueNumeric: 0 }
+              - column: { name: approval_chain, type: JSONB }
+              - column: { name: active, type: BOOLEAN, defaultValueBoolean: true, constraints: { nullable: false } }
+
+  - changeSet:
+      id: hrms-005-tenant-settings-keys
+      author: platform
+      changes:
+        - sql:
+            sql: |
+              INSERT INTO tenant_settings (settings, updated_at)
+              SELECT '{"workLogRule":"BLOCK","workLogMinPercent":80,"workLogEditDaysBack":7}'::jsonb, NOW()
+              WHERE NOT EXISTS (SELECT 1 FROM tenant_settings);
+
+  - changeSet:
+      id: hrms-005-audit-log
+      author: platform
+      changes:
+        - createTable:
+            tableName: audit_log
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: at, type: TIMESTAMP WITH TIME ZONE, constraints: { nullable: false } }
+              - column: { name: actor_employee_id, type: BIGINT }
+              - column: { name: action, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: entity, type: VARCHAR(64) }
+              - column: { name: entity_id, type: VARCHAR(64) }
+              - column: { name: before_json, type: JSONB }
+              - column: { name: after_json, type: JSONB }
+              - column: { name: ip, type: VARCHAR(64) }
+
+  - changeSet:
+      id: hrms-005-holiday
+      author: platform
+      changes:
+        - createTable:
+            tableName: holiday
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: location_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: start_date, type: DATE, constraints: { nullable: false } }
+              - column: { name: end_date, type: DATE, constraints: { nullable: false } }
+              - column: { name: holiday_type, type: VARCHAR(32), defaultValue: PUBLIC }
+              - column: { name: optional_flag, type: BOOLEAN, defaultValueBoolean: false }

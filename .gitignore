@@ -1,0 +1,44 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+bin/
+out/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / local
+*.log
+*.env
+.env.*
+!.env.example
+
+# Generated proto (rebuilt by Gradle)
+**/generated/
+**/build/generated/
+
+# Node / Next.js (never commit these)
+**/node_modules/
+**/.next/
+**/out/
+**/dist/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Frontend local caches
+frontend/**/coverage/
+frontend/**/.turbo/

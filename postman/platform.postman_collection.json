@@ -1,0 +1,330 @@
+{
+  "info": {
+    "name": "Platform via API Gateway (JWT)",
+    "description": "Gateway :8090 + JWT. Includes config-driven leave apply/approve for techshop_retail (Sat-Thu working week).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "gateway", "value": "http://127.0.0.1:8090" },
+    { "key": "tenantId", "value": "techshop_retail" },
+    { "key": "accessToken", "value": "" },
+    { "key": "employeeId", "value": "3" },
+    { "key": "reliefEmployeeId", "value": "4" },
+    { "key": "managerEmployeeId", "value": "2" },
+    { "key": "hrEmployeeId", "value": "1" },
+    { "key": "leaveId", "value": "1" },
+    { "key": "leaveTypeCode", "value": "ANNUAL" },
+    { "key": "leaveStart", "value": "2026-11-07" },
+    { "key": "leaveEnd", "value": "2026-11-10" }
+  ],
+  "item": [
+    {
+      "name": "1. Registry",
+      "item": [
+        {
+          "name": "Issue JWT",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "var json = pm.response.json();",
+                "pm.collectionVariables.set('accessToken', json.accessToken);"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"tenantId\": \"{{tenantId}}\"\n}" },
+            "url": "{{gateway}}/api/registry/token"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Leave config + employees",
+      "item": [
+        {
+          "name": "Get leave policy (working days Sat-Thu)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/leave-policy"
+          }
+        },
+        {
+          "name": "List departments",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/org/departments"
+          }
+        },
+        {
+          "name": "List designations",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/org/designations"
+          }
+        },
+        {
+          "name": "List employees",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "var json = pm.response.json();",
+                "function byCode(code) { return json.find(e => e.employeeCode === code); }",
+                "var nadia = byCode('R-1001');",
+                "var rahim = byCode('R-1002');",
+                "var amina = byCode('R-2002');",
+                "var farhan = byCode('R-2001');",
+                "if (nadia) pm.collectionVariables.set('employeeId', String(nadia.id));",
+                "if (rahim) pm.collectionVariables.set('reliefEmployeeId', String(rahim.id));",
+                "if (amina) pm.collectionVariables.set('managerEmployeeId', String(amina.id));",
+                "if (farhan) pm.collectionVariables.set('hrEmployeeId', String(farhan.id));"
+              ]
+            }
+          }],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/employees"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Leave apply / approve flow",
+      "item": [
+        {
+          "name": "Apply leave (Nadia union + optional relief)",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "var json = pm.response.json();",
+                "if (json.id) pm.collectionVariables.set('leaveId', String(json.id));"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": {{employeeId}},\n  \"leaveTypeCode\": \"{{leaveTypeCode}}\",\n  \"startDate\": \"{{leaveStart}}\",\n  \"endDate\": \"{{leaveEnd}}\",\n  \"reason\": \"Family visit\",\n  \"reliefEmployeeId\": {{reliefEmployeeId}}\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-applications"
+          }
+        },
+        {
+          "name": "Assign relief (only if PENDING_RELIEF)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reliefEmployeeId\": {{reliefEmployeeId}}\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-applications/{{leaveId}}/assign-relief"
+          }
+        },
+        {
+          "name": "Approve step 1 STORE_MANAGER (Amina)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverEmployeeId\": {{managerEmployeeId}},\n  \"comment\": \"Coverage OK with relief\"\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-applications/{{leaveId}}/approve"
+          }
+        },
+        {
+          "name": "Approve step 2 REGIONAL_HR (Farhan)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverEmployeeId\": {{hrEmployeeId}},\n  \"comment\": \"Final OK\"\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-applications/{{leaveId}}/approve"
+          }
+        },
+        {
+          "name": "Get leave application",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/leave-applications/{{leaveId}}"
+          }
+        },
+        {
+          "name": "List leave applications",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/leave-applications"
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Impit Limited (compare tenant)",
+      "item": [
+        {
+          "name": "Issue JWT (impit_limited)",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "var json = pm.response.json();",
+                "pm.collectionVariables.set('accessToken', json.accessToken);",
+                "pm.collectionVariables.set('tenantId', 'impit_limited');",
+                "pm.collectionVariables.set('leaveTypeCode', 'SICK');"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"tenantId\": \"impit_limited\"\n}" },
+            "url": "{{gateway}}/api/registry/token"
+          }
+        },
+        {
+          "name": "Get leave policy (Mon-Fri + types)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/leave-policy"
+          }
+        },
+        {
+          "name": "List leave types",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/leave-types"
+          }
+        },
+        {
+          "name": "List employees (set Alex/Rina/Nusrat)",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "var json = pm.response.json();",
+                "function byCode(code) { return json.find(e => e.employeeCode === code); }",
+                "var alex = byCode('2001');",
+                "var rina = byCode('1003');",
+                "var nusrat = byCode('1001');",
+                "if (alex) pm.collectionVariables.set('employeeId', String(alex.id));",
+                "if (rina) pm.collectionVariables.set('managerEmployeeId', String(rina.id));",
+                "if (nusrat) pm.collectionVariables.set('hrEmployeeId', String(nusrat.id));"
+              ]
+            }
+          }],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/employees"
+          }
+        },
+        {
+          "name": "Apply SICK leave (Alex)",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "exec": [
+                "var json = pm.response.json();",
+                "if (json.id) pm.collectionVariables.set('leaveId', String(json.id));"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": {{employeeId}},\n  \"leaveTypeCode\": \"SICK\",\n  \"startDate\": \"2026-11-03\",\n  \"endDate\": \"2026-11-03\",\n  \"reason\": \"Fever\"\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-applications"
+          }
+        },
+        {
+          "name": "Approve MANAGER (Rina)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverEmployeeId\": {{managerEmployeeId}},\n  \"comment\": \"OK\"\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-applications/{{leaveId}}/approve"
+          }
+        },
+        {
+          "name": "Approve HR (Nusrat)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approverEmployeeId\": {{hrEmployeeId}},\n  \"comment\": \"Final OK\"\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-applications/{{leaveId}}/approve"
+          }
+        },
+        {
+          "name": "List Alex leave balances",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": "{{gateway}}/hrms/api/leave-balances/employee/{{employeeId}}"
+          }
+        },
+        {
+          "name": "HR adjust balance (+1 CASUAL)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"employeeId\": {{employeeId}},\n  \"leaveTypeCode\": \"CASUAL\",\n  \"deltaDays\": 1,\n  \"reason\": \"HR grant\",\n  \"actorEmployeeId\": {{hrEmployeeId}}\n}"
+            },
+            "url": "{{gateway}}/hrms/api/leave-balances/adjust"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+/**
+ * Shared library — no Spring Boot fat jar.
+ * Used by gateway, registry, HRMS, and Payroll for tenant identity + Redis contracts.
+ */
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api 'com.fasterxml.jackson.core:jackson-databind'
+    api 'io.jsonwebtoken:jjwt-api:0.12.6'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+    compileOnly 'org.slf4j:slf4j-api'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.5'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

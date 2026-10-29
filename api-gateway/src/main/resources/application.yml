@@ -1,0 +1,167 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: api-gateway
+  cloud:
+    gateway:
+      # Allow Swagger UI Try-it-out even if browser host differs slightly
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            allowCredentials: false
+      # NOTE: Do NOT use default-filter RemoveRequestHeader=X-Tenant-ID here.
+      # It runs AFTER JwtTenantGatewayFilter and would strip the trusted tenant
+      # header we just injected. Stripping+injection is done only in that filter.
+      routes:
+        # --- OpenAPI docs proxied through gateway (for Swagger UI dropdown) ---
+        - id: registry-docs
+          uri: ${REGISTRY_URI:http://127.0.0.1:8080}
+          predicates:
+            - Path=/docs/registry/**
+          filters:
+            - RewritePath=/docs/registry/(?<segment>.*), /${segment}
+
+        - id: hrms-docs
+          uri: ${HRMS_URI:http://127.0.0.1:8081}
+          predicates:
+            - Path=/docs/hrms/**
+          filters:
+            - RewritePath=/docs/hrms/(?<segment>.*), /${segment}
+
+        - id: payroll-docs
+          uri: ${PAYROLL_URI:http://127.0.0.1:8082}
+          predicates:
+            - Path=/docs/payroll/**
+          filters:
+            - RewritePath=/docs/payroll/(?<segment>.*), /${segment}
+
+        - id: notification-docs
+          uri: ${NOTIF_URI:http://127.0.0.1:8083}
+          predicates:
+            - Path=/docs/notification/**
+          filters:
+            - RewritePath=/docs/notification/(?<segment>.*), /${segment}
+
+        - id: file-docs
+          uri: ${FILES_URI:http://127.0.0.1:8084}
+          predicates:
+            - Path=/docs/files/**
+          filters:
+            - RewritePath=/docs/files/(?<segment>.*), /${segment}
+
+        - id: report-docs
+          uri: ${REPORTS_URI:http://127.0.0.1:8085}
+          predicates:
+            - Path=/docs/reports/**
+          filters:
+            - RewritePath=/docs/reports/(?<segment>.*), /${segment}
+
+        # --- Registry API (paths match Registry controllers: /api/registry/**) ---
+        - id: registry-api
+          uri: ${REGISTRY_URI:http://127.0.0.1:8080}
+          predicates:
+            - Path=/api/registry/**
+          filters: []
+
+        # Convenience alias: /registry/provision → /api/registry/provision
+        - id: registry-alias
+          uri: ${REGISTRY_URI:http://127.0.0.1:8080}
+          predicates:
+            - Path=/registry/**
+          filters:
+            - RewritePath=/registry/(?<segment>.*), /api/registry/${segment}
+
+        # --- Domain services ---
+        - id: hrms
+          uri: ${HRMS_URI:http://127.0.0.1:8081}
+          predicates:
+            - Path=/hrms/**
+          filters:
+            - RewritePath=/hrms/(?<segment>.*), /${segment}
+
+        - id: payroll
+          uri: ${PAYROLL_URI:http://127.0.0.1:8082}
+          predicates:
+            - Path=/payroll/**
+          filters:
+            - RewritePath=/payroll/(?<segment>.*), /${segment}
+
+        - id: notification
+          uri: ${NOTIF_URI:http://127.0.0.1:8083}
+          predicates:
+            - Path=/notifications/**
+          filters:
+            - RewritePath=/notifications/(?<segment>.*), /${segment}
+
+        - id: files
+          uri: ${FILES_URI:http://127.0.0.1:8084}
+          predicates:
+            - Path=/files/**
+          filters:
+            - RewritePath=/files/(?<segment>.*), /${segment}
+
+        - id: reports
+          uri: ${REPORTS_URI:http://127.0.0.1:8085}
+          predicates:
+            - Path=/reports/**
+          filters:
+            - RewritePath=/reports/(?<segment>.*), /${segment}
+
+platform:
+  jwt:
+    secret: ${JWT_SECRET:practice-jwt-secret-change-me-32chars-min}
+  # JWT not required for these (token issue + swagger assets + provision practice)
+  public-paths:
+    - /actuator/**
+    - /swagger-ui/**
+    - /swagger-ui.html
+    - /v3/api-docs/**
+    - /webjars/**
+    - /docs/**
+    # Account-picker token + health only (provision/tenants/upgrade require admin key + JWT path)
+    - /api/registry/token
+    - /api/registry/health-info
+    - /registry/token
+    - /registry/health-info
+    # Account picker before session JWT (pre- and post-RewritePath forms)
+    - /hrms/api/auth/accounts
+    - /hrms/api/auth/accounts/**
+    - /api/auth/accounts
+    - /api/auth/accounts/**
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    persistAuthorization: true
+    tryItOutEnabled: true
+    # One Swagger UI on the gateway — pick a service from the dropdown
+    urls:
+      - name: Registry
+        url: /docs/registry/v3/api-docs
+      - name: HRMS
+        url: /docs/hrms/v3/api-docs
+      - name: Payroll
+        url: /docs/payroll/v3/api-docs
+      - name: Notification
+        url: /docs/notification/v3/api-docs
+      - name: Files
+        url: /docs/files/v3/api-docs
+      - name: Reports
+        url: /docs/reports/v3/api-docs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.platform.gateway: INFO

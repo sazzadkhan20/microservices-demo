@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+/**
+ * Internal HRMS contract used by Payroll (and future services).
+ * Cross-service rule: never share databases — call this API instead.
+ *
+ * Tenant identity MUST be passed as gRPC metadata: x-tenant-id
+ */
+option java_multiple_files = true;
+option java_package = "com.platform.hrms.api.grpc";
+option java_outer_classname = "EmployeeProto";
+
+package hrms;
+
+service EmployeeService {
+  // Returns one employee from the tenant-routed HRMS database.
+  rpc GetEmployee (GetEmployeeRequest) returns (EmployeeResponse);
+}
+
+message GetEmployeeRequest {
+  int64 employee_id = 1;
+}
+
+message EmployeeResponse {
+  int64 id = 1;
+  string employee_code = 2;
+  string full_name = 3;
+  string email = 4;
+  string base_salary = 5;   // decimal as string for precision
+  string hourly_rate = 6;
+  string custom_fields_json = 7; // JSON object as string
+  bool active = 8;
+}

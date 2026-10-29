@@ -1,0 +1,44 @@
+/**
+ * gRPC / Protobuf API contract for HRMS.
+ * Both hrms-service (server) and payroll-service (client) depend on this module.
+ */
+plugins {
+    id 'com.google.protobuf'
+    id 'java-library'
+}
+
+dependencies {
+    api "io.grpc:grpc-protobuf:${rootProject.ext.grpcVersion}"
+    api "io.grpc:grpc-stub:${rootProject.ext.grpcVersion}"
+    api "io.grpc:grpc-api:${rootProject.ext.grpcVersion}"
+    api "com.google.protobuf:protobuf-java:${rootProject.ext.protobufVersion}"
+    compileOnly 'javax.annotation:javax.annotation-api:1.3.2'
+}
+
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:${rootProject.ext.protobufVersion}"
+    }
+    plugins {
+        grpc {
+            artifact = "io.grpc:protoc-gen-grpc-java:${rootProject.ext.grpcVersion}"
+        }
+    }
+    generateProtoTasks {
+        all().configureEach { task ->
+            task.plugins {
+                grpc {}
+            }
+        }
+    }
+}
+
+// Make generated sources visible to IDEs / compileJava
+sourceSets {
+    main {
+        java {
+            srcDirs 'build/generated/source/proto/main/java'
+            srcDirs 'build/generated/source/proto/main/grpc'
+        }
+    }
+}

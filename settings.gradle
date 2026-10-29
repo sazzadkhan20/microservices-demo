@@ -1,0 +1,25 @@
+/**
+ * Multi-project Gradle settings for the reusable HRMS + Payroll platform.
+ *
+ * Modules:
+ *  - platform-common        : shared tenant context, Redis key constants, JWT helpers
+ *  - hrms-api               : protobuf / gRPC API contract used by HRMS + Payroll
+ *  - tenant-registry        : control-plane (provision DBs, routing, Redis pub/sub)
+ *  - hrms-service           : reusable HRMS modular monolith (REST + gRPC)
+ *  - payroll-service        : reusable Payroll modular monolith (REST + gRPC client)
+ *  - api-gateway            : sole public entry (JWT trust boundary + routing)
+ *  - notification-service   : in-app notification inbox per tenant (port 8083)
+ *  - file-service           : multipart upload / download per tenant (port 8084)
+ *  - report-service         : CSV report generation per tenant (port 8085)
+ */
+rootProject.name = 'microservices-demo'
+
+include 'platform-common'
+include 'hrms-api'
+include 'tenant-registry'
+include 'hrms-service'
+include 'payroll-service'
+include 'api-gateway'
+include 'notification-service'
+include 'file-service'
+include 'report-service'

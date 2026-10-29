@@ -1,0 +1,70 @@
+/**
+ * Root build: shared versions + conventions for all Spring Boot / library modules.
+ * Use Gradle (via ./gradlew) — not Maven.
+ */
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.5' apply false
+    id 'io.spring.dependency-management' version '1.1.6' apply false
+    id 'com.google.protobuf' version '0.9.4' apply false
+}
+
+allprojects {
+    group = 'com.platform'
+    version = '1.0.0-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+ext {
+    // Keep ALL io.grpc artifacts on one version.
+    // grpc-spring-boot-starter 3.1.0 pulls 1.63.x while hrms-api used 1.68.x → NoClassDefFoundError.
+    grpcVersion = '1.68.1'
+    protobufVersion = '3.25.5'
+}
+
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'io.spring.dependency-management'
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+    }
+
+    dependencyManagement {
+        imports {
+            mavenBom "org.springframework.boot:spring-boot-dependencies:3.3.5"
+            mavenBom "org.springframework.cloud:spring-cloud-dependencies:2023.0.3"
+            mavenBom "io.grpc:grpc-bom:${grpcVersion}"
+        }
+    }
+
+    // Force alignment even if a transitive dependency asks for an older grpc jar
+    configurations.configureEach {
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'io.grpc') {
+                details.useVersion(grpcVersion)
+                details.because('Prevent grpc-api/grpc-core version skew (InternalGlobalInterceptors)')
+            }
+        }
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.compilerArgs += ['-parameters']
+    }
+
+    tasks.withType(Test).configureEach {
+        useJUnitPlatform()
+    }
+}
+
+// Convenience: build everything from the root
+tasks.register('buildAll') {
+    dependsOn subprojects.collect { it.tasks.named('build') }
+    description = 'Builds all modules'
+}

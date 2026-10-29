@@ -1,0 +1,179 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-001-core
+      author: platform
+      changes:
+        # Platform default leave policy row (overridable later via config APIs).
+        - createTable:
+            tableName: leave_policy
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: annual_days
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: work_week_days
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+        # Field definitions drive the config-driven EmployeeQueryEngine.
+        # Empty at provision time; businesses add definitions later.
+        - createTable:
+            tableName: tenant_field_definition
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: field_name
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: storage_type
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: jsonb_path
+                  type: VARCHAR(128)
+              - column:
+                  name: extension_table
+                  type: VARCHAR(128)
+              - column:
+                  name: extension_column
+                  type: VARCHAR(128)
+              - column:
+                  name: filterable
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: indexed_flag
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+
+        - createTable:
+            tableName: employee
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: employee_code
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: full_name
+                  type: VARCHAR(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: base_salary
+                  type: NUMERIC(19, 4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: hourly_rate
+                  type: NUMERIC(19, 4)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: custom_fields
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+        # GIN index for JSONB filter performance on custom_fields
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_employee_custom_fields_gin ON employee USING GIN (custom_fields);
+
+        # Generic indexed extension table template for high-frequency filters.
+        # Businesses later map field defs to this (or add dedicated tables via migration).
+        - createTable:
+            tableName: ext_indexed_attribute
+            columns:
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+                    primaryKey: true
+                    foreignKeyName: fk_ext_attr_employee
+                    references: employee(id)
+              - column:
+                  name: attr_key
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+                    primaryKey: true
+              - column:
+                  name: attr_value
+                  type: VARCHAR(256)
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: ext_indexed_attribute
+            indexName: idx_ext_attr_key_value
+            columns:
+              - column:
+                  name: attr_key
+              - column:
+                  name: attr_value
+
+        # Seed platform-default leave policy (not a custom business profile).
+        - insert:
+            tableName: leave_policy
+            columns:
+              - column:
+                  name: annual_days
+                  valueNumeric: 12
+              - column:
+                  name: work_week_days
+                  valueNumeric: 5
+              - column:
+                  name: updated_at
+                  valueComputed: NOW()

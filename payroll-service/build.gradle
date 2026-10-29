@@ -1,0 +1,33 @@
+plugins {
+    id 'org.springframework.boot'
+}
+
+dependencies {
+    implementation project(':platform-common')
+    implementation project(':hrms-api')
+
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    implementation 'net.devh:grpc-client-spring-boot-starter:3.1.0.RELEASE'
+    // Explicit transport + core so runtime matches hrms-api (not starter's older transitive grpc)
+    implementation "io.grpc:grpc-netty-shaded:${rootProject.ext.grpcVersion}"
+    implementation "io.grpc:grpc-core:${rootProject.ext.grpcVersion}"
+    implementation "io.grpc:grpc-api:${rootProject.ext.grpcVersion}"
+    implementation "io.grpc:grpc-stub:${rootProject.ext.grpcVersion}"
+    implementation "io.grpc:grpc-protobuf:${rootProject.ext.grpcVersion}"
+
+    implementation 'com.github.ben-manes.caffeine:caffeine:3.1.8'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+
+    runtimeOnly 'org.postgresql:postgresql'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.named('bootJar') {
+    archiveBaseName = 'payroll-service'
+}

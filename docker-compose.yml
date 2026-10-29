@@ -1,0 +1,214 @@
+# Infrastructure + optional full stack.
+#
+# Local practice (recommended):
+#   docker compose up -d redis postgres-registry postgres-hrms postgres-payroll
+#   ./gradlew :tenant-registry:bootRun   (and other services)
+#
+# Full Docker stack:
+#   docker compose --profile apps up -d --build
+
+services:
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  postgres-registry:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      # Host 5435 — avoid conflict with a local Windows PostgreSQL often bound to 5432
+      - "5435:5432"
+    volumes:
+      - ./docker/postgres/init-registry.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - pg_registry_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-hrms:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./docker/postgres/init-hrms-host.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - pg_hrms_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-payroll:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./docker/postgres/init-payroll-host.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - pg_payroll_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  tenant-registry:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: tenant-registry/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      REGISTRY_DB_URL: jdbc:postgresql://postgres-registry:5432/registry_db
+      REGISTRY_DB_USER: platform
+      REGISTRY_DB_PASSWORD: platform
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      HRMS_PG_ADMIN_URL: jdbc:postgresql://postgres-hrms:5432/postgres
+      HRMS_PG_HOST: postgres-hrms
+      HRMS_PG_PORT: 5432
+      HRMS_PG_USER: platform
+      HRMS_PG_PASSWORD: platform
+      PAYROLL_PG_ADMIN_URL: jdbc:postgresql://postgres-payroll:5432/postgres
+      PAYROLL_PG_HOST: postgres-payroll
+      PAYROLL_PG_PORT: 5432
+      PAYROLL_PG_USER: platform
+      PAYROLL_PG_PASSWORD: platform
+      JWT_SECRET: practice-jwt-secret-change-me-32chars-min
+    depends_on:
+      postgres-registry:
+        condition: service_healthy
+      postgres-hrms:
+        condition: service_healthy
+      postgres-payroll:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  hrms-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: hrms-service/Dockerfile
+    ports:
+      - "8081:8081"
+      - "9081:9081"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REGISTRY_BASE_URL: http://tenant-registry:8080
+    depends_on:
+      - tenant-registry
+      - redis
+      - postgres-hrms
+
+  payroll-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: payroll-service/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REGISTRY_BASE_URL: http://tenant-registry:8080
+      HRMS_GRPC_ADDRESS: static://hrms-service:9081
+    depends_on:
+      - tenant-registry
+      - hrms-service
+      - redis
+      - postgres-payroll
+
+  notification-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:file:./data/notifications;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE
+    depends_on:
+      - tenant-registry
+
+  file-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: file-service/Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:h2:file:./data/file-meta;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE
+      FILE_STORAGE_ROOT: /app/data/files
+    volumes:
+      - file_data:/app/data
+    depends_on:
+      - tenant-registry
+
+  report-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: report-service/Dockerfile
+    ports:
+      - "8085:8085"
+    environment:
+      HRMS_BASE_URL: http://hrms-service:8081
+    depends_on:
+      - tenant-registry
+      - hrms-service
+
+  # Optional: MinIO object storage (future file-service backend)
+  # Start with: docker compose up -d minio
+  minio:
+    image: minio/minio
+    profiles: ["minio"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+  api-gateway:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      REGISTRY_URI: http://tenant-registry:8080
+      HRMS_URI: http://hrms-service:8081
+      PAYROLL_URI: http://payroll-service:8082
+      NOTIF_URI: http://notification-service:8083
+      FILES_URI: http://file-service:8084
+      REPORTS_URI: http://report-service:8085
+      JWT_SECRET: practice-jwt-secret-change-me-32chars-min
+    depends_on:
+      - tenant-registry
+      - hrms-service
+      - payroll-service
+      - notification-service
+      - file-service
+      - report-service
+
+volumes:
+  pg_registry_data:
+  pg_hrms_data:
+  pg_payroll_data:
+  file_data:
+  minio_data:

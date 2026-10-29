@@ -1,0 +1,13 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-006-attendance-capture-fields
+      author: platform
+      changes:
+        - addColumn:
+            tableName: attendance_record
+            columns:
+              - column: { name: time_zone, type: VARCHAR(64) }
+              - column: { name: latitude, type: "NUMERIC(10,7)" }
+              - column: { name: longitude, type: "NUMERIC(10,7)" }
+              - column: { name: device_type, type: VARCHAR(32) }
+              - column: { name: employee_code_snapshot, type: VARCHAR(64) }

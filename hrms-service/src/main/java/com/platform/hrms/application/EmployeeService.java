@@ -2,6 +2,7 @@ package com.platform.hrms.application;
 
 import com.platform.common.api.PageQuery;
 import com.platform.common.api.PageResponse;
+import com.platform.common.security.AuthContext;
 import com.platform.hrms.api.dto.EmployeeRequest;
 import com.platform.hrms.api.dto.EmployeeResponse;
 import com.platform.hrms.application.support.DynamicListSupport;
@@ -9,6 +10,8 @@ import com.platform.hrms.domain.Department;
 import com.platform.hrms.domain.Designation;
 import com.platform.hrms.domain.Employee;
 import com.platform.hrms.domain.ExtIndexedAttribute;
+import com.platform.hrms.domain.Location;
+import com.platform.hrms.domain.ReportingLineHistory;
 import com.platform.hrms.domain.Team;
 import com.platform.hrms.domain.TenantFieldDefinition;
 import com.platform.hrms.domain.TenantSettings;
@@ -18,6 +21,8 @@ import com.platform.hrms.infrastructure.persistence.DepartmentRepository;
 import com.platform.hrms.infrastructure.persistence.DesignationRepository;
 import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
 import com.platform.hrms.infrastructure.persistence.ExtIndexedAttributeRepository;
+import com.platform.hrms.infrastructure.persistence.LocationRepository;
+import com.platform.hrms.infrastructure.persistence.ReportingLineHistoryRepository;
 import com.platform.hrms.infrastructure.persistence.TeamRepository;
 import com.platform.hrms.infrastructure.persistence.TenantSettingsRepository;
 import org.springframework.data.jpa.domain.Specification;
@@ -26,11 +31,15 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 @Service
@@ -40,31 +49,40 @@ public class EmployeeService {
     private final DepartmentRepository departmentRepository;
     private final DesignationRepository designationRepository;
     private final TeamRepository teamRepository;
+    private final LocationRepository locationRepository;
     private final ExtIndexedAttributeRepository extIndexedAttributeRepository;
     private final TenantSettingsRepository tenantSettingsRepository;
     private final EmployeeQueryEngine queryEngine;
     private final TenantConfigLoader configLoader;
     private final RbacService rbacService;
+    private final DataScopeService dataScopeService;
+    private final ReportingLineHistoryRepository reportingLineHistoryRepository;
 
     public EmployeeService(
             EmployeeRepository repository,
             DepartmentRepository departmentRepository,
             DesignationRepository designationRepository,
             TeamRepository teamRepository,
+            LocationRepository locationRepository,
             ExtIndexedAttributeRepository extIndexedAttributeRepository,
             TenantSettingsRepository tenantSettingsRepository,
             EmployeeQueryEngine queryEngine,
             TenantConfigLoader configLoader,
-            RbacService rbacService) {
+            RbacService rbacService,
+            DataScopeService dataScopeService,
+            ReportingLineHistoryRepository reportingLineHistoryRepository) {
         this.repository = repository;
         this.departmentRepository = departmentRepository;
         this.designationRepository = designationRepository;
         this.teamRepository = teamRepository;
+        this.locationRepository = locationRepository;
         this.extIndexedAttributeRepository = extIndexedAttributeRepository;
         this.tenantSettingsRepository = tenantSettingsRepository;
         this.queryEngine = queryEngine;
         this.configLoader = configLoader;
         this.rbacService = rbacService;
+        this.dataScopeService = dataScopeService;
+        this.reportingLineHistoryRepository = reportingLineHistoryRepository;
     }
 
     @Transactional
@@ -76,6 +94,8 @@ public class EmployeeService {
             throw new IllegalStateException("employeeCode already exists: " + code);
         });
         validateEmployeeCodePattern(code);
+        String email = normalizeEmail(request.email());
+        assertEmailAvailable(email, null);
 
         Long resolvedDepartmentId = request.departmentId();
         if (request.teamId() != null) {
@@ -132,7 +152,7 @@ public class EmployeeService {
         Employee employee = new Employee();
         employee.setEmployeeCode(code);
         employee.setFullName(request.fullName());
-        employee.setEmail(request.email());
+        employee.setEmail(email);
         employee.setPreferredName(request.preferredName());
         employee.setJobTitle(request.jobTitle() != null && !request.jobTitle().isBlank()
                 ? request.jobTitle() : designation.getName());
@@ -184,17 +204,27 @@ public class EmployeeService {
 
         Map<String, Object> combined = new HashMap<>(saved.getCustomFields());
         combined.putAll(extensionValues);
-        return EmployeeResponse.from(saved, department, designation, manager, combined, roles);
+        Team team = saved.getTeamId() == null ? null : teamRepository.findById(saved.getTeamId()).orElse(null);
+        Location location = saved.getLocationId() == null ? null
+                : locationRepository.findById(saved.getLocationId()).orElse(null);
+        EmployeeResponse created = EmployeeResponse.from(
+                saved, department, designation, manager, team, location, combined, roles);
+        return compensationAccess().test(saved.getId()) ? created : created.withoutCompensation();
     }
 
     @Transactional
     public EmployeeResponse update(Long id, EmployeeRequest request) {
+        requireScope(id, "employees", "edit");
         Employee employee = requireEntity(id);
         if (request.fullName() != null && !request.fullName().isBlank()) {
             employee.setFullName(request.fullName());
         }
         if (request.email() != null && !request.email().isBlank()) {
-            employee.setEmail(request.email());
+            String email = normalizeEmail(request.email());
+            if (!email.equalsIgnoreCase(employee.getEmail())) {
+                assertEmailAvailable(email, id);
+            }
+            employee.setEmail(email);
         }
         if (request.preferredName() != null) {
             employee.setPreferredName(request.preferredName());
@@ -227,7 +257,18 @@ public class EmployeeService {
             employee.setWorkPattern(request.workPattern());
         }
         if (request.managerId() != null) {
-            employee.setManagerId(request.managerId());
+            Long previousManager = employee.getManagerId();
+            Long requestedManager = request.managerId();
+            // 0 / negative means clear manager
+            final Long nextManager = (requestedManager != null && requestedManager <= 0) ? null : requestedManager;
+            if (nextManager != null) {
+                repository.findById(nextManager)
+                        .orElseThrow(() -> new IllegalArgumentException("Manager not found: " + nextManager));
+            }
+            if (!java.util.Objects.equals(previousManager, nextManager)) {
+                recordManagerChange(employee.getId(), previousManager, nextManager);
+            }
+            employee.setManagerId(nextManager);
         }
         if (request.teamId() != null) {
             Team team = teamRepository.findById(request.teamId())
@@ -267,6 +308,7 @@ public class EmployeeService {
         if (status == null || status.isBlank()) {
             throw new IllegalArgumentException("status is required");
         }
+        requireScope(id, "employees", "edit");
         Employee employee = requireEntity(id);
         employee.setStatus(status.trim());
         employee.setActive(!"Inactive".equalsIgnoreCase(status)
@@ -297,15 +339,21 @@ public class EmployeeService {
 
     @Transactional(readOnly = true)
     public EmployeeResponse get(Long id) {
+        // IDOR guard: OWN = self, TEAM = self + direct reports, ALL = tenant-wide (else 403)
+        requireScope(id, "employees", "view");
         return toResponse(requireEntity(id));
     }
 
     @Transactional(readOnly = true)
     public List<EmployeeResponse> list(Map<String, String> filters) {
+        Long actor = AuthContext.requireEmployeeId();
+        DataScopeService.Visibility visible = dataScopeService.visibility(actor, "employees", "view");
+        Predicate<Long> compensation = compensationAccess();
         Specification<Employee> spec = queryEngine.buildSpec(filters);
         return repository.findAll(spec).stream()
+                .filter(e -> visible.allows(e.getId()))
                 .map(this::withExtensionFields)
-                .map(this::toResponse)
+                .map(e -> toResponse(e, compensation))
                 .toList();
     }
 
@@ -395,14 +443,117 @@ public class EmployeeService {
     }
 
     private EmployeeResponse toResponse(Employee employee) {
+        return toResponse(employee, compensationAccess());
+    }
+
+    private EmployeeResponse toResponse(Employee employee, Predicate<Long> compensationAccess) {
+        EmployeeResponse full = buildResponse(employee);
+        return compensationAccess.test(employee.getId()) ? full : full.withoutCompensation();
+    }
+
+    /**
+     * baseSalary / hourlyRate are visible only to: the employee themself, or callers holding
+     * payroll:view, payroll:run or employees:edit (each limited to the employees its data scope covers).
+     */
+    private Predicate<Long> compensationAccess() {
+        Long actor = AuthContext.getEmployeeId();
+        if (actor == null) {
+            return id -> false;
+        }
+        DataScopeService.Visibility payrollView = dataScopeService.visibility(actor, "payroll", "view");
+        DataScopeService.Visibility payrollRun = dataScopeService.visibility(actor, "payroll", "run");
+        DataScopeService.Visibility employeesEdit = dataScopeService.visibility(actor, "employees", "edit");
+        return id -> actor.equals(id)
+                || payrollView.allows(id)
+                || payrollRun.allows(id)
+                || employeesEdit.allows(id);
+    }
+
+    private void requireScope(Long targetEmployeeId, String feature, String action) {
+        dataScopeService.requireAccess(AuthContext.requireEmployeeId(), targetEmployeeId, feature, action);
+    }
+
+    private static String normalizeEmail(String email) {
+        if (email == null || email.isBlank()) {
+            throw new IllegalArgumentException("email is required");
+        }
+        return email.trim();
+    }
+
+    /** Email is unique per tenant (DB-per-tenant), case-insensitive; also backed by a DB unique index. */
+    private void assertEmailAvailable(String email, Long excludeEmployeeId) {
+        boolean taken = excludeEmployeeId == null
+                ? repository.existsByEmailIgnoreCase(email)
+                : repository.existsByEmailIgnoreCaseAndIdNot(email, excludeEmployeeId);
+        if (taken) {
+            throw new IllegalStateException("Employee email already exists: " + email);
+        }
+    }
+
+    private EmployeeResponse buildResponse(Employee employee) {
         Department dept = employee.getDepartmentId() == null ? null
                 : departmentRepository.findById(employee.getDepartmentId()).orElse(null);
         Designation desig = employee.getDesignationId() == null ? null
                 : designationRepository.findById(employee.getDesignationId()).orElse(null);
         Employee manager = employee.getManagerId() == null ? null
                 : repository.findById(employee.getManagerId()).orElse(null);
+        Team team = employee.getTeamId() == null ? null
+                : teamRepository.findById(employee.getTeamId()).orElse(null);
+        Location location = employee.getLocationId() == null ? null
+                : locationRepository.findById(employee.getLocationId()).orElse(null);
         List<String> roles = employee.getId() == null ? List.of() : rbacService.roleCodesFor(employee.getId());
-        return EmployeeResponse.from(employee, dept, desig, manager, employee.getCustomFields(), roles);
+        return EmployeeResponse.from(
+                employee, dept, desig, manager, team, location, employee.getCustomFields(), roles);
+    }
+
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> reportingLine(Long employeeId) {
+        requireScope(employeeId, "employees", "view");
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (ReportingLineHistory h : reportingLineHistoryRepository.findByEmployeeIdOrderByFromDateDesc(employeeId)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", h.getId());
+            row.put("managerId", h.getManagerId());
+            row.put("managerName", h.getManagerId() == null ? null
+                    : repository.findById(h.getManagerId()).map(Employee::getFullName).orElse(null));
+            row.put("fromDate", h.getFromDate() == null ? null : h.getFromDate().toString());
+            row.put("toDate", h.getToDate() == null ? null : h.getToDate().toString());
+            row.put("changedBy", h.getChangedBy());
+            out.add(row);
+        }
+        // If history empty, synthesise current manager as open line for UX
+        if (out.isEmpty()) {
+            Employee e = requireEntity(employeeId);
+            if (e.getManagerId() != null) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("id", null);
+                row.put("managerId", e.getManagerId());
+                row.put("managerName", repository.findById(e.getManagerId()).map(Employee::getFullName).orElse(null));
+                row.put("fromDate", e.getStartDate() == null ? LocalDate.now().toString() : e.getStartDate().toString());
+                row.put("toDate", null);
+                row.put("changedBy", null);
+                out.add(row);
+            }
+        }
+        return out;
+    }
+
+    private void recordManagerChange(Long employeeId, Long previousManager, Long nextManager) {
+        LocalDate today = LocalDate.now();
+        reportingLineHistoryRepository.findFirstByEmployeeIdAndToDateIsNullOrderByFromDateDesc(employeeId)
+                .ifPresent(open -> {
+                    open.setToDate(today);
+                    reportingLineHistoryRepository.save(open);
+                });
+        ReportingLineHistory row = new ReportingLineHistory();
+        row.setEmployeeId(employeeId);
+        row.setManagerId(nextManager);
+        row.setFromDate(today);
+        row.setToDate(null);
+        row.setChangedBy(AuthContext.getEmployeeId());
+        row.setCreatedAt(Instant.now());
+        reportingLineHistoryRepository.save(row);
+        // previousManager unused except for audit trail in history rows
     }
 
     private Employee withExtensionFields(Employee employee) {

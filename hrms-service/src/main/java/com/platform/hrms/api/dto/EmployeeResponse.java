@@ -3,6 +3,8 @@ package com.platform.hrms.api.dto;
 import com.platform.hrms.domain.Department;
 import com.platform.hrms.domain.Designation;
 import com.platform.hrms.domain.Employee;
+import com.platform.hrms.domain.Location;
+import com.platform.hrms.domain.Team;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -27,7 +29,10 @@ public record EmployeeResponse(
         Long managerId,
         String managerName,
         Long teamId,
+        String teamName,
         Long locationId,
+        String locationName,
+        String locationCode,
         String employmentType,
         LocalDate startDate,
         LocalDate probationEnd,
@@ -45,11 +50,27 @@ public record EmployeeResponse(
         Instant createdAt,
         Instant updatedAt
 ) {
+    /** Copy with {@code baseSalary} / {@code hourlyRate} nulled (caller may not see compensation). */
+    public EmployeeResponse withoutCompensation() {
+        return new EmployeeResponse(
+                id, employeeCode, fullName, preferredName, email, jobTitle,
+                departmentId, departmentCode, departmentName,
+                designationId, designationCode, designationName, approverRole,
+                managerId, managerName, teamId, teamName,
+                locationId, locationName, locationCode,
+                employmentType, startDate, probationEnd, contractEnd,
+                payCurrency, workPattern, status, phone, personalEmail,
+                null, null,
+                customFields, active, roles, createdAt, updatedAt);
+    }
+
     public static EmployeeResponse from(
             Employee e,
             Department dept,
             Designation desig,
             Employee manager,
+            Team team,
+            Location location,
             Map<String, Object> customFields,
             List<String> roles) {
         return new EmployeeResponse(
@@ -69,7 +90,10 @@ public record EmployeeResponse(
                 e.getManagerId(),
                 manager == null ? null : manager.getFullName(),
                 e.getTeamId(),
+                team == null ? null : team.getName(),
                 e.getLocationId(),
+                location == null ? null : location.getName(),
+                location == null ? null : location.getCode(),
                 e.getEmploymentType(),
                 e.getStartDate(),
                 e.getProbationEnd(),

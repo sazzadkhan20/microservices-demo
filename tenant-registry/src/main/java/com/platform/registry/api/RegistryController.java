@@ -78,6 +78,15 @@ public class RegistryController {
         return provisioningService.upgradeHrmsSchema(tenantId, reseed, businessPack);
     }
 
+    @PostMapping("/tenants/{tenantId}/upgrade-payroll")
+    @Operation(summary = "Migrate payroll tenant schema (requires X-Platform-Admin-Key)")
+    public Map<String, Object> upgradePayroll(
+            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey,
+            @PathVariable String tenantId) {
+        platformAuth.requireAdmin(adminKey);
+        return provisioningService.upgradePayrollSchema(tenantId);
+    }
+
     @GetMapping("/routing/{service}/{tenantId}")
     @Operation(summary = "Public routing view (no credentials)")
     public TenantRoutingView routing(@PathVariable String service, @PathVariable String tenantId) {
@@ -99,8 +108,12 @@ public class RegistryController {
     }
 
     @PostMapping("/token")
-    @Operation(summary = "Account-picker JWT — tenant must already be provisioned; employeeId required for product sessions")
-    public TokenResponse token(@Valid @RequestBody TokenRequest request) {
+    @Operation(summary = "Account-picker JWT — requires X-Service-Key (gateway adds it after X-Demo-Auth-Key check); "
+            + "tenant must already be provisioned; employeeId required for product sessions")
+    public TokenResponse token(
+            @RequestHeader(value = PlatformAuthSupport.SERVICE_HEADER, required = false) String serviceKey,
+            @Valid @RequestBody TokenRequest request) {
+        platformAuth.requireService(serviceKey);
         String tenantId = TenantIds.normalize(request.tenantId());
         routingRepository.findByServiceNameAndTenantId("hrms", tenantId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown or unprovisioned tenant: " + tenantId));

@@ -1,0 +1,71 @@
+databaseChangeLog:
+  - changeSet:
+      id: notif-001-notifications
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - tableExists:
+                tableName: notifications
+      changes:
+        - createTable:
+            tableName: notifications
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: tenant_id
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: title
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: body
+                  type: VARCHAR(2000)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: category
+                  type: VARCHAR(100)
+              - column:
+                  name: read_flag
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: dedupe_key
+                  type: VARCHAR(255)
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: notifications
+            indexName: idx_notif_tenant_emp
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: employee_id
+        - createIndex:
+            tableName: notifications
+            indexName: idx_notif_tenant_dedupe
+            columns:
+              - column:
+                  name: tenant_id
+              - column:
+                  name: dedupe_key

@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const GW = process.env.GATEWAY || 'http://127.0.0.1:8090';
+const DEMO_AUTH_KEY = process.env.DEMO_AUTH_KEY || process.env.GATEWAY_SERVICE_KEY || 'local-service-key-change-me';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outDir = path.join(__dirname, '..', 'build', 'qa');
 fs.mkdirSync(outDir, { recursive: true });
@@ -31,8 +32,11 @@ function check(layer, id, pass, detail, extra = {}) {
   console.log(`${row.result.padEnd(4)} [${layer}] ${id} — ${detail}`);
 }
 
+const demoHeaders = () => ({ 'X-Demo-Auth-Key': DEMO_AUTH_KEY });
+
 const token = async (employeeId) => {
   const r = await req('POST', `${GW}/api/registry/token`, {
+    headers: demoHeaders(),
     body: { tenantId: 'qii_creative', employeeId },
   });
   return r.json?.token || r.json?.accessToken;
@@ -49,7 +53,9 @@ async function main() {
     }
   }
 
-  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts?tenantId=qii_creative`);
+  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts?tenantId=qii_creative`, {
+    headers: demoHeaders(),
+  });
   check('SYS', 'SEED-ACCOUNTS', accounts.status === 200 && Array.isArray(accounts.json), `status=${accounts.status}`);
   const asman = accounts.json?.find((a) => String(a.name).includes('Asman'));
   check('SYS', 'SEED-ASMAN', !!asman && String(asman.role).includes('SUPERADMIN'), `role=${asman?.role}`);
@@ -196,14 +202,16 @@ async function main() {
     headers: { Authorization: `Bearer ${tokA}` },
     body: {
       employeeId: idE,
-      periodLabel: '2026-10',
+      // Unique period so re-runs are not blocked by an earlier FINALIZED payslip (409).
+      periodLabel: `2026-11`,
       hoursWorked: 160,
       regularHours: 160,
       overtimeHours: 0,
       weekendHours: 0,
     },
   });
-  check('INT', 'PAYROLL-CALC', payrollCalc.status === 200, `status=${payrollCalc.status} emp=${idE}`);
+  check('INT', 'PAYROLL-CALC', payrollCalc.status === 200 || payrollCalc.status === 201,
+    `status=${payrollCalc.status} emp=${idE}`);
 
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'qii-hrms', 'package.json'), 'utf8'));
   check('UT', 'FE-TEST-SCRIPT', !!pkg.scripts?.test, pkg.scripts?.test ? 'scripts.test present' : 'scripts.test missing');

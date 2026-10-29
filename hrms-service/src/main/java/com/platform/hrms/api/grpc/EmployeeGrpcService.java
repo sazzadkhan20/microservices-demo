@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.hrms.api.grpc.EmployeeResponse;
 import com.platform.hrms.api.grpc.EmployeeServiceGrpc;
 import com.platform.hrms.api.grpc.GetEmployeeRequest;
+import com.platform.hrms.api.grpc.GetPermissionsRequest;
+import com.platform.hrms.api.grpc.PermissionsResponse;
 import com.platform.hrms.application.EmployeeService;
+import com.platform.hrms.application.RbacService;
 import com.platform.hrms.domain.Employee;
 import io.grpc.stub.StreamObserver;
 import net.devh.boot.grpc.server.service.GrpcService;
@@ -18,10 +21,25 @@ public class EmployeeGrpcService extends EmployeeServiceGrpc.EmployeeServiceImpl
 
     private final EmployeeService employeeService;
     private final ObjectMapper objectMapper;
+    private final RbacService rbacService;
 
-    public EmployeeGrpcService(EmployeeService employeeService, ObjectMapper objectMapper) {
+    public EmployeeGrpcService(EmployeeService employeeService, ObjectMapper objectMapper, RbacService rbacService) {
         this.employeeService = employeeService;
         this.objectMapper = objectMapper;
+        this.rbacService = rbacService;
+    }
+
+    @Override
+    public void getPermissions(GetPermissionsRequest request, StreamObserver<PermissionsResponse> responseObserver) {
+        try {
+            PermissionsResponse response = PermissionsResponse.newBuilder()
+                    .addAllPermissionKeys(rbacService.permissionKeysFor(request.getEmployeeId()))
+                    .build();
+            responseObserver.onNext(response);
+            responseObserver.onCompleted();
+        } catch (Exception ex) {
+            responseObserver.onError(io.grpc.Status.INTERNAL.withDescription(ex.getMessage()).asRuntimeException());
+        }
     }
 
     @Override

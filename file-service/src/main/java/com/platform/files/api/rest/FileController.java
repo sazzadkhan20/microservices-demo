@@ -50,11 +50,23 @@ public class FileController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
+    /** Lists files for the tenant (own uploads by default). */
+    @GetMapping
+    public ResponseEntity<?> list(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "false") boolean all) {
+        String tenantId = TenantContext.getTenantId();
+        Long empId = AuthContext.getEmployeeId();
+        return ResponseEntity.ok(service.list(tenantId, empId, page, size, all));
+    }
+
     /** Returns file metadata without downloading the bytes. */
     @GetMapping("/{id}")
     public ResponseEntity<FileMetadataResponse> metadata(@PathVariable Long id) {
         String tenantId = TenantContext.getTenantId();
-        return ResponseEntity.ok(service.getMetadata(tenantId, id));
+        Long empId = AuthContext.getEmployeeId();
+        return ResponseEntity.ok(service.getMetadata(tenantId, id, empId));
     }
 
     /**
@@ -65,8 +77,9 @@ public class FileController {
     @GetMapping("/{id}/download")
     public ResponseEntity<InputStreamResource> download(@PathVariable Long id) throws IOException {
         String tenantId = TenantContext.getTenantId();
-        FileMetadataResponse meta = service.getMetadata(tenantId, id);
-        InputStream stream = service.openDownload(tenantId, id);
+        Long empId = AuthContext.getEmployeeId();
+        FileMetadataResponse meta = service.getMetadata(tenantId, id, empId);
+        InputStream stream = service.openDownload(tenantId, id, empId);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentDisposition(ContentDisposition.attachment()

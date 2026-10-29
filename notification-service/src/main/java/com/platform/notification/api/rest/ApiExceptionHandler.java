@@ -18,7 +18,11 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, String>> conflict(IllegalStateException ex) {
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", ex.getMessage()));
+        String msg = ex.getMessage() == null ? "" : ex.getMessage();
+        if (msg.startsWith("Forbidden")) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", msg));
+        }
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", msg));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

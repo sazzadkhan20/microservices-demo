@@ -1,11 +1,11 @@
 # Infrastructure + optional full stack.
 #
-# Local practice (recommended):
-#   docker compose up -d redis postgres-registry postgres-hrms postgres-payroll
-#   ./gradlew :tenant-registry:bootRun   (and other services)
+# Profiles keep each app independently deployable (large-scale ready):
+#   docker compose up -d                                          # infra only
+#   docker compose --profile apps --profile minio up -d --build   # full stack
+# Or convenience: bash scripts/up-local.sh
 #
-# Full Docker stack:
-#   docker compose --profile apps up -d --build
+# Production: deploy each service Dockerfile separately; Compose is local/dev only.
 
 services:
   redis:
@@ -59,6 +59,21 @@ services:
       timeout: 5s
       retries: 10
 
+  postgres-platform:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5436:5432"
+    volumes:
+      - ./docker/postgres/init-platform-host.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - pg_platform_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   tenant-registry:
     profiles: ["apps"]
     build:
@@ -82,7 +97,21 @@ services:
       PAYROLL_PG_PORT: 5432
       PAYROLL_PG_USER: platform
       PAYROLL_PG_PASSWORD: platform
+      FILES_PG_ADMIN_URL: jdbc:postgresql://postgres-platform:5432/postgres
+      FILES_PG_HOST: postgres-platform
+      FILES_PG_PORT: 5432
+      FILES_PG_USER: platform
+      FILES_PG_PASSWORD: platform
+      NOTIF_PG_ADMIN_URL: jdbc:postgresql://postgres-platform:5432/postgres
+      NOTIF_PG_HOST: postgres-platform
+      NOTIF_PG_PORT: 5432
+      NOTIF_PG_USER: platform
+      NOTIF_PG_PASSWORD: platform
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
       JWT_SECRET: practice-jwt-secret-change-me-32chars-min
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
       postgres-registry:
         condition: service_healthy
@@ -90,7 +119,11 @@ services:
         condition: service_healthy
       postgres-payroll:
         condition: service_healthy
+      postgres-platform:
+        condition: service_healthy
       redis:
+        condition: service_started
+      minio:
         condition: service_started
 
   hrms-service:
@@ -105,6 +138,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
       - tenant-registry
       - redis
@@ -121,6 +155,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
       HRMS_GRPC_ADDRESS: static://hrms-service:9081
     depends_on:
       - tenant-registry
@@ -136,9 +171,16 @@ services:
     ports:
       - "8083:8083"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:h2:file:./data/notifications;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-platform:5432/notif_platform
+      SPRING_DATASOURCE_USER: platform
+      SPRING_DATASOURCE_PASSWORD: platform
+      REDIS_HOST: redis
+      REGISTRY_BASE_URL: http://tenant-registry:8080
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
       - tenant-registry
+      - postgres-platform
+      - redis
 
   file-service:
     profiles: ["apps"]
@@ -148,12 +190,21 @@ services:
     ports:
       - "8084:8084"
     environment:
-      SPRING_DATASOURCE_URL: jdbc:h2:file:./data/file-meta;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE
-      FILE_STORAGE_ROOT: /app/data/files
-    volumes:
-      - file_data:/app/data
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-platform:5432/files_platform
+      SPRING_DATASOURCE_USER: platform
+      SPRING_DATASOURCE_PASSWORD: platform
+      FILE_STORAGE_TYPE: minio
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      REDIS_HOST: redis
+      REGISTRY_BASE_URL: http://tenant-registry:8080
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
       - tenant-registry
+      - postgres-platform
+      - minio
+      - redis
 
   report-service:
     profiles: ["apps"]
@@ -164,15 +215,16 @@ services:
       - "8085:8085"
     environment:
       HRMS_BASE_URL: http://hrms-service:8081
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
       - tenant-registry
       - hrms-service
 
-  # Optional: MinIO object storage (future file-service backend)
-  # Start with: docker compose up -d minio
+  # Object storage for file-service (bucket-per-tenant at provision)
+  # Profile minio — started by scripts/up-local.sh with apps
   minio:
     image: minio/minio
-    profiles: ["minio"]
+    profiles: ["minio", "apps"]
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -182,6 +234,11 @@ services:
     command: server /data --console-address ":9001"
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   api-gateway:
     profiles: ["apps"]
@@ -197,7 +254,10 @@ services:
       NOTIF_URI: http://notification-service:8083
       FILES_URI: http://file-service:8084
       REPORTS_URI: http://report-service:8085
+      DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-true}
+      DEMO_AUTH_KEY: ${DEMO_AUTH_KEY:-local-service-key-change-me}
       JWT_SECRET: practice-jwt-secret-change-me-32chars-min
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
       - tenant-registry
       - hrms-service
@@ -206,9 +266,25 @@ services:
       - file-service
       - report-service
 
+  qii-frontend:
+    profiles: ["apps"]
+    build:
+      context: ./frontend/qii-hrms
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      TENANT_ID: qii_creative
+      GATEWAY_URL: http://api-gateway:8090
+      DEMO_AUTH_KEY: ${DEMO_AUTH_KEY:-local-service-key-change-me}
+      COOKIE_NAME: qii_session
+      NODE_ENV: production
+    depends_on:
+      - api-gateway
+
 volumes:
   pg_registry_data:
   pg_hrms_data:
   pg_payroll_data:
-  file_data:
+  pg_platform_data:
   minio_data:

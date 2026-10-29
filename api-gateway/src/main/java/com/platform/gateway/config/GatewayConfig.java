@@ -11,6 +11,11 @@ public class GatewayConfig {
 
     @Bean
     public JwtSupport jwtSupport(GatewayProperties properties) {
+        String serviceKey = properties.getSecurity().getServiceKey();
+        if (serviceKey == null || serviceKey.isBlank()) {
+            throw new IllegalStateException(
+                    "platform.security.service-key (PLATFORM_SERVICE_KEY) must be set: downstream services require it");
+        }
         return new JwtSupport(properties.getJwt().getSecret());
     }
 }

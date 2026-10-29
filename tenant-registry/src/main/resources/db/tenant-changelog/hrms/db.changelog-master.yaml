@@ -12,4 +12,8 @@ databaseChangeLog:
       file: db/tenant-changelog/hrms/changes/005-qii-product-core.yaml
   - include:
       file: db/tenant-changelog/hrms/changes/006-attendance-capture.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/007-attendance-correction.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/008-reporting-line-history.yaml
 

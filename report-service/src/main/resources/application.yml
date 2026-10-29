@@ -5,8 +5,14 @@ spring:
   application:
     name: report-service
 
+platform:
+  security:
+    # Requests must carry X-Service-Key = this value (stamped by the gateway).
+    require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
+    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+
 report:
-  hrms-base-url: ${HRMS_BASE_URL:}
+  hrms-base-url: ${HRMS_BASE_URL:http://127.0.0.1:8081}
 
 springdoc:
   swagger-ui:

@@ -16,23 +16,25 @@ public record CalculatePayrollRequest(
         /** Optional unpaid/absence days to cover via absenceCoverOrder. */
         BigDecimal absenceDays,
         /** Optional leave balances by type code for cover-order consumption. */
-        Map<String, BigDecimal> leaveBalances
+        Map<String, BigDecimal> leaveBalances,
+        /**
+         * When true (default), regularHours/absenceDays are taken from HRMS attendance for the
+         * period when attendance rows exist. Explicit non-null hours still win when this is false.
+         */
+        Boolean useHrmsAttendance
 ) {
     public CalculatePayrollRequest {
-        if (regularHours == null) {
-            regularHours = BigDecimal.ZERO;
-        }
         if (overtimeHours == null) {
             overtimeHours = BigDecimal.ZERO;
         }
         if (weekendHours == null) {
             weekendHours = BigDecimal.ZERO;
         }
-        if (absenceDays == null) {
-            absenceDays = BigDecimal.ZERO;
-        }
         if (leaveBalances == null) {
             leaveBalances = Map.of();
+        }
+        if (useHrmsAttendance == null) {
+            useHrmsAttendance = Boolean.TRUE;
         }
     }
 }

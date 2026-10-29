@@ -74,6 +74,9 @@ public class PlatformProperties {
     public static class Provision {
         private DbTarget hrms = new DbTarget();
         private DbTarget payroll = new DbTarget();
+        private DbTarget files = new DbTarget();
+        private DbTarget notification = new DbTarget();
+        private Minio minio = new Minio();
 
         public DbTarget getHrms() {
             return hrms;
@@ -89,6 +92,69 @@ public class PlatformProperties {
 
         public void setPayroll(DbTarget payroll) {
             this.payroll = payroll;
+        }
+
+        public DbTarget getFiles() {
+            return files;
+        }
+
+        public void setFiles(DbTarget files) {
+            this.files = files;
+        }
+
+        public DbTarget getNotification() {
+            return notification;
+        }
+
+        public void setNotification(DbTarget notification) {
+            this.notification = notification;
+        }
+
+        public Minio getMinio() {
+            return minio;
+        }
+
+        public void setMinio(Minio minio) {
+            this.minio = minio;
+        }
+    }
+
+    public static class Minio {
+        private String endpoint = "http://127.0.0.1:9000";
+        private String accessKey = "minioadmin";
+        private String secretKey = "minioadmin";
+        private boolean enabled = true;
+
+        public String getEndpoint() {
+            return endpoint;
+        }
+
+        public void setEndpoint(String endpoint) {
+            this.endpoint = endpoint;
+        }
+
+        public String getAccessKey() {
+            return accessKey;
+        }
+
+        public void setAccessKey(String accessKey) {
+            this.accessKey = accessKey;
+        }
+
+        public String getSecretKey() {
+            return secretKey;
+        }
+
+        public void setSecretKey(String secretKey) {
+            this.secretKey = secretKey;
+        }
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
         }
     }
 

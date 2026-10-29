@@ -2,6 +2,8 @@ package com.platform.hrms.domain;
 
 import jakarta.persistence.*;
 import java.math.BigDecimal;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "work_schedule")
@@ -19,7 +21,8 @@ public class WorkSchedule {
     @Column(name = "mode", nullable = false, length = 16)
     private String mode = "FIXED";
 
-    @Column(name = "working_days", nullable = false, columnDefinition = "JSONB")
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "working_days", nullable = false, columnDefinition = "jsonb")
     private String workingDays;
 
     @Column(name = "start_time", length = 8)

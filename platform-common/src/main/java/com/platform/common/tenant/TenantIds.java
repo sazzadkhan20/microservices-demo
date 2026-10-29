@@ -40,4 +40,17 @@ public final class TenantIds {
     public static String payrollDbName(String tenantId) {
         return "payroll_" + normalize(tenantId);
     }
+
+    public static String filesDbName(String tenantId) {
+        return "files_" + normalize(tenantId);
+    }
+
+    public static String notificationDbName(String tenantId) {
+        return "notif_" + normalize(tenantId);
+    }
+
+    /** MinIO bucket name — lowercase, DNS-safe (tenant id already normalized). */
+    public static String filesBucket(String tenantId) {
+        return "t-" + normalize(tenantId);
+    }
 }

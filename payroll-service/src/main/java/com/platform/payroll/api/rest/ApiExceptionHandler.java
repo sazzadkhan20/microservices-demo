@@ -30,6 +30,12 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(Map.of("error", msg));
     }
 
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<Map<String, String>> status(org.springframework.web.server.ResponseStatusException ex) {
+        String reason = ex.getReason() == null ? ex.getStatusCode().toString() : ex.getReason();
+        return ResponseEntity.status(ex.getStatusCode()).body(Map.of("error", reason));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> generic(Exception ex) {
         Throwable root = ex;

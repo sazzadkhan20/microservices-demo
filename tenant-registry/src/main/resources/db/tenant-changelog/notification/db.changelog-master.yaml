@@ -1,0 +1,3 @@
+databaseChangeLog:
+  - include:
+      file: db/tenant-changelog/notification/changes/001-notifications.yaml

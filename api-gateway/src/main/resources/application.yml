@@ -115,24 +115,28 @@ spring:
 platform:
   jwt:
     secret: ${JWT_SECRET:practice-jwt-secret-change-me-32chars-min}
-  # JWT not required for these (token issue + swagger assets + provision practice)
+  security:
+    # Stamped by the gateway as X-Service-Key on every proxied request; services reject requests without it.
+    # Clients can never set it (gateway strips and overwrites).
+    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+  # Account picker (POST /api/registry/token, GET /hrms/api/auth/accounts) is NOT open:
+  # callers must send X-Demo-Auth-Key (the Next.js BFF does, server-side). Set enabled=false to disable entirely.
+  demo-auth:
+    enabled: ${DEMO_AUTH_ENABLED:true}
+    key: ${DEMO_AUTH_KEY:${PLATFORM_SERVICE_KEY:local-service-key-change-me}}
+  # JWT not required for these (swagger assets + OpenAPI JSON + health). No service key is forwarded.
   public-paths:
     - /actuator/**
     - /swagger-ui/**
     - /swagger-ui.html
+    - /v3/api-docs
     - /v3/api-docs/**
     - /webjars/**
-    - /docs/**
-    # Account-picker token + health only (provision/tenants/upgrade require admin key + JWT path)
-    - /api/registry/token
+    # OpenAPI JSON per service only (not arbitrary /docs/** proxying)
+    - /docs/*/v3/api-docs
+    - /docs/*/v3/api-docs/**
     - /api/registry/health-info
-    - /registry/token
     - /registry/health-info
-    # Account picker before session JWT (pre- and post-RewritePath forms)
-    - /hrms/api/auth/accounts
-    - /hrms/api/auth/accounts/**
-    - /api/auth/accounts
-    - /api/auth/accounts/**
 
 springdoc:
   api-docs:

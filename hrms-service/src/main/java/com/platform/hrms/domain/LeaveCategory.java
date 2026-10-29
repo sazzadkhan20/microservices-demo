@@ -3,6 +3,8 @@ package com.platform.hrms.domain;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "leave_category")
@@ -47,7 +49,8 @@ public class LeaveCategory {
     @Column(name = "negative_cap", precision = 10, scale = 2)
     private BigDecimal negativeCap;
 
-    @Column(name = "approval_chain", columnDefinition = "JSONB")
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "approval_chain", columnDefinition = "jsonb")
     private String approvalChain;
 
     @Column(name = "active", nullable = false)

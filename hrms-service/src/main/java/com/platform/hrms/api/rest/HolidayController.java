@@ -74,4 +74,52 @@ public class HolidayController {
         h.setOptionalFlag(opt instanceof Boolean b && b);
         return holidayRepository.save(h);
     }
+
+    @PutMapping("/{id}")
+    @RequiresPermission(feature = "org", action = "manage")
+    @Operation(summary = "Update holiday")
+    public Holiday update(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        Holiday h = holidayRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Holiday not found: " + id));
+        Object loc = body.get("locationId");
+        if (loc != null && !String.valueOf(loc).isBlank()) {
+            h.setLocationId(Long.valueOf(String.valueOf(loc)));
+        }
+        Object name = body.get("name");
+        if (name != null && !String.valueOf(name).isBlank()) {
+            h.setName(String.valueOf(name).trim());
+        }
+        Object startObj = body.get("startDate") != null ? body.get("startDate") : body.get("date");
+        if (startObj != null && !String.valueOf(startObj).isBlank()) {
+            h.setStartDate(LocalDate.parse(String.valueOf(startObj)));
+        }
+        Object endObj = body.get("endDate");
+        if (endObj != null && !String.valueOf(endObj).isBlank()) {
+            h.setEndDate(LocalDate.parse(String.valueOf(endObj)));
+        } else if (startObj != null && h.getEndDate().isBefore(h.getStartDate())) {
+            h.setEndDate(h.getStartDate());
+        }
+        if (h.getEndDate().isBefore(h.getStartDate())) {
+            throw new IllegalArgumentException("endDate must not be before startDate");
+        }
+        Object type = body.get("holidayType") != null ? body.get("holidayType") : body.get("type");
+        if (type != null && !String.valueOf(type).isBlank()) {
+            h.setHolidayType(String.valueOf(type).trim());
+        }
+        if (body.get("optionalFlag") instanceof Boolean b) {
+            h.setOptionalFlag(b);
+        }
+        return holidayRepository.save(h);
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @RequiresPermission(feature = "org", action = "manage")
+    @Operation(summary = "Delete holiday")
+    public void delete(@PathVariable Long id) {
+        if (!holidayRepository.existsById(id)) {
+            throw new IllegalArgumentException("Holiday not found: " + id);
+        }
+        holidayRepository.deleteById(id);
+    }
 }

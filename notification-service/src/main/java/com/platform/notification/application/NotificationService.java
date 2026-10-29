@@ -63,17 +63,22 @@ public class NotificationService {
     }
 
     /**
-     * Marks a notification as read. Returns the updated response.
+     * Marks a notification as read for the owning employee only.
      *
-     * @throws IllegalArgumentException if the notification is not found for the tenant
+     * @throws IllegalArgumentException if not found for tenant
+     * @throws SecurityException if the notification belongs to another employee
      */
-    public NotificationResponse markRead(String tenantId, Long id) {
+    public NotificationResponse markReadForEmployee(String tenantId, Long id, Long employeeId) {
         Notification n = repository.findByIdAndTenantId(id, tenantId)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Notification not found: " + id));
+        if (!employeeId.equals(n.getEmployeeId())) {
+            throw new IllegalStateException("Forbidden: notification belongs to another employee");
+        }
         n.setReadFlag(true);
         return toResponse(repository.save(n));
     }
+
 
     // --- mapping ---
 

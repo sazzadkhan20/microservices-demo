@@ -37,11 +37,13 @@ public class LeaveApplicationController {
 
     @GetMapping
     @RequiresPermission(feature = "leave", action = "view")
-    @Operation(summary = "List leave applications (paginated / searchable / filterable)")
+    @Operation(summary = "List leave applications (paginated / searchable / filterable)",
+            description = "Rows are limited by the caller's leave:view data scope: OWN = own, "
+                    + "TEAM = self + direct reports, ALL = everyone.")
     public PageResponse<LeaveApplicationResponse> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
         return DynamicListSupport.page(
-                leaveApplicationService.listAll(),
+                leaveApplicationService.listForCaller(),
                 query,
                 a -> DynamicListSupport.containsIgnoreCase(a.leaveTypeCode(), query.q())
                         || DynamicListSupport.containsIgnoreCase(a.reason(), query.q())
@@ -58,7 +60,7 @@ public class LeaveApplicationController {
     @RequiresPermission(feature = "leave", action = "view")
     @Operation(summary = "Get one leave application + approval steps")
     public LeaveApplicationResponse get(@PathVariable Long id) {
-        return leaveApplicationService.get(id);
+        return leaveApplicationService.getForCaller(id);
     }
 
     @PostMapping
@@ -80,17 +82,26 @@ public class LeaveApplicationController {
 
     @PostMapping("/{id}/approve")
     @RequiresPermission(feature = "leave", action = "approve")
-    @Operation(summary = "Approve current step")
+    @Operation(summary = "Approve current step",
+            description = "Approver = authenticated employee; approverEmployeeId in the body is ignored.")
     public LeaveApplicationResponse approve(@PathVariable Long id,
-                                            @Valid @RequestBody LeaveDecisionRequest request) {
+                                            @Valid @RequestBody(required = false) LeaveDecisionRequest request) {
         return leaveApplicationService.approve(id, request);
+    }
+
+    @PostMapping("/{id}/withdraw")
+    @RequiresPermission(feature = "leave", action = "request")
+    @Operation(summary = "Withdraw a pending leave request (owner or leave:manage)")
+    public LeaveApplicationResponse withdraw(@PathVariable Long id) {
+        return leaveApplicationService.withdraw(id);
     }
 
     @PostMapping("/{id}/reject")
     @RequiresPermission(feature = "leave", action = "approve")
-    @Operation(summary = "Reject leave")
+    @Operation(summary = "Reject leave",
+            description = "Approver = authenticated employee; approverEmployeeId in the body is ignored.")
     public LeaveApplicationResponse reject(@PathVariable Long id,
-                                           @Valid @RequestBody LeaveDecisionRequest request) {
+                                           @Valid @RequestBody(required = false) LeaveDecisionRequest request) {
         return leaveApplicationService.reject(id, request);
     }
 }

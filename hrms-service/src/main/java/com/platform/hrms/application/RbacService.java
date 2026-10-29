@@ -90,20 +90,34 @@ public class RbacService {
                 || keys.contains((feature + ":*").toLowerCase(Locale.ROOT));
     }
 
+    /**
+     * Widest data scope ({@code ALL} &gt; {@code TEAM} &gt; {@code OWN} &gt; {@code NONE}) the employee holds for
+     * feature:action across all their roles. Honours the same synonyms as {@link #hasPermission}:
+     * {@code view}↔{@code read}, {@code feature:*} and {@code *:*} wildcard rows, and the
+     * superadmin/admin role shortcut (always {@code ALL}).
+     */
     @Transactional(readOnly = true)
     public String widestScope(Long employeeId, String feature, String action) {
-        if (hasPermission(employeeId, feature, action) && permissionKeysFor(employeeId).contains("*:*")) {
-            return "ALL";
-        }
         List<Long> roleIds = userRoleRepository.findByEmployeeId(employeeId).stream()
                 .map(AppUserRole::getRoleId).toList();
-        AppPermission perm = permissionRepository.findByFeatureAndAction(feature, action).orElse(null);
-        if (perm == null || roleIds.isEmpty()) {
+        if (roleIds.isEmpty()) {
             return "NONE";
         }
+        for (String code : roleCodesFor(employeeId)) {
+            if ("superadmin".equalsIgnoreCase(code) || "admin".equalsIgnoreCase(code)) {
+                return "ALL";
+            }
+        }
+        List<AppRolePermission> rps = rolePermissionRepository.findByRoleIdIn(roleIds);
+        Set<Long> permIds = rps.stream().map(AppRolePermission::getPermissionId).collect(Collectors.toSet());
+        java.util.Map<Long, AppPermission> perms = new java.util.HashMap<>();
+        for (AppPermission p : permissionRepository.findAllById(permIds)) {
+            perms.put(p.getId(), p);
+        }
         String widest = "NONE";
-        for (AppRolePermission rp : rolePermissionRepository.findByRoleIdIn(roleIds)) {
-            if (!rp.getPermissionId().equals(perm.getId())) {
+        for (AppRolePermission rp : rps) {
+            AppPermission p = perms.get(rp.getPermissionId());
+            if (p == null || !permissionMatches(p, feature, action)) {
                 continue;
             }
             String s = rp.getDataScope() == null ? "OWN" : rp.getDataScope().toUpperCase(Locale.ROOT);
@@ -112,6 +126,23 @@ public class RbacService {
             else if ("OWN".equals(s) && "NONE".equals(widest)) widest = "OWN";
         }
         return widest;
+    }
+
+    private static boolean permissionMatches(AppPermission p, String feature, String action) {
+        String pf = p.getFeature() == null ? "" : p.getFeature().toLowerCase(Locale.ROOT);
+        String pa = p.getAction() == null ? "" : p.getAction().toLowerCase(Locale.ROOT);
+        String f = feature.toLowerCase(Locale.ROOT);
+        String a = action.toLowerCase(Locale.ROOT);
+        if ("*".equals(pf) && "*".equals(pa)) {
+            return true;
+        }
+        if (!pf.equals(f)) {
+            return false;
+        }
+        if ("*".equals(pa) || pa.equals(a)) {
+            return true;
+        }
+        return ("view".equals(a) && "read".equals(pa)) || ("read".equals(a) && "view".equals(pa));
     }
 
     /** Replace all roles for an employee with the given role codes (onboarding / role assign). */

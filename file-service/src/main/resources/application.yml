@@ -5,30 +5,48 @@ spring:
   application:
     name: file-service
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:h2:file:./data/file-meta;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE}
-    driver-class-name: org.h2.Driver
-    username: sa
-    password: ''
+    # Bootstrap placeholder — real connections are tenant-routed when routing is enabled.
+    # Local default: shared Postgres platform DB with tenant_id column; provision writes files_<tenant> routing.
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:5436/files_platform}
+    driver-class-name: org.postgresql.Driver
+    username: ${SPRING_DATASOURCE_USER:platform}
+    password: ${SPRING_DATASOURCE_PASSWORD:platform}
   jpa:
     open-in-view: false
     hibernate:
       ddl-auto: update
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.H2Dialect
+        dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc:
           time_zone: UTC
-  h2:
-    console:
-      enabled: false
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
   servlet:
     multipart:
       max-file-size: 10MB
       max-request-size: 12MB
 
+platform:
+  security:
+    # Requests must carry X-Service-Key = this value (stamped by the gateway).
+    require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
+    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+
 file:
   storage:
+    type: ${FILE_STORAGE_TYPE:minio}
     root: ${FILE_STORAGE_ROOT:./data/files}
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9000}
+    access-key: ${MINIO_ACCESS_KEY:minioadmin}
+    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  registry:
+    base-url: ${REGISTRY_BASE_URL:http://127.0.0.1:8080}
+    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+  service-name: file
 
 springdoc:
   swagger-ui:

@@ -1,0 +1,86 @@
+{
+  "generatedAt": "2026-10-29T10:56:21.558Z",
+  "count": 7,
+  "findings": [
+    {
+      "sev": "Critical",
+      "area": "RBAC",
+      "id": "IDOR-LEAVE-BAL",
+      "title": "Employee can read SUPERADMIN leave balances",
+      "evidence": {
+        "status": 200,
+        "body": "[{\"id\":34,\"employeeId\":1,\"leaveTypeCode\":\"CASUAL\",\"year\":2026,\"balanceDays\":10.00,\"updatedAt\":1793270285.565653000},{\"id\":35,\"employeeId\":1,\"leaveTypeCode\":\"ANNUAL\",\"year\":2026,\"balanceDays\":20.00,\"updatedAt\":1793270285.565653000},{\"id\":36,"
+      },
+      "impact": "PII / HR data leak"
+    },
+    {
+      "sev": "Critical",
+      "area": "RBAC",
+      "id": "IDOR-SALARY",
+      "title": "Employee can read another person's baseSalary",
+      "evidence": {
+        "status": 200,
+        "salary": 150000,
+        "name": "Asman Rahman"
+      },
+      "impact": "Compensation leak"
+    },
+    {
+      "sev": "Major",
+      "area": "Employees",
+      "id": "DUP-EMAIL",
+      "title": "Duplicate work email allowed",
+      "evidence": {
+        "email": "qa.bad.1793271374213@qiicreative.local",
+        "id1": 16,
+        "id2": 17
+      },
+      "impact": "Identity integrity broken"
+    },
+    {
+      "sev": "Major",
+      "area": "Leave",
+      "id": "LEAVE-NO-TYPE",
+      "title": "Leave request accepted without type/category",
+      "evidence": {
+        "status": 200
+      },
+      "impact": "Policy engine bypass"
+    },
+    {
+      "sev": "Info",
+      "area": "API",
+      "id": "PAGE-INDEX",
+      "title": "Observed page indexing behavior",
+      "evidence": {
+        "page1": 200,
+        "page0": 200,
+        "p1total": 1,
+        "p0total": 17,
+        "p0n": 2
+      },
+      "impact": "Inconsistent page=0 vs page=1 across services breaks FE"
+    },
+    {
+      "sev": "Major",
+      "area": "MultiTenant",
+      "id": "TECHSHOP-DOWN",
+      "title": "TechShop tenant token failed",
+      "evidence": {
+        "status": 400,
+        "body": "{\"error\":\"Unknown or unprovisioned tenant: techshop\"}"
+      },
+      "impact": "Only Qii pack may work — reusability claim weak"
+    },
+    {
+      "sev": "Critical",
+      "area": "Frontend",
+      "id": "FE-PROXY-SALARY",
+      "title": "BFF proxies salary of other employee to low-privilege session",
+      "evidence": {
+        "salary": 150000
+      },
+      "impact": "UI may hide but API still leaks"
+    }
+  ]
+}

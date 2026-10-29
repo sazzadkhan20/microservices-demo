@@ -1,3 +1,5 @@
 databaseChangeLog:
   - include:
       file: db/tenant-changelog/payroll/changes/001-core-schema.yaml
+  - include:
+      file: db/tenant-changelog/payroll/changes/002-salary-history.yaml

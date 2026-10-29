@@ -7,4 +7,5 @@ import java.util.List;
 public interface AppUserRoleRepository extends JpaRepository<AppUserRole, Long> {
     List<AppUserRole> findByEmployeeId(Long employeeId);
     void deleteByEmployeeId(Long employeeId);
+    boolean existsByRoleId(Long roleId);
 }

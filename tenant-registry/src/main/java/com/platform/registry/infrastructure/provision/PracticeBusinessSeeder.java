@@ -168,12 +168,108 @@ public class PracticeBusinessSeeder {
                         SELECT id, 'ANNUAL', EXTRACT(YEAR FROM CURRENT_DATE)::int, 15.00, NOW()
                         FROM employee
                         """);
+
+                // RBAC: clearLeaveAndOrg removes app_user_role — re-bind system roles (permissions already migrated).
+                ensureRetailRbacRoles(st);
+                st.executeUpdate("""
+                        INSERT INTO app_user_role (employee_id, role_id)
+                        SELECT e.id, r.id FROM employee e
+                        JOIN app_role r ON r.code = CASE e.employee_code
+                          WHEN 'R-2001' THEN 'HR'
+                          WHEN 'R-2002' THEN 'MANAGER'
+                          ELSE 'EMPLOYEE'
+                        END
+                        """);
             }
             conn.commit();
             logSeededUsers(conn, "TechShop");
         } catch (Exception e) {
             throw new IllegalStateException("Failed to seed TechShop HRMS: " + e.getMessage(), e);
         }
+    }
+
+    /** Ensures SUPERADMIN/ADMIN/HR/MANAGER/EMPLOYEE exist with a usable permission matrix. */
+    static void ensureRetailRbacRoles(Statement st) throws Exception {
+        st.executeUpdate("""
+                INSERT INTO app_role (code, name, description, system_role, active)
+                SELECT v.code, v.name, v.description, TRUE, TRUE
+                FROM (VALUES
+                  ('SUPERADMIN', 'Super Admin', 'Full access'),
+                  ('ADMIN', 'Admin', 'Company admin'),
+                  ('HR', 'HR', 'Human resources'),
+                  ('MANAGER', 'Manager', 'Team manager'),
+                  ('EMPLOYEE', 'Employee', 'Standard employee')
+                ) AS v(code, name, description)
+                WHERE NOT EXISTS (SELECT 1 FROM app_role r WHERE r.code = v.code)
+                """);
+        st.executeUpdate("""
+                INSERT INTO app_permission (feature, action, description)
+                SELECT v.feature, v.action, v.description
+                FROM (VALUES
+                  ('employees','view','View employees'),
+                  ('employees','create','Create employees'),
+                  ('employees','edit','Edit employees'),
+                  ('attendance','view','View attendance'),
+                  ('attendance','checkin','Check in'),
+                  ('attendance','correct','Correct attendance'),
+                  ('leave','view','View leave'),
+                  ('leave','request','Request leave'),
+                  ('leave','approve','Approve leave'),
+                  ('leave','manage','Manage leave'),
+                  ('roles','view','View roles'),
+                  ('roles','manage','Manage roles'),
+                  ('payroll','view','View payroll'),
+                  ('payroll','run','Run payroll'),
+                  ('reports','view','View reports'),
+                  ('reports','export','Export reports'),
+                  ('notifications','view','View notifications'),
+                  ('settings','manage','Manage settings'),
+                  ('org','view','View org'),
+                  ('org','manage','Manage org')
+                ) AS v(feature, action, description)
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM app_permission p WHERE p.feature = v.feature AND p.action = v.action
+                )
+                """);
+        st.executeUpdate("""
+                INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+                SELECT r.id, p.id, 'ALL'
+                FROM app_role r CROSS JOIN app_permission p
+                WHERE r.code IN ('SUPERADMIN','ADMIN','HR')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM app_role_permission rp
+                    WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                  )
+                """);
+        st.executeUpdate("""
+                INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+                SELECT r.id, p.id, 'TEAM'
+                FROM app_role r CROSS JOIN app_permission p
+                WHERE r.code = 'MANAGER'
+                  AND p.feature IN ('employees','attendance','leave','org','reports','notifications')
+                  AND p.action IN ('view','approve','correct','checkin','request')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM app_role_permission rp
+                    WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                  )
+                """);
+        st.executeUpdate("""
+                INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+                SELECT r.id, p.id, 'OWN'
+                FROM app_role r CROSS JOIN app_permission p
+                WHERE r.code = 'EMPLOYEE'
+                  AND (
+                    (p.feature = 'employees' AND p.action = 'view')
+                    OR (p.feature = 'attendance' AND p.action IN ('view','checkin'))
+                    OR (p.feature = 'leave' AND p.action IN ('view','request'))
+                    OR (p.feature = 'notifications' AND p.action = 'view')
+                    OR (p.feature = 'payroll' AND p.action = 'view')
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM app_role_permission rp
+                    WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                  )
+                """);
     }
 
     static void clearLeaveAndOrg(Statement st) throws Exception {

@@ -64,6 +64,13 @@ public class EmployeeController {
         return employeeService.get(id);
     }
 
+    @GetMapping("/{id}/reporting-line")
+    @RequiresPermission(feature = "employees", action = "view")
+    @Operation(summary = "Reporting line history (manager changes)")
+    public List<Map<String, Object>> reportingLine(@PathVariable Long id) {
+        return employeeService.reportingLine(id);
+    }
+
     @PostMapping("/{id}/roles")
     @RequiresPermission(feature = "employees", action = "edit")
     @Operation(summary = "Replace employee role assignments")

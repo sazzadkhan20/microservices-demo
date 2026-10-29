@@ -60,13 +60,11 @@ public class LeaveFacadeController {
 
     @GetMapping("/employee/{id}")
     @RequiresPermission(feature = "leave", action = "view")
-    @Operation(summary = "Leave applications for one employee")
+    @Operation(summary = "Leave applications for one employee (scoped)")
     public PageResponse<LeaveApplicationResponse> forEmployee(@PathVariable Long id,
                                                               @RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
-        var all = applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(id).stream()
-                .map(a -> leaveApplicationService.get(a.getId()))
-                .toList();
+        var all = leaveApplicationService.listForEmployee(id);
         return DynamicListSupport.page(
                 all,
                 query,
@@ -81,7 +79,10 @@ public class LeaveFacadeController {
     @Operation(summary = "Apply for leave as current employee")
     public LeaveApplicationResponse request(@RequestBody Map<String, Object> body) {
         Long empId = AuthContext.requireEmployeeId();
-        String type = str(body, "leaveTypeCode", str(body, "type", str(body, "leaveType", "CASUAL")));
+        String type = str(body, "leaveTypeCode", str(body, "type", str(body, "leaveType", null)));
+        if (type == null || type.isBlank()) {
+            throw new IllegalArgumentException("leaveTypeCode is required");
+        }
         LocalDate start = LocalDate.parse(str(body, "startDate", str(body, "from", null)));
         LocalDate end = LocalDate.parse(str(body, "endDate", str(body, "to", start.toString())));
         String reason = str(body, "reason", str(body, "comment", ""));

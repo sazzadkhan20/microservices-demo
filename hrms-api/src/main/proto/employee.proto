@@ -15,6 +15,9 @@ package hrms;
 service EmployeeService {
   // Returns one employee from the tenant-routed HRMS database.
   rpc GetEmployee (GetEmployeeRequest) returns (EmployeeResponse);
+
+  // RBAC lookup so other services (Payroll) can enforce permissions without sharing the HRMS DB.
+  rpc GetPermissions (GetPermissionsRequest) returns (PermissionsResponse);
 }
 
 message GetEmployeeRequest {
@@ -30,4 +33,14 @@ message EmployeeResponse {
   string hourly_rate = 6;
   string custom_fields_json = 7; // JSON object as string
   bool active = 8;
+}
+
+message GetPermissionsRequest {
+  int64 employee_id = 1;
+}
+
+// Effective permission keys ("feature:action", lower-case; "*:*" = superadmin).
+// Includes the :view <-> :read aliases HRMS applies in RbacService.
+message PermissionsResponse {
+  repeated string permission_keys = 1;
 }

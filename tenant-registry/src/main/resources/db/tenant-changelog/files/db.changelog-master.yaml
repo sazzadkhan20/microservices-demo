@@ -1,0 +1,3 @@
+databaseChangeLog:
+  - include:
+      file: db/tenant-changelog/files/changes/001-file-object.yaml

@@ -1,12 +1,14 @@
 package com.platform.hrms.api.dto;
 
-import jakarta.validation.constraints.NotNull;
-
 /**
- * Leave decision must be made by a real employee (manager / HR user).
+ * Leave decision payload.
+ *
+ * <p><b>{@code approverEmployeeId} is deprecated and IGNORED</b>: the approver is always the
+ * authenticated employee (JWT → AuthContext). It is kept only so older clients that still send it
+ * keep deserialising; a spoofed value cannot change who is recorded as approver.
  */
 public record LeaveDecisionRequest(
-        @NotNull Long approverEmployeeId,
+        @Deprecated Long approverEmployeeId,
         String comment,
         Long reliefEmployeeId
 ) {

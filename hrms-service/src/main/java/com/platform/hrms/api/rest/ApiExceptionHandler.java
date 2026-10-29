@@ -29,6 +29,13 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", msg));
     }
 
+    /** Race-safe backstop for DB unique indexes (e.g. employee email) → 409 instead of 500. */
+    @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
+    public ResponseEntity<Map<String, String>> integrity(org.springframework.dao.DataIntegrityViolationException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("error", "Duplicate or invalid value violates a database constraint"));
+    }
+
     @ExceptionHandler(SecurityException.class)
     public ResponseEntity<Map<String, String>> forbidden(SecurityException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)

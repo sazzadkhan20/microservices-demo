@@ -3,6 +3,7 @@ package com.platform.report.api.rest;
 import com.platform.common.tenant.TenantContext;
 import com.platform.report.api.dto.AttendanceReportRequest;
 import com.platform.report.application.AttendanceReportService;
+import com.platform.report.security.RequiresPermission;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,6 +34,7 @@ public class ReportController {
      * Response: {@code text/csv} attachment named {@code attendance-YYYY-MM.csv}
      */
     @PostMapping("/attendance/monthly")
+    @RequiresPermission(feature = "reports", action = "view")
     public ResponseEntity<byte[]> attendanceMonthly(
             @Valid @RequestBody AttendanceReportRequest req) {
 
@@ -52,11 +54,9 @@ public class ReportController {
                 .body(bytes);
     }
 
-    /**
-     * Stub endpoint — returns an empty list of past exports.
-     * Expand in a later iteration to list archived report files.
-     */
+    /** Archived exports are not stored yet — empty list is intentional (on-demand only). */
     @GetMapping("/exports")
+    @RequiresPermission(feature = "reports", action = "view")
     public ResponseEntity<List<Map<String, Object>>> listExports() {
         return ResponseEntity.ok(List.of());
     }

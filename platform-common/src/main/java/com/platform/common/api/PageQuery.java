@@ -13,8 +13,11 @@ import java.util.Map;
 public final class PageQuery {
 
     public static final int DEFAULT_SIZE = 20;
-    /** Allow larger pages for directory/export-style screens; still capped for safety. */
-    public static final int MAX_SIZE = 500;
+    /**
+     * Hard cap for every list API (documented in QII_HRMS_PLAN: page size max 100).
+     * Clients needing more rows must page; larger values are silently clamped.
+     */
+    public static final int MAX_SIZE = 100;
 
     private final int page;
     private final int size;

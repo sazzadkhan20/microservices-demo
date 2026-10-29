@@ -5,22 +5,35 @@ spring:
   application:
     name: notification-service
   datasource:
-    url: ${SPRING_DATASOURCE_URL:jdbc:h2:file:./data/notifications;MODE=PostgreSQL;DB_CLOSE_ON_EXIT=FALSE}
-    driver-class-name: org.h2.Driver
-    username: sa
-    password: ''
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://127.0.0.1:5436/notif_platform}
+    driver-class-name: org.postgresql.Driver
+    username: ${SPRING_DATASOURCE_USER:platform}
+    password: ${SPRING_DATASOURCE_PASSWORD:platform}
   jpa:
     open-in-view: false
     hibernate:
       ddl-auto: update
     properties:
       hibernate:
-        dialect: org.hibernate.dialect.H2Dialect
+        dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc:
           time_zone: UTC
-  h2:
-    console:
-      enabled: false
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+
+platform:
+  security:
+    # Requests must carry X-Service-Key = this value (stamped by the gateway or HRMS).
+    require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
+    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+
+notification:
+  registry:
+    base-url: ${REGISTRY_BASE_URL:http://127.0.0.1:8080}
+    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+  service-name: notification
 
 springdoc:
   swagger-ui:

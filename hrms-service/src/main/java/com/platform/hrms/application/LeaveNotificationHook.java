@@ -23,9 +23,13 @@ public class LeaveNotificationHook {
     private final String baseUrl;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
 
+    private final String serviceKey;
+
     public LeaveNotificationHook(
-            @Value("${platform.notification.base-url:http://127.0.0.1:8084}") String baseUrl) {
+            @Value("${platform.notification.base-url:http://127.0.0.1:8083}") String baseUrl,
+            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey) {
         this.baseUrl = baseUrl == null ? "" : baseUrl.trim();
+        this.serviceKey = serviceKey;
     }
 
     public void notifyLeaveDecision(Long employeeId, Long applicationId, String status, String title) {
@@ -39,14 +43,20 @@ public class LeaveNotificationHook {
             return;
         }
         try {
-            HttpRequest req = HttpRequest.newBuilder()
+            String tenant = com.platform.common.tenant.TenantContext.getTenantId() == null
+                    ? "" : com.platform.common.tenant.TenantContext.getTenantId();
+            HttpRequest.Builder b = HttpRequest.newBuilder()
                     .uri(URI.create(baseUrl.replaceAll("/$", "") + "/api/notifications"))
                     .timeout(Duration.ofSeconds(3))
                     .header("Content-Type", "application/json")
-                    .header("X-Tenant-ID", com.platform.common.tenant.TenantContext.getTenantId() == null
-                            ? "" : com.platform.common.tenant.TenantContext.getTenantId())
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
+                    // Trusted service-to-service: service key + recipient identity (controller binds to AuthContext)
+                    .header(com.platform.common.constants.PlatformHeaders.SERVICE_KEY, serviceKey)
+                    .header(com.platform.common.constants.PlatformHeaders.TENANT_ID, tenant)
+                    .POST(HttpRequest.BodyPublishers.ofString(body));
+            if (employeeId != null) {
+                b.header(com.platform.common.constants.PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId));
+            }
+            HttpRequest req = b.build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 300) {
                 log.warn("Leave notification HTTP {}: {}", resp.statusCode(), resp.body());

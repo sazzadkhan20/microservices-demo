@@ -1,6 +1,5 @@
 package com.platform.notification.api.rest;
 
-import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.AuthContext;
 import com.platform.common.tenant.TenantContext;
 import com.platform.notification.api.dto.CreateNotificationRequest;
@@ -14,10 +13,10 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
@@ -32,8 +31,8 @@ public class NotificationController {
     }
 
     /**
-     * Lists notifications for an employee, newest first.
-     * employeeId defaults to X-Employee-ID from the gateway JWT context.
+     * Lists the caller's notifications. Other employees' inboxes require notifications:manage
+     * (not exposed here — always own inbox).
      */
     @GetMapping
     public ResponseEntity<Page<NotificationResponse>> list(
@@ -41,54 +40,63 @@ public class NotificationController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
-        Long resolvedEmployee = resolveEmployee(employeeId);
+        Long self = requireSelf();
+        if (employeeId != null && !employeeId.equals(self)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Forbidden: cannot list another employee's notifications");
+        }
         String tenantId = TenantContext.getTenantId();
-        Page<NotificationResponse> result = service.listForEmployee(tenantId, resolvedEmployee, page, size);
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(service.listForEmployee(tenantId, self, page, size));
     }
 
-    /** Creates a new notification; deduplication is applied when dedupeKey is set. */
+    /**
+     * Creates a notification for the authenticated employee only.
+     * Internal producers (leave hook) should use the same gateway path with the target
+     * employee's JWT/service identity, or a dedicated internal endpoint later.
+     * Body {@code employeeId} is ignored to prevent IDOR writes.
+     */
     @PostMapping
     public ResponseEntity<NotificationResponse> create(
             @Valid @RequestBody CreateNotificationRequest req) {
 
+        Long self = requireSelf();
         String tenantId = TenantContext.getTenantId();
-        NotificationResponse response = service.create(tenantId, req);
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        CreateNotificationRequest bound = new CreateNotificationRequest(
+                self,
+                req.title(),
+                req.body(),
+                req.category(),
+                req.dedupeKey()
+        );
+        return ResponseEntity.status(HttpStatus.CREATED).body(service.create(tenantId, bound));
     }
 
-    /** Marks a notification as read (tenant-scoped for safety). */
+    /** Marks own notification as read. */
     @PostMapping("/{id}/read")
     public ResponseEntity<NotificationResponse> markRead(@PathVariable Long id) {
         String tenantId = TenantContext.getTenantId();
-        return ResponseEntity.ok(service.markRead(tenantId, id));
+        Long self = requireSelf();
+        return ResponseEntity.ok(service.markReadForEmployee(tenantId, id, self));
     }
 
-    /**
-     * Returns the unread notification count for an employee.
-     * employeeId defaults to X-Employee-ID from the gateway JWT context.
-     */
     @GetMapping("/unread-count")
     public ResponseEntity<Map<String, Long>> unreadCount(
             @RequestParam(required = false) Long employeeId) {
 
-        Long resolvedEmployee = resolveEmployee(employeeId);
+        Long self = requireSelf();
+        if (employeeId != null && !employeeId.equals(self)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Forbidden: cannot read another employee's unread count");
+        }
         String tenantId = TenantContext.getTenantId();
-        long count = service.unreadCount(tenantId, resolvedEmployee);
-        return ResponseEntity.ok(Map.of("unreadCount", count));
+        return ResponseEntity.ok(Map.of("unreadCount", service.unreadCount(tenantId, self)));
     }
 
-    // --- helpers ---
-
-    private Long resolveEmployee(Long explicit) {
-        if (explicit != null) {
-            return explicit;
+    private static Long requireSelf() {
+        Long id = AuthContext.getEmployeeId();
+        if (id == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing employee identity");
         }
-        Long fromContext = AuthContext.getEmployeeId();
-        if (fromContext == null) {
-            throw new IllegalArgumentException(
-                    "employeeId query param required when X-Employee-ID header is absent");
-        }
-        return fromContext;
+        return id;
     }
 }

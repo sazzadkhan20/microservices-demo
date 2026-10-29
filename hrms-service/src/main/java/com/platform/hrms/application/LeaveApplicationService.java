@@ -65,6 +65,7 @@ public class LeaveApplicationService {
     private final AuditService auditService;
     private final LeaveTeamClashService teamClashService;
     private final LeaveNotificationHook notificationHook;
+    private final DataScopeService dataScopeService;
 
     public LeaveApplicationService(
             EmployeeRepository employeeRepository,
@@ -82,7 +83,8 @@ public class LeaveApplicationService {
             RbacService rbacService,
             AuditService auditService,
             LeaveTeamClashService teamClashService,
-            LeaveNotificationHook notificationHook) {
+            LeaveNotificationHook notificationHook,
+            DataScopeService dataScopeService) {
         this.employeeRepository = employeeRepository;
         this.designationRepository = designationRepository;
         this.departmentRepository = departmentRepository;
@@ -99,13 +101,62 @@ public class LeaveApplicationService {
         this.auditService = auditService;
         this.teamClashService = teamClashService;
         this.notificationHook = notificationHook;
+        this.dataScopeService = dataScopeService;
     }
 
+    /** Unscoped (internal use only). HTTP callers must use {@link #listForCaller()}. */
     @Transactional(readOnly = true)
     public List<LeaveApplicationResponse> listAll() {
         return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
                 .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
                 .toList();
+    }
+
+    /** leave:view data scope: OWN = own requests, TEAM = self + direct reports, ALL = everyone. */
+    @Transactional(readOnly = true)
+    public List<LeaveApplicationResponse> listForCaller() {
+        DataScopeService.Visibility visible = dataScopeService.visibility(
+                AuthContext.requireEmployeeId(), "leave", "view");
+        return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
+                .filter(a -> visible.allows(a.getEmployeeId()))
+                .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
+                .toList();
+    }
+
+    /** Pending approvals limited to the caller's leave:approve data scope. */
+    @Transactional(readOnly = true)
+    public List<LeaveApplicationResponse> pendingForCaller() {
+        DataScopeService.Visibility visible = dataScopeService.visibility(
+                AuthContext.requireEmployeeId(), "leave", "approve");
+        return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
+                .filter(a -> {
+                    String s = a.getStatus() == null ? "" : a.getStatus().toUpperCase(Locale.ROOT);
+                    return s.contains("PENDING") || "SUBMITTED".equals(s) || "IN_REVIEW".equals(s);
+                })
+                .filter(a -> visible.allows(a.getEmployeeId()))
+                .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
+                .toList();
+    }
+
+    /** Applications of one employee (leave:view scope enforced → 403 when out of scope). */
+    @Transactional(readOnly = true)
+    public List<LeaveApplicationResponse> listForEmployee(Long employeeId) {
+        dataScopeService.requireAccess(AuthContext.requireEmployeeId(), employeeId, "leave", "view");
+        return applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId).stream()
+                .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
+                .toList();
+    }
+
+    /** Single application with leave:view scope enforced (owner of the request is the scope target). */
+    @Transactional(readOnly = true)
+    public LeaveApplicationResponse getForCaller(Long id) {
+        LeaveApplication app = applicationRepository.findById(id).orElse(null);
+        Long actor = AuthContext.requireEmployeeId();
+        if (app == null || !dataScopeService.canAccess(actor, app.getEmployeeId(), "leave", "view")) {
+            // Same answer for "missing" and "not yours" so ids cannot be probed.
+            throw new SecurityException("Forbidden: leave application " + id + " is not visible to you");
+        }
+        return LeaveApplicationResponse.from(app, approvalRepository.findByApplicationIdOrderByStepOrderAsc(id));
     }
 
     @Transactional(readOnly = true)
@@ -311,7 +362,8 @@ public class LeaveApplicationService {
             throw new IllegalStateException("Current step already decided");
         }
 
-        Employee approver = requireActiveApprover(request.approverEmployeeId(), step, app);
+        // BE-03: the approver is ALWAYS the authenticated employee; any approverEmployeeId in the body is ignored.
+        Employee approver = requireActiveApprover(AuthContext.requireEmployeeId(), step, app);
 
         Instant now = Instant.now();
         step.setStatus(LeaveApproval.STATUS_APPROVED);
@@ -348,11 +400,13 @@ public class LeaveApplicationService {
         LeaveApproval step = approvalRepository.findByApplicationIdAndStepOrder(applicationId, Math.max(1, app.getCurrentStep()))
                 .orElse(null);
 
+        // BE-03: approver identity comes from the JWT/AuthContext, never from the request body.
+        Long approverId = AuthContext.requireEmployeeId();
         Employee approver;
         if (step != null && LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
-            approver = requireActiveApprover(request.approverEmployeeId(), step, app);
+            approver = requireActiveApprover(approverId, step, app);
         } else {
-            approver = requireActiveEmployee(request.approverEmployeeId());
+            approver = requireActiveEmployee(approverId);
         }
 
         Instant now = Instant.now();
@@ -373,6 +427,26 @@ public class LeaveApplicationService {
         return get(applicationId);
     }
 
+    @Transactional // requester or leave:manage; pending statuses only
+    public LeaveApplicationResponse withdraw(Long applicationId) {
+        Long actorId = AuthContext.requireEmployeeId();
+        LeaveApplication app = requireApp(applicationId);
+        if (!actorId.equals(app.getEmployeeId()) && !rbacService.hasPermission(actorId, "leave", "manage")) {
+            throw new IllegalStateException("Forbidden: only the requester or leave:manage can withdraw");
+        }
+        String before = app.getStatus();
+        if (!Set.of(LeaveApplication.STATUS_PENDING_APPROVAL, LeaveApplication.STATUS_PENDING_RELIEF,
+                LeaveApplication.STATUS_SUBMITTED).contains(before)) {
+            throw new IllegalStateException("Cannot withdraw status=" + before + " (only pending requests)");
+        }
+        app.setStatus(LeaveApplication.STATUS_WITHDRAWN);
+        app.setUpdatedAt(Instant.now());
+        applicationRepository.save(app);
+        auditService.record(actorId, "WITHDRAW", "LeaveApplication", String.valueOf(applicationId),
+                Map.of("status", before), Map.of("status", LeaveApplication.STATUS_WITHDRAWN));
+        return get(applicationId);
+    }
+
     private void deductIfNeeded(LeaveApplication app) {
         if (app.isBalanceDeducted() || app.getLeaveTypeCode() == null) {
             return;
@@ -390,18 +464,11 @@ public class LeaveApplicationService {
     }
 
     private LeaveType resolveLeaveType(String requestedCode, LeavePolicy policy) {
-        String code = requestedCode;
-        if (code == null || code.isBlank()) {
-            code = policy.getDefaultLeaveTypeCode();
+        // BE-02: the applicant must choose the leave type explicitly — no silent tenant/CASUAL default.
+        if (requestedCode == null || requestedCode.isBlank()) {
+            throw new IllegalArgumentException("leaveTypeCode is required");
         }
-        if (code == null || code.isBlank()) {
-            List<LeaveType> active = leaveTypeRepository.findByActiveTrueOrderBySortOrderAsc();
-            if (active.size() == 1) {
-                return active.getFirst();
-            }
-            throw new IllegalArgumentException("leaveTypeCode is required (tenant has multiple leave types)");
-        }
-        final String resolved = code;
+        final String resolved = requestedCode.trim();
         return leaveTypeRepository.findByCodeAndActiveTrue(resolved)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown or inactive leave type: " + resolved));
     }

@@ -8,6 +8,7 @@ import com.platform.registry.config.PlatformProperties;
 import com.platform.registry.domain.TenantRouting;
 import com.platform.registry.infrastructure.persistence.TenantRoutingRepository;
 import com.platform.registry.infrastructure.provision.ImpitBusinessSeeder;
+import com.platform.registry.infrastructure.provision.MinioBucketProvisioner;
 import com.platform.registry.infrastructure.provision.PostgresDatabaseProvisioner;
 import com.platform.registry.infrastructure.provision.PracticeBusinessSeeder;
 import com.platform.registry.infrastructure.provision.QiiBusinessSeeder;
@@ -39,6 +40,7 @@ public class ProvisioningService {
     private final QiiBusinessSeeder qiiBusinessSeeder;
     private final RoutingCachePublisher cachePublisher;
     private final PlatformProperties properties;
+    private final MinioBucketProvisioner minioBucketProvisioner;
 
     public ProvisioningService(
             TenantRoutingRepository repository,
@@ -47,7 +49,8 @@ public class ProvisioningService {
             ImpitBusinessSeeder impitBusinessSeeder,
             QiiBusinessSeeder qiiBusinessSeeder,
             RoutingCachePublisher cachePublisher,
-            PlatformProperties properties) {
+            PlatformProperties properties,
+            MinioBucketProvisioner minioBucketProvisioner) {
         this.repository = repository;
         this.provisioner = provisioner;
         this.practiceBusinessSeeder = practiceBusinessSeeder;
@@ -55,6 +58,7 @@ public class ProvisioningService {
         this.qiiBusinessSeeder = qiiBusinessSeeder;
         this.cachePublisher = cachePublisher;
         this.properties = properties;
+        this.minioBucketProvisioner = minioBucketProvisioner;
     }
 
     @Transactional
@@ -73,6 +77,11 @@ public class ProvisioningService {
 
         String hrmsJdbc = provisioner.createAndMigrate(hrmsDb, properties.getProvision().getHrms());
         String payrollJdbc = provisioner.createAndMigrate(payrollDb, properties.getProvision().getPayroll());
+        // Files/notifications: shared Postgres DBs (tenant_id column) + MinIO bucket per tenant.
+        // HRMS/Payroll stay database-per-tenant. Both patterns are reusable across businesses.
+        String filesJdbc = provisioner.createAndMigrate("files_platform", properties.getProvision().getFiles());
+        String notifJdbc = provisioner.createAndMigrate("notif_platform", properties.getProvision().getNotification());
+        minioBucketProvisioner.ensureTenantBucket(tenantId);
 
         String pack = request.resolvedBusinessPack();
         String message = seedBusinessPack(pack, hrmsJdbc, payrollJdbc);
@@ -81,11 +90,10 @@ public class ProvisioningService {
                 properties.getProvision().getHrms(), version, now);
         TenantRouting payrollRouting = saveRouting(SERVICE_PAYROLL, tenantId, payrollJdbc,
                 properties.getProvision().getPayroll(), version, now);
-        // Shared platform services (file/notification/report) — registry rows for gateway discovery
-        TenantRouting fileRouting = saveRouting(SERVICE_FILE, tenantId,
-                "jdbc:platform:shared/files", properties.getProvision().getHrms(), version, now);
-        TenantRouting notifRouting = saveRouting(SERVICE_NOTIFICATION, tenantId,
-                "jdbc:platform:shared/notifications", properties.getProvision().getHrms(), version, now);
+        TenantRouting fileRouting = saveRouting(SERVICE_FILE, tenantId, filesJdbc,
+                properties.getProvision().getFiles(), version, now);
+        TenantRouting notifRouting = saveRouting(SERVICE_NOTIFICATION, tenantId, notifJdbc,
+                properties.getProvision().getNotification(), version, now);
         TenantRouting reportRouting = saveRouting(SERVICE_REPORT, tenantId,
                 "jdbc:platform:shared/reports", properties.getProvision().getHrms(), version, now);
 
@@ -95,7 +103,8 @@ public class ProvisioningService {
         cachePublisher.publishRouting(notifRouting);
         cachePublisher.publishRouting(reportRouting);
 
-        log.info("Provisioned tenant {} → {} , {} (pack={})", tenantId, hrmsDb, payrollDb, pack);
+        log.info("Provisioned tenant {} → {} , {} + files/notif platform DBs + MinIO (pack={})",
+                tenantId, hrmsDb, payrollDb, pack);
 
         return new ProvisionResponse(
                 tenantId,
@@ -154,20 +163,56 @@ public class ProvisioningService {
         );
     }
 
-    /** Idempotent registry rows so gateway/ops can discover file/notification/report for a tenant. */
+    @Transactional
+    public Map<String, Object> upgradePayrollSchema(String tenantId) {
+        String normalized = TenantIds.normalize(tenantId);
+        TenantRouting payroll = repository.findByServiceNameAndTenantId(SERVICE_PAYROLL, normalized)
+                .orElseThrow(() -> new IllegalArgumentException("Payroll routing not found for " + normalized));
+        provisioner.migrateExisting(payroll.getJdbcUrl(), properties.getProvision().getPayroll());
+        cachePublisher.publishRouting(payroll);
+        return Map.of(
+                "tenantId", normalized,
+                "jdbcUrl", payroll.getJdbcUrl(),
+                "migrated", true,
+                "message", "Payroll schema upgraded (salary_history and config tables)."
+        );
+    }
+
+    /** Idempotent: ensure shared files/notif Postgres + MinIO bucket + registry rows exist. */
     private void ensureSharedServiceRouting(String tenantId) {
         long version = System.currentTimeMillis();
         Instant now = Instant.now();
-        ensureOneRouting(SERVICE_FILE, tenantId, "jdbc:platform:shared/files", version, now);
-        ensureOneRouting(SERVICE_NOTIFICATION, tenantId, "jdbc:platform:shared/notifications", version, now);
-        ensureOneRouting(SERVICE_REPORT, tenantId, "jdbc:platform:shared/reports", version, now);
+        String filesJdbc = provisioner.createAndMigrate("files_platform", properties.getProvision().getFiles());
+        String notifJdbc = provisioner.createAndMigrate("notif_platform", properties.getProvision().getNotification());
+        minioBucketProvisioner.ensureTenantBucket(tenantId);
+        ensureOneRouting(SERVICE_FILE, tenantId, filesJdbc, properties.getProvision().getFiles(), version, now);
+        ensureOneRouting(SERVICE_NOTIFICATION, tenantId, notifJdbc, properties.getProvision().getNotification(), version, now);
+        ensureOneRouting(SERVICE_REPORT, tenantId, "jdbc:platform:shared/reports",
+                properties.getProvision().getHrms(), version, now);
     }
 
-    private void ensureOneRouting(String service, String tenantId, String jdbc, long version, Instant now) {
-        if (repository.findByServiceNameAndTenantId(service, tenantId).isPresent()) {
+    private void ensureOneRouting(
+            String service,
+            String tenantId,
+            String jdbc,
+            PlatformProperties.DbTarget target,
+            long version,
+            Instant now) {
+        var existing = repository.findByServiceNameAndTenantId(service, tenantId);
+        if (existing.isPresent()) {
+            TenantRouting row = existing.get();
+            if (jdbc != null && !jdbc.equals(row.getJdbcUrl()) && !jdbc.startsWith("jdbc:platform:shared/")) {
+                row.setJdbcUrl(jdbc);
+                row.setUsername(target.getUsername());
+                row.setPassword(target.getPassword());
+                row.setVersion(version);
+                row.setUpdatedAt(now);
+                repository.save(row);
+                cachePublisher.publishRouting(row);
+            }
             return;
         }
-        TenantRouting row = saveRouting(service, tenantId, jdbc, properties.getProvision().getHrms(), version, now);
+        TenantRouting row = saveRouting(service, tenantId, jdbc, target, version, now);
         cachePublisher.publishRouting(row);
     }
 

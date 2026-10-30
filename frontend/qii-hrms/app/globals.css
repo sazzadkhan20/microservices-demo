@@ -731,13 +731,33 @@ textarea {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+.leave-apply {
+  align-items: start;
+}
+.approve-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 @media (max-width: 640px) {
   .g2,
   .g3,
   .g4,
   .form-grid,
-  .kv {
+  .kv,
+  .leave-apply {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .stack-sm {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .stack-sm > * {
+    width: 100%;
+    min-width: 0;
+  }
+  .approve-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
   .cal .d {
     min-height: 52px;

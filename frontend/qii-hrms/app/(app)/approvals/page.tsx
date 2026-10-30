@@ -164,7 +164,7 @@ export default function ApprovalsPage() {
                           </div>
                         </td>
                         <td>
-                          <div className="row" style={{ flexWrap: "nowrap", justifyContent: "flex-end" }}>
+                          <div className="row approve-actions">
                             <button
                               type="button"
                               className="btn sm primary"
@@ -244,7 +244,7 @@ export default function ApprovalsPage() {
                         </td>
                         <td>
                           {isPending ? (
-                            <div className="row" style={{ flexWrap: "nowrap", justifyContent: "flex-end" }}>
+                            <div className="row approve-actions">
                               <button
                                 type="button"
                                 className="btn sm primary"

@@ -12,7 +12,7 @@ import { api, apiFetch, apiFetchPage } from "@/lib/api/client";
 import { useDirectory, useHolidaysForYear } from "@/lib/api/directory";
 import { useLocations, useTeams } from "@/lib/api/lookups";
 import { datesBetween, oneLine } from "@/lib/admin";
-import { fmtDate, fmtDateTime, fmtNumber, fmtRange, humanize, isoDate, todayIso } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtHours, fmtNumber, fmtRange, humanize, isoDate, todayIso } from "@/lib/format";
 import {
   auditRowSchema,
   correctionRowSchema,
@@ -443,8 +443,8 @@ export default function AdminDashboardPage() {
                   {(workHours.data as WorkHoursRow[]).map((r, i) => (
                     <tr key={String(r.employeeId ?? i)}>
                       <td>{r.employeeName ?? dir.nameOf(r.employeeId)}</td>
-                      <td className="n mono small">{fmtNumber(r.totalHours, 1)}</td>
-                      <td className="n mono small">{fmtNumber(r.expectedHours, 1)}</td>
+                      <td className="n mono small">{fmtHours(r.totalHours ?? (r as { logged?: unknown }).logged)}</td>
+                      <td className="n mono small">{fmtHours(r.expectedHours ?? (r as { expected?: unknown }).expected)}</td>
                       <td className="n mono small">{r.attendanceDays ?? "—"}</td>
                     </tr>
                   ))}

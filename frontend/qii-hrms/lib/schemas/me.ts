@@ -8,6 +8,8 @@ export const meSchema = z.object({
   tenantId: z.string().nullable().optional(),
   roles: z.array(z.string()).default([]),
   permissions: z.array(z.string()).default([]),
+  /** feature:action → OWN | TEAM | ALL. Absent on older payloads. */
+  scopes: z.record(z.string(), z.string()).optional(),
   department: z.string().nullable().optional(),
   position: z.string().nullable().optional(),
   phoneNumber: z.string().nullable().optional(),

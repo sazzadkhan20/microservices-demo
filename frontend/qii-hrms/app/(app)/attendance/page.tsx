@@ -14,7 +14,7 @@ import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch, listParams } from "@/lib/api/client";
 import { rowsOf, type Rec } from "@/lib/api/lookups";
 import { buildPunchBody, fmtHoursMinutes, localRangeToIso } from "@/lib/attendance/punch";
-import { fmtDate, fmtDateTime, fmtNumber, fmtTime, isoDate, pick, str, todayIso } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtHours, fmtNumber, fmtTime, isoDate, pick, str, todayIso } from "@/lib/format";
 
 const rowSchema = z.object({ workDate: z.any().optional() }).passthrough();
 type Row = Rec;
@@ -247,7 +247,7 @@ export default function MyAttendancePage() {
         <div className="card stack" style={{ gap: 4 }}>
           <span className="muted small">Today</span>
           <b>
-            {fmtHoursMinutes(t?.workedMinutes)} / {fmtNumber(t?.expectedHours ?? 0)}h expected
+            {fmtHoursMinutes(t?.workedMinutes)} / {fmtHours(t?.expectedHours ?? 0)} expected
           </b>
           <span className="small muted">Logged {fmtHoursMinutes(t?.loggedMinutes)}</span>
         </div>
@@ -255,7 +255,7 @@ export default function MyAttendancePage() {
           <span className="muted small">This week</span>
           <b>
             {fmtHoursMinutes((t?.week as Rec | undefined)?.workedMinutes)} /{" "}
-            {fmtNumber((t?.week as Rec | undefined)?.expectedHours ?? 0)}h
+            {fmtHours((t?.week as Rec | undefined)?.expectedHours ?? 0)}
           </b>
           <span className="small muted">
             Logged {fmtHoursMinutes((t?.week as Rec | undefined)?.loggedMinutes)}
@@ -265,7 +265,7 @@ export default function MyAttendancePage() {
           <span className="muted small">This month</span>
           <b>
             {fmtHoursMinutes((t?.month as Rec | undefined)?.workedMinutes)} /{" "}
-            {fmtNumber((t?.month as Rec | undefined)?.expectedHours ?? 0)}h
+            {fmtHours((t?.month as Rec | undefined)?.expectedHours ?? 0)}
           </b>
           <span className="small muted">
             Logged {fmtHoursMinutes((t?.month as Rec | undefined)?.loggedMinutes)}

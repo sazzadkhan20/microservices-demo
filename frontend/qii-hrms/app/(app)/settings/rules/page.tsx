@@ -7,17 +7,28 @@ import { ErrorNote, Loading } from "@/components/ui/QueryState";
 import { api, apiFetch } from "@/lib/api/client";
 import { humanize, str } from "@/lib/format";
 
-const businessRuleSchema = z
+const ruleEntrySchema = z
   .object({
     id: z.union([z.number(), z.string()]),
     key: z.string().optional(),
-    value: z.unknown(),
-    defaultValue: z.unknown(),
     description: z.string().optional(),
+    value: z.unknown(),
+    default: z.unknown().optional(),
+    defaultValue: z.unknown().optional(),
+    overridden: z.boolean().optional(),
   })
   .passthrough();
-const businessRulesSchema = z.array(businessRuleSchema);
-type BusinessRule = z.infer<typeof businessRuleSchema>;
+
+/** API returns `{ rules: { "BR-01": {...}, ... }, source }` — not a bare array. */
+const businessRulesResponseSchema = z
+  .object({
+    rules: z.record(z.string(), ruleEntrySchema).optional(),
+    source: z.string().optional(),
+  })
+  .passthrough()
+  .or(z.array(ruleEntrySchema));
+
+type BusinessRule = z.infer<typeof ruleEntrySchema>;
 
 function renderValue(v: unknown): string {
   if (v === null || v === undefined) return "—";
@@ -25,11 +36,24 @@ function renderValue(v: unknown): string {
   return String(v);
 }
 
+function toRows(data: z.infer<typeof businessRulesResponseSchema> | undefined): BusinessRule[] {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  const map = data.rules ?? {};
+  return Object.entries(map).map(([key, row]) => ({
+    ...row,
+    id: row.id ?? key,
+    key: row.key ?? key,
+  }));
+}
+
 export default function BusinessRulesPage() {
   const rules = useQuery({
     queryKey: ["business-rules"],
-    queryFn: ({ signal }) => apiFetch(api.hrms("business-rules"), { schema: businessRulesSchema, signal }),
+    queryFn: ({ signal }) => apiFetch(api.hrms("business-rules"), { schema: businessRulesResponseSchema, signal }),
   });
+
+  const rows = toRows(rules.data);
 
   return (
     <div className="stack">
@@ -39,10 +63,10 @@ export default function BusinessRulesPage() {
       />
       <ErrorNote error={rules.error} />
       {rules.isLoading ? <Loading /> : null}
-      {!rules.isLoading && !rules.error && (rules.data ?? []).length === 0 ? (
+      {!rules.isLoading && !rules.error && rows.length === 0 ? (
         <div className="card empty">No business rules configured.</div>
       ) : null}
-      {(rules.data ?? []).length > 0 ? (
+      {rows.length > 0 ? (
         <div className="card">
           <div className="tbl-wrap">
             <table>
@@ -55,15 +79,21 @@ export default function BusinessRulesPage() {
                 </tr>
               </thead>
               <tbody>
-                {(rules.data as BusinessRule[]).map((r) => (
+                {rows.map((r) => (
                   <tr key={String(r.id)}>
                     <td>
-                      <b>{humanize(str(r.key ?? r.id, "—").replace(/([a-z])([A-Z])/g, "$1_$2").replace(/[._-]/g, " "))}</b>
+                      <b>
+                        {humanize(
+                          str(r.key ?? r.id, "—")
+                            .replace(/([a-z])([A-Z])/g, "$1_$2")
+                            .replace(/[._-]/g, " "),
+                        )}
+                      </b>
                       <br />
                       <span className="mono small muted">{str(r.key ?? r.id, "—")}</span>
                     </td>
                     <td className="mono small">{renderValue(r.value)}</td>
-                    <td className="mono small muted">{renderValue(r.defaultValue)}</td>
+                    <td className="mono small muted">{renderValue(r.default ?? r.defaultValue)}</td>
                     <td className="small muted">{str(r.description, "—")}</td>
                   </tr>
                 ))}

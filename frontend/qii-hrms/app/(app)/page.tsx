@@ -12,7 +12,7 @@ import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import { rowsOf, type Rec } from "@/lib/api/lookups";
 import { buildPunchBody, fmtHoursMinutes } from "@/lib/attendance/punch";
-import { fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRange, fmtTime, pick, str } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtHours, fmtMoney, fmtNumber, fmtRange, fmtTime, pick, str } from "@/lib/format";
 import { resolveNotificationHref } from "@/lib/schemas/hrms";
 
 function greeting() {
@@ -160,7 +160,7 @@ export default function HomePage() {
               </div>
               <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
                 <span className="small muted">
-                  Expected {fmtNumber((t as Rec).expectedHours ?? 0)}h
+                  Expected {fmtHours((t as Rec).expectedHours ?? 0)}
                 </span>
                 <span className="small muted">
                   Logged {fmtHoursMinutes((t as Rec).loggedMinutes)}
@@ -168,7 +168,7 @@ export default function HomePage() {
                 {(t as Rec).week ? (
                   <span className="small muted">
                     Week {fmtHoursMinutes(((t as Rec).week as Rec).workedMinutes)} /{" "}
-                    {fmtNumber(((t as Rec).week as Rec).expectedHours ?? 0)}h
+                    {fmtHours(((t as Rec).week as Rec).expectedHours ?? 0)}
                   </span>
                 ) : null}
               </div>
@@ -280,7 +280,12 @@ export default function HomePage() {
                   </div>
                   <div className="stat">
                     <span className="s">MTD estimate</span>
-                    <span className="v">{fmtMoney((myCurrent.data as Rec).mtdEstimate)}</span>
+                    <span className="v">
+                      {fmtMoney(
+                        ((myCurrent.data as Rec).mtdEstimate as Rec | undefined)?.netAmount ??
+                          (myCurrent.data as Rec).mtdEstimate,
+                      )}
+                    </span>
                   </div>
                 </div>
                 {rowsOf<Rec>((myCurrent.data as Rec).payslips).length > 0 ? (

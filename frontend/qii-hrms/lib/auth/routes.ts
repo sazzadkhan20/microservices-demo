@@ -1,4 +1,4 @@
-import { ALWAYS, anyOf, satisfies, type AccessRule, type PermissionSet } from "./permissions";
+import { ALWAYS, anyOf, hasPermission, satisfies, toPermissionSet, type AccessRule, type PermissionSet } from "./permissions";
 
 export type NavGroup = "Me" | "Team" | "HR" | "Settings";
 
@@ -57,13 +57,14 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/team/attendance",
     title: "Team attendance",
     nav: { group: "Team", label: "Team attendance" },
-    rule: anyOf(["attendance", "view"]),
+    // Managers/HR (not OWN-only employees who also hold attendance:view)
+    rule: anyOf(["leave", "approve"], ["attendance", "correct"], ["employees", "view"]),
   },
   {
     path: "/team/work-logs",
     title: "Team work logs",
     nav: { group: "Team", label: "Team work logs" },
-    rule: anyOf(["attendance", "view"]),
+    rule: anyOf(["leave", "approve"], ["attendance", "correct"], ["employees", "view"]),
   },
   {
     path: "/tasks",
@@ -89,7 +90,8 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/admin/dashboard",
     title: "Admin dashboard",
     nav: { group: "HR", label: "Admin dashboard" },
-    rule: anyOf(["reports", "view"]),
+    // Company-wide: export (or HR employee directory) — not OWN-scoped reports:view alone
+    rule: anyOf(["reports", "export"], ["employees", "view"]),
   },
   {
     path: "/employees",
@@ -103,19 +105,20 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/payroll",
     title: "Payroll",
     nav: { group: "HR", label: "Payroll" },
-    rule: anyOf(["payroll", "view"]),
+    // Company payroll runs — not the employee self-service payslip view
+    rule: anyOf(["payroll", "run"], ["payroll", "create"], ["payroll", "approve"]),
   },
   {
     path: "/checklists",
     title: "Checklists",
     nav: { group: "HR", label: "Checklists" },
-    rule: anyOf(["checklists", "view"], ["org", "view"]),
+    rule: anyOf(["checklists", "view"]),
   },
   {
     path: "/reports",
     title: "Reports",
     nav: { group: "HR", label: "Reports" },
-    rule: anyOf(["reports", "view"]),
+    rule: anyOf(["reports", "export"]),
   },
 
   // ---- Settings ----
@@ -154,13 +157,13 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/settings/notifications",
     title: "Notification settings",
     nav: { group: "Settings", label: "Notifications" },
-    rule: anyOf(["settings", "manage"], ["roles", "view"]),
+    rule: anyOf(["settings", "manage"]),
   },
   {
     path: "/settings/audit",
     title: "Audit log",
     nav: { group: "Settings", label: "Audit log" },
-    rule: anyOf(["settings", "manage"]),
+    rule: anyOf(["audit", "view"], ["settings", "manage"]),
   },
   {
     path: "/settings/rules",
@@ -202,20 +205,68 @@ export function findRoute(pathname: string): RouteDef | undefined {
  * Whether the given permission set may open `pathname`.
  * Unknown paths are allowed here so Next can render its own 404.
  */
-export function canAccessRoute(perms: PermissionSet | readonly string[] | null | undefined, pathname: string): boolean {
+export type ScopeMap = Record<string, string> | null | undefined;
+
+function isCompanyRoute(route: RouteDef): boolean {
+  if (route.nav?.group === "HR") return true;
+  return (
+    route.path.startsWith("/employees") ||
+    route.path === "/payroll" ||
+    route.path === "/checklists" ||
+    route.path.startsWith("/admin")
+  );
+}
+
+/** TEAM or ALL on at least one permission that grants the route. Empty scope map keeps the old behaviour. */
+function companyScopeAllows(
+  perms: PermissionSet | readonly string[] | null | undefined,
+  scopes: ScopeMap,
+  rule: AccessRule,
+): boolean {
+  const set = perms instanceof Set ? perms : toPermissionSet(perms as readonly string[] | null | undefined);
+  if (set.has("*:*")) return true;
+  if (!scopes || Object.keys(scopes).length === 0) return true;
+  if ("always" in rule) return true;
+  return rule.any.some(([feature, action]) => {
+    if (!hasPermission(set, feature, action)) return false;
+    const act = String(action).toLowerCase();
+    const keys = [`${feature}:${act}`, `${feature}:*`, "*:*"];
+    if (act === "view") keys.push(`${feature}:read`);
+    if (act === "read") keys.push(`${feature}:view`);
+    return keys.some((k) => {
+      const s = (scopes[k] ?? "").toUpperCase();
+      return s === "ALL" || s === "YES" || s === "TEAM";
+    });
+  });
+}
+
+export function canAccessRoute(
+  perms: PermissionSet | readonly string[] | null | undefined,
+  pathname: string,
+  scopes?: ScopeMap,
+): boolean {
   const route = findRoute(pathname);
   if (!route) return true;
-  return satisfies(perms, route.rule);
+  if (!satisfies(perms, route.rule)) return false;
+  if (isCompanyRoute(route) && !companyScopeAllows(perms, scopes, route.rule)) return false;
+  return true;
 }
 
 export type NavItem = { href: string; label: string };
 export type NavSection = { group: NavGroup; items: NavItem[] };
 
 /** Nav sections visible to the permission set. Empty groups are dropped. */
-export function visibleNav(perms: PermissionSet | readonly string[] | null | undefined): NavSection[] {
+export function visibleNav(
+  perms: PermissionSet | readonly string[] | null | undefined,
+  scopes?: ScopeMap,
+): NavSection[] {
   return NAV_GROUPS.map((group) => ({
     group,
-    items: ROUTES.filter((r) => r.nav?.group === group && satisfies(perms, r.rule)).map((r) => ({
+    items: ROUTES.filter((r) => {
+      if (r.nav?.group !== group || !satisfies(perms, r.rule)) return false;
+      if (isCompanyRoute(r) && !companyScopeAllows(perms, scopes, r.rule)) return false;
+      return true;
+    }).map((r) => ({
       href: r.path,
       label: r.nav!.label,
     })),

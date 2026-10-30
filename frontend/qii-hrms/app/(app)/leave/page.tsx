@@ -46,6 +46,12 @@ const STATUSES = [
   "PENDING_CANCEL",
 ];
 
+function warningList(warnings: LeavePreview["warnings"]): string[] {
+  if (!warnings) return [];
+  if (Array.isArray(warnings)) return warnings.map(String);
+  return Object.entries(warnings).map(([k, v]) => (v == null || v === "" ? k : `${k}: ${String(v)}`));
+}
+
 export default function MyLeavePage() {
   const { me, can } = useAuth();
   const qc = useQueryClient();
@@ -242,7 +248,7 @@ export default function MyLeavePage() {
       </div>
       <ErrorNote error={balances.error} />
 
-      <div className="grid g2" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1.7fr)", alignItems: "start" }}>
+      <div className="grid g2 leave-apply">
         {/* ── Apply form ── */}
         <section className="card stack">
           <h2>Apply for leave</h2>
@@ -280,7 +286,7 @@ export default function MyLeavePage() {
                   </select>
                 </FormField>
 
-                <div className="row" style={{ alignItems: "flex-start" }}>
+                <div className="row stack-sm" style={{ alignItems: "flex-start" }}>
                   <div style={{ flex: 1 }}>
                     <FormField label="Start" required error={errors.startDate}>
                       <input
@@ -405,16 +411,16 @@ export default function MyLeavePage() {
                         <div className="small">
                           <span className="muted">Approvers: </span>
                           {preview.approvers
-                            .map((a) => str(a.name) || str(a.role) || "?")
+                            .map((a) => str(a.expectedName) || str(a.name) || str(a.role) || "?")
                             .join(" → ")}
                         </div>
                       ) : null}
                       {preview.teamClashAlert ? (
                         <span className="pill warn small">⚑ Team leave limit may be reached</span>
                       ) : null}
-                      {preview.warnings && preview.warnings.length > 0 ? (
+                      {warningList(preview.warnings).length > 0 ? (
                         <div className="stack" style={{ gap: 2 }}>
-                          {preview.warnings.map((w, i) => (
+                          {warningList(preview.warnings).map((w, i) => (
                             <span key={i} className="pill warn small">
                               ⚠ {w}
                             </span>

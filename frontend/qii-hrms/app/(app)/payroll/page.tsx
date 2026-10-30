@@ -768,7 +768,11 @@ function MyPayPanel() {
             </div>
             <div className="stat">
               <span className="s">MTD estimate</span>
-              <span className="v">{fmtMoney(data.mtdEstimate)}</span>
+              <span className="v">
+                {fmtMoney(
+                  (data.mtdEstimate as Rec | undefined)?.netAmount ?? data.mtdEstimate,
+                )}
+              </span>
             </div>
           </div>
           {payslips.length > 0 ? (

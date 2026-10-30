@@ -7,10 +7,27 @@ import { apiFetch } from "@/lib/api/client";
 import { accountListSchema, type Account } from "@/lib/schemas/account";
 import styles from "./login.module.css";
 
+/** Same-origin relative path only. Rejects //host, encoded slashes, and backslashes. */
+function safeNext(raw: string | null): string {
+  if (!raw) return "/";
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//") || trimmed.startsWith("/\\")) return "/";
+  if (trimmed.includes("\\") || trimmed.includes("://") || trimmed.includes("@")) return "/";
+  let decoded = trimmed;
+  try {
+    decoded = decodeURIComponent(trimmed);
+  } catch {
+    return "/";
+  }
+  if (!decoded.startsWith("/") || decoded.startsWith("//") || decoded.startsWith("/\\")) return "/";
+  if (decoded.includes("\\") || decoded.includes("://") || decoded.includes("@")) return "/";
+  return decoded;
+}
+
 function LoginInner() {
   const router = useRouter();
   const params = useSearchParams();
-  const next = params.get("next") || "/";
+  const next = safeNext(params.get("next"));
   const [error, setError] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
 
@@ -24,7 +41,7 @@ function LoginInner() {
     setPendingId(a.employeeId);
     try {
       await apiFetch("/api/auth/login", { method: "POST", body: { employeeId: a.employeeId } });
-      router.replace(next.startsWith("/") ? next : "/");
+      router.replace(next);
       router.refresh();
     } catch (e) {
       setError((e as Error).message || "Login failed");

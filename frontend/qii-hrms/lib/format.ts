@@ -44,7 +44,10 @@ export function isoDate(v: unknown): string {
 export function fmtDate(v: unknown): string {
   const d = toDate(v);
   if (!d) return v ? String(v) : "—";
-  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  // IR-UI-05 — e.g. "Fri 30 Oct 2026"
+  const weekday = d.toLocaleDateString("en-GB", { weekday: "short" });
+  const rest = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  return `${weekday} ${rest}`;
 }
 
 export function fmtDateShort(v: unknown): string {
@@ -81,10 +84,30 @@ export function fmtNumber(v: unknown, digits = 2): string {
 
 export function fmtMoney(v: unknown, currency?: string | null): string {
   if (v === null || v === undefined || v === "") return "—";
+  // Payroll me/current nests MTD as `{ netAmount, grossAmount, ... }`
+  if (typeof v === "object" && v !== null) {
+    const o = v as Record<string, unknown>;
+    const nested = o.netAmount ?? o.net ?? o.amount ?? o.grossAmount;
+    const cur = currency ?? (typeof o.currency === "string" ? o.currency : null);
+    return fmtMoney(nested, cur);
+  }
   const n = Number(v);
   if (Number.isNaN(n)) return String(v);
   const body = n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return currency ? `${currency} ${body}` : body;
+}
+
+/** IR-UI-05 — e.g. "8h 5m" from decimal hours or minutes. */
+export function fmtHours(v: unknown, unit: "hours" | "minutes" = "hours"): string {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  const totalMinutes = unit === "minutes" ? Math.round(n) : Math.round(n * 60);
+  const h = Math.floor(Math.abs(totalMinutes) / 60);
+  const m = Math.abs(totalMinutes) % 60;
+  const sign = totalMinutes < 0 ? "-" : "";
+  if (m === 0) return `${sign}${h}h`;
+  return `${sign}${h}h ${m}m`;
 }
 
 export function initials(name: string | null | undefined): string {

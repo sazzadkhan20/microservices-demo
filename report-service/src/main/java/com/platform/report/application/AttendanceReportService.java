@@ -31,6 +31,12 @@ public class AttendanceReportService {
         this.hrms = hrms;
     }
 
+    public boolean canListAllExports(Long actorId) {
+        return hrms.hasPermission(actorId, "reports", "export")
+                || hrms.hasPermission(actorId, "payroll", "run")
+                || hrms.hasPermission(actorId, "employees", "edit");
+    }
+
     public String generateMonthlyCsv(String tenantId, AttendanceReportRequest req) {
         Long actor = AuthContext.getEmployeeId();
         if (actor == null) {
@@ -50,7 +56,7 @@ public class AttendanceReportService {
         LocalDate from = ym.atDay(1);
         LocalDate to = ym.atEndOfMonth();
 
-        List<JsonNode> rows = hrms.attendanceForEmployee(target, 1, 100);
+        List<JsonNode> rows = hrms.attendanceForEmployee(actor, target, 1, 500);
         Map<LocalDate, JsonNode> byDate = new HashMap<>();
         for (JsonNode row : rows) {
             LocalDate d = parseDate(row);

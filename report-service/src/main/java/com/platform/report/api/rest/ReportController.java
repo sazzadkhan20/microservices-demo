@@ -5,6 +5,7 @@ import com.platform.common.tenant.TenantContext;
 import com.platform.report.api.dto.AttendanceReportRequest;
 import com.platform.report.application.AttendanceReportService;
 import com.platform.report.domain.ReportExport;
+import com.platform.report.infrastructure.HrmsGatewayClient;
 import com.platform.report.infrastructure.persistence.ReportExportRepository;
 import com.platform.report.security.RequiresPermission;
 import jakarta.validation.Valid;
@@ -28,10 +29,15 @@ public class ReportController {
 
     private final AttendanceReportService attendanceService;
     private final ReportExportRepository exportRepository;
+    private final HrmsGatewayClient hrms;
 
-    public ReportController(AttendanceReportService attendanceService, ReportExportRepository exportRepository) {
+    public ReportController(
+            AttendanceReportService attendanceService,
+            ReportExportRepository exportRepository,
+            HrmsGatewayClient hrms) {
         this.attendanceService = attendanceService;
         this.exportRepository = exportRepository;
+        this.hrms = hrms;
     }
 
     /**
@@ -75,7 +81,10 @@ public class ReportController {
     @GetMapping("/exports")
     @RequiresPermission(feature = "reports", action = "view")
     public ResponseEntity<List<Map<String, Object>>> listExports() {
+        Long actor = AuthContext.requireEmployeeId();
+        boolean seeAll = hrms.hasPermission(actor, "reports", "export");
         List<Map<String, Object>> rows = exportRepository.findTop50ByOrderByCreatedAtDesc().stream()
+                .filter(e -> seeAll || actor.equals(e.getRequestedBy()))
                 .map(e -> {
                     Map<String, Object> m = new LinkedHashMap<>();
                     m.put("id", e.getId());

@@ -221,6 +221,64 @@ public class ProvisioningService {
     }
 
     /**
+     * Fleet migrate: apply Liquibase (no reseed) for every known tenant routing row.
+     * Isolates failures per tenant/service so one bad DB does not stop the fleet.
+     */
+    @Transactional
+    public Map<String, Object> migrateAllTenants() {
+        java.util.List<Map<String, Object>> results = new java.util.ArrayList<>();
+        int ok = 0;
+        int failed = 0;
+        java.util.Set<String> tenants = new java.util.LinkedHashSet<>();
+        for (TenantRouting row : repository.findAllByOrderByTenantIdAscServiceNameAsc()) {
+            tenants.add(row.getTenantId());
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("tenantId", row.getTenantId());
+            item.put("service", row.getServiceName());
+            try {
+                PlatformProperties.DbTarget target = resolveDbTarget(row.getServiceName());
+                if (target == null) {
+                    item.put("status", "SKIPPED");
+                    item.put("reason", "no DbTarget for service");
+                } else {
+                    provisioner.migrateExisting(row.getJdbcUrl(), target);
+                    cachePublisher.publishRouting(row);
+                    item.put("status", "OK");
+                    ok++;
+                }
+            } catch (Exception e) {
+                failed++;
+                item.put("status", "FAILED");
+                item.put("error", e.getMessage());
+                log.warn("migrate-all failed tenant={} service={}: {}",
+                        row.getTenantId(), row.getServiceName(), e.getMessage());
+            }
+            results.add(item);
+        }
+        return Map.of(
+                "tenants", tenants.size(),
+                "ok", ok,
+                "failed", failed,
+                "results", results,
+                "message", "Fleet schema migrate complete (no reseed)."
+        );
+    }
+
+    private PlatformProperties.DbTarget resolveDbTarget(String serviceName) {
+        if (serviceName == null) {
+            return null;
+        }
+        return switch (serviceName) {
+            case SERVICE_HRMS -> properties.getProvision().getHrms();
+            case SERVICE_PAYROLL -> properties.getProvision().getPayroll();
+            case SERVICE_FILE -> properties.getProvision().getFiles();
+            case SERVICE_NOTIFICATION -> properties.getProvision().getNotification();
+            case SERVICE_REPORT -> properties.getProvision().getReport();
+            default -> null;
+        };
+    }
+
+    /**
      * Idempotent: database-per-tenant for file / notification / report + MinIO bucket + registry rows.
      * Migrates data out of legacy shared {@code files_platform} / {@code notif_platform} when those exist.
      */

@@ -57,18 +57,20 @@ public class FileService {
             throw new IllegalArgumentException(
                     "Unsupported content type '" + file.getContentType() + "'. Allowed: PDF, JPG, PNG, DOCX");
         }
+        byte[] bytes = file.getBytes();
+        assertMagicMatches(contentType, bytes);
 
         String normalized = TenantIds.normalize(tenantId);
         String bucket = TenantIds.filesBucket(normalized);
         String objectKey = UUID.randomUUID().toString();
-        storage.store(bucket, objectKey, file.getInputStream(), contentType, file.getSize());
+        storage.store(bucket, objectKey, new java.io.ByteArrayInputStream(bytes), contentType, bytes.length);
 
         FileObject fo = new FileObject();
         fo.setTenantId(normalized);
         fo.setOriginalName(file.getOriginalFilename() != null
                 ? file.getOriginalFilename() : objectKey);
         fo.setContentType(contentType);
-        fo.setSizeBytes(file.getSize());
+        fo.setSizeBytes(bytes.length);
         fo.setStorageKey(bucket + "/" + objectKey);
         fo.setUploadedBy(uploadedBy);
 
@@ -152,6 +154,37 @@ public class FileService {
 
     public void ensureTenantBucket(String tenantId) throws IOException {
         storage.ensureBucket(TenantIds.filesBucket(tenantId));
+    }
+
+    /** Reject client-labelled types that do not match file magic bytes (e.g. MZ exe as PDF). */
+    static void assertMagicMatches(String contentType, byte[] bytes) {
+        if (bytes == null || bytes.length < 4) {
+            throw new IllegalArgumentException("File content too short to validate");
+        }
+        // PE/MZ executable
+        if (bytes[0] == 'M' && bytes[1] == 'Z') {
+            throw new IllegalArgumentException("Executable content is not allowed");
+        }
+        // HTML / script disguised as image/pdf
+        String head = new String(bytes, 0, Math.min(bytes.length, 64), java.nio.charset.StandardCharsets.ISO_8859_1)
+                .trim().toLowerCase(java.util.Locale.ROOT);
+        if (head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<script")
+                || head.startsWith("<?xml")) {
+            throw new IllegalArgumentException("HTML/script content is not allowed for this upload type");
+        }
+        if ("application/pdf".equals(contentType) && !(bytes[0] == '%' && bytes[1] == 'P' && bytes[2] == 'D' && bytes[3] == 'F')) {
+            throw new IllegalArgumentException("Content does not look like a PDF");
+        }
+        if ("image/png".equals(contentType) && !(bytes[0] == (byte) 0x89 && bytes[1] == 'P' && bytes[2] == 'N' && bytes[3] == 'G')) {
+            throw new IllegalArgumentException("Content does not look like a PNG");
+        }
+        if ("image/jpeg".equals(contentType) && !(bytes[0] == (byte) 0xFF && bytes[1] == (byte) 0xD8)) {
+            throw new IllegalArgumentException("Content does not look like a JPEG");
+        }
+        if (contentType != null && contentType.contains("wordprocessingml")
+                && !(bytes[0] == 'P' && bytes[1] == 'K')) {
+            throw new IllegalArgumentException("Content does not look like a DOCX (ZIP) archive");
+        }
     }
 
     /** Strip charset params; map common aliases; fall back to extension when browsers send octet-stream. */

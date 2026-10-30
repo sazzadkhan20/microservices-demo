@@ -35,6 +35,9 @@ platform:
   security:
     admin-key: ${PLATFORM_ADMIN_KEY:local-platform-admin-change-me}
     service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+    internal-key: ${PLATFORM_INTERNAL_KEY:local-internal-key-change-me}
+    # Demo/account-picker sessions (SRS FR-AUTH-06 → 7 days)
+    token-ttl-seconds: ${TOKEN_TTL_SECONDS:604800}
   provision:
     hrms:
       admin-url: ${HRMS_PG_ADMIN_URL:jdbc:postgresql://127.0.0.1:5433/postgres}

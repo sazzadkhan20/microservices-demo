@@ -137,9 +137,10 @@ class MonthlyPayrollEngineTest {
         MonthlyPayrollEngine.PayrollResult result =
                 engine.calculateMonthly(defaultConfig, new BigDecimal("15000"), facts, null);
 
-        BigDecimal expectedDeduction = new BigDecimal("681.8182");
+        // DR-02: money amounts at 2 decimal places (per-day rate still 4dp internally)
+        BigDecimal expectedDeduction = new BigDecimal("681.82");
         assertEquals(0, result.deduction().compareTo(expectedDeduction),
-                "1 unpaid leave day should deduct 681.8182 — got " + result.deduction());
+                "1 unpaid leave day should deduct 681.82 — got " + result.deduction());
     }
 
     @Test

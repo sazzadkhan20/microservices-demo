@@ -53,11 +53,15 @@ public final class JwtSupport {
     }
 
     public Claims parseAndValidate(String token) {
-        return Jwts.parser()
+        Claims claims = Jwts.parser()
                 .verifyWith(key)
                 .build()
                 .parseSignedClaims(token)
                 .getPayload();
+        if (claims.getExpiration() == null) {
+            throw new IllegalArgumentException("JWT missing required claim: exp");
+        }
+        return claims;
     }
 
     public String requireTenantId(Claims claims) {

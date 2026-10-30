@@ -21,6 +21,12 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(Map.of("error", msg));
     }
 
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<Map<String, String>> status(org.springframework.web.server.ResponseStatusException ex) {
+        String msg = ex.getReason() == null ? ex.getMessage() : ex.getReason();
+        return ResponseEntity.status(ex.getStatusCode()).body(Map.of("error", msg == null ? "Error" : msg));
+    }
+
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<Map<String, String>> tooBig(MaxUploadSizeExceededException ex) {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)

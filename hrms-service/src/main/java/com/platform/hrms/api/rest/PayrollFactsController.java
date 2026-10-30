@@ -31,17 +31,24 @@ public class PayrollFactsController {
     }
 
     @GetMapping("/employee/{id}")
-    @RequiresPermission(feature = "leave", action = "view")
-    @Operation(summary = "Compute payroll facts for employee in period YYYY-MM — leave:view + service-key")
+    @RequiresPermission(feature = "leave", action = "view", allowInternal = true)
+    @Operation(summary = "Compute payroll facts for employee in period YYYY-MM — leave:view or internal key")
     public Map<String, Object> facts(
             @PathVariable Long id,
             @RequestParam String period) {
         return payrollFactsService.computeFacts(id, period);
     }
 
+    @GetMapping("/active-employees")
+    @RequiresPermission(feature = "employees", action = "view", allowInternal = true)
+    @Operation(summary = "Active employee ids for payroll month run — employees:view or internal key")
+    public Map<String, Object> activeEmployees() {
+        return payrollFactsService.listActiveEmployeeIds();
+    }
+
     @PostMapping("/apply-leave-cover")
-    @RequiresPermission(feature = "leave", action = "manage")
-    @Operation(summary = "Apply (or reverse) leave balance deductions from payroll absence cover — leave:manage")
+    @RequiresPermission(feature = "leave", action = "manage", allowInternal = true)
+    @Operation(summary = "Apply (or reverse) leave balance deductions from payroll absence cover — leave:manage or internal key")
     public Map<String, Object> applyLeaveCover(@RequestBody Map<String, Object> body) {
         Long employeeId = Long.valueOf(String.valueOf(body.get("employeeId")));
         String periodLabel = String.valueOf(body.get("periodLabel"));

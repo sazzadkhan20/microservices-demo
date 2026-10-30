@@ -495,8 +495,8 @@ public class EmployeeService {
     }
 
     /**
-     * Salary on create/update: salary:edit (HR) or payroll:view / payroll:run.
-     * Config-driven grants — not a hard-coded role check.
+     * Salary on create/update: salary:edit or payroll:run only (not payroll:view / HR defaults).
+     * Config-driven grants — not a hard-coded role check. Prefer mutating pay via payroll salary_history.
      */
     private void requireSalaryAccess() {
         Long actor = AuthContext.getEmployeeId();
@@ -504,11 +504,10 @@ public class EmployeeService {
             throw new IllegalStateException("Forbidden: salary fields require an authenticated employee");
         }
         if (rbacService.hasPermission(actor, "salary", "edit")
-                || rbacService.hasPermission(actor, "payroll", "view")
                 || rbacService.hasPermission(actor, "payroll", "run")) {
             return;
         }
-        throw new IllegalStateException("Forbidden: salary fields require salary:edit or payroll:view");
+        throw new IllegalStateException("Forbidden: salary fields require salary:edit or payroll:run");
     }
 
     @Transactional

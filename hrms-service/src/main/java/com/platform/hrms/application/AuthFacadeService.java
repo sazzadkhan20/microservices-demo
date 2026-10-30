@@ -80,6 +80,7 @@ public class AuthFacadeService {
         m.put("tenantId", TenantContext.getTenantId());
         m.put("roles", roles);
         m.put("permissions", new ArrayList<>(perms));
+        m.put("scopes", rbacService.permissionScopesFor(employeeId));
         m.put("department", e.getDepartmentId() == null ? null :
                 departmentRepository.findById(e.getDepartmentId()).map(Department::getName).orElse(null));
         m.put("position", e.getJobTitle() != null ? e.getJobTitle() :

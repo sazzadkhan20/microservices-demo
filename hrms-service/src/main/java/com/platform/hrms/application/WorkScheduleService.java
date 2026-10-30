@@ -399,6 +399,52 @@ public class WorkScheduleService {
         return days.contains(day.getDayOfWeek());
     }
 
+    /**
+     * Scheduled length of one working day in minutes.
+     * FIXED schedules use end−start; anything without office hours (including HOURLY) uses 480.
+     */
+    @Transactional(readOnly = true)
+    public long scheduledDayMinutes(Employee emp) {
+        if (emp == null) {
+            return 480L;
+        }
+        Optional<WorkSchedule> opt = resolveForEmployee(emp);
+        if (opt.isEmpty()) {
+            return 480L;
+        }
+        BigDecimal hours = fixedDayHours(opt.get());
+        if (hours == null || hours.signum() <= 0) {
+            return 480L;
+        }
+        return hours.multiply(BigDecimal.valueOf(60)).setScale(0, RoundingMode.HALF_UP).longValue();
+    }
+
+    /**
+     * Working day on the resolved schedule, excluding holidays and HOURLY (no day grid).
+     * Falls back to policy working-day codes when the person has no FIXED schedule days.
+     */
+    @Transactional(readOnly = true)
+    public boolean isScheduledWorkingDay(Employee emp, LocalDate day) {
+        if (emp == null || day == null) {
+            return false;
+        }
+        if (isHoliday(emp.getLocationId(), day)) {
+            return false;
+        }
+        Optional<WorkSchedule> opt = resolveForEmployee(emp);
+        if (opt.isPresent() && "HOURLY".equals(normalizeMode(opt.get().getMode()))) {
+            return false;
+        }
+        if (opt.isPresent() && !parseWorkingDays(opt.get()).isEmpty()) {
+            return isWorkingDay(opt.get(), day);
+        }
+        List<String> codes = workingDayCodesForEmployee(emp);
+        if (codes == null || codes.isEmpty()) {
+            return false;
+        }
+        return toDaySet(codes).contains(day.getDayOfWeek());
+    }
+
     public boolean isHoliday(Long locationId, LocalDate day) {
         if (locationId == null || day == null) {
             return false;

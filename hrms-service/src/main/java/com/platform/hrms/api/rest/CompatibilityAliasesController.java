@@ -7,6 +7,7 @@ import com.platform.hrms.domain.Department;
 import com.platform.hrms.domain.WorkTask;
 import com.platform.hrms.infrastructure.persistence.DepartmentRepository;
 import com.platform.hrms.infrastructure.persistence.WorkTaskRepository;
+import com.platform.hrms.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Hidden;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -37,11 +38,13 @@ public class CompatibilityAliasesController {
     }
 
     @GetMapping("/departments")
+    @RequiresPermission(feature = "hierarchy", action = "view")
     public List<Department> departmentsAlias() {
         return departmentRepository.findAll();
     }
 
     @GetMapping("/work-tasks")
+    @RequiresPermission(feature = "tasks", action = "view")
     public PageResponse<WorkTask> workTasksAlias(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
         return DynamicListSupport.page(

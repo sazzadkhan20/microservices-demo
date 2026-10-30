@@ -30,7 +30,7 @@ public class TenantDataSourceManager {
     private final ObjectMapper objectMapper;
     private final HrmsProperties properties;
     private final RestClient registryClient;
-    private final TenantPoolLifecycle pools = new TenantPoolLifecycle();
+    private final TenantPoolLifecycle pools;
 
     public TenantDataSourceManager(
             StringRedisTemplate redis,
@@ -41,6 +41,10 @@ public class TenantDataSourceManager {
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.registryClient = restClientBuilder.baseUrl(properties.getRegistry().getBaseUrl()).build();
+        int maxPools = properties.getCache() != null && properties.getCache().getL1MaxSize() > 0
+                ? (int) Math.min(properties.getCache().getL1MaxSize(), Integer.MAX_VALUE)
+                : 50;
+        this.pools = new TenantPoolLifecycle(maxPools);
     }
 
     public DataSource resolve(String tenantId) {

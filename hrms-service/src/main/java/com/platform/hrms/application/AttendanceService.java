@@ -47,6 +47,7 @@ public class AttendanceService {
     private final TenantSettingsRepository tenantSettingsRepository;
     private final AuditService auditService;
     private final RbacService rbacService;
+    private final DataScopeService dataScopeService;
 
     public AttendanceService(
             AttendanceRecordRepository repository,
@@ -56,7 +57,8 @@ public class AttendanceService {
             LeaveApplicationRepository leaveApplicationRepository,
             TenantSettingsRepository tenantSettingsRepository,
             AuditService auditService,
-            RbacService rbacService) {
+            RbacService rbacService,
+            DataScopeService dataScopeService) {
         this.repository = repository;
         this.employeeRepository = employeeRepository;
         this.workScheduleService = workScheduleService;
@@ -65,6 +67,7 @@ public class AttendanceService {
         this.tenantSettingsRepository = tenantSettingsRepository;
         this.auditService = auditService;
         this.rbacService = rbacService;
+        this.dataScopeService = dataScopeService;
     }
 
     @Transactional
@@ -264,6 +267,8 @@ public class AttendanceService {
 
     @Transactional(readOnly = true)
     public PageResponse<Map<String, Object>> historyForEmployee(Long empId, PageQuery query) {
+        Long actorId = AuthContext.requireEmployeeId();
+        dataScopeService.requireAccess(actorId, empId, "attendance", "view");
         List<AttendanceRecord> all = repository.findByEmployeeIdOrderByWorkDateDesc(empId);
         if (query.q() != null) {
             String q = query.q().toLowerCase();
@@ -289,27 +294,15 @@ public class AttendanceService {
         return PageResponse.of(page, query, total);
     }
 
-    /** Team / org attendance for a date (scope: ALL or TEAM via RBAC). */
+    /** Team / org attendance for a date (scope: ALL / TEAM subtree / OWN via RBAC). */
     @Transactional
     public List<Map<String, Object>> teamForDate(LocalDate date) {
         Long actorId = AuthContext.requireEmployeeId();
-        String scope = rbacService.widestScope(actorId, "attendance", "view");
-        if ("NONE".equals(scope) && rbacService.hasPermission(actorId, "attendance", "view")) {
-            scope = "TEAM";
-        }
-        Employee me = employeeRepository.findById(actorId).orElse(null);
-        List<Employee> emps;
-        if ("ALL".equals(scope) || rbacService.permissionKeysFor(actorId).contains("*:*")) {
-            emps = employeeRepository.findAll().stream().filter(Employee::isActive).toList();
-        } else {
-            Long teamId = me == null ? null : me.getTeamId();
-            emps = employeeRepository.findAll().stream()
-                    .filter(Employee::isActive)
-                    .filter(e -> e.getId().equals(actorId)
-                            || (e.getManagerId() != null && e.getManagerId().equals(actorId))
-                            || (teamId != null && teamId.equals(e.getTeamId())))
-                    .toList();
-        }
+        DataScopeService.Visibility vis = dataScopeService.visibility(actorId, "attendance", "view");
+        List<Employee> emps = employeeRepository.findAll().stream()
+                .filter(Employee::isActive)
+                .filter(e -> vis.allows(e.getId()))
+                .toList();
         Map<Long, AttendanceRecord> byEmp = repository.findByWorkDate(date).stream()
                 .collect(java.util.stream.Collectors.toMap(AttendanceRecord::getEmployeeId, r -> r, (a, b) -> a));
         List<Map<String, Object>> out = new java.util.ArrayList<>();
@@ -542,6 +535,20 @@ public class AttendanceService {
 
     private void applyStatusFromSchedule(AttendanceRecord rec, Employee emp, Instant checkInAt, ZoneId zone) {
         WorkSchedule schedule = resolveSchedule(emp);
+        LocalDate workDate = rec.getWorkDate() != null
+                ? rec.getWorkDate()
+                : LocalDate.ofInstant(checkInAt, zone);
+        // Weekly-off / holiday check-in → Worked (not Late/Present).
+        if (workScheduleService.isHoliday(emp.getLocationId(), workDate)) {
+            rec.setStatusCode("W");
+            rec.setStatusLabel("Worked (holiday)");
+            return;
+        }
+        if (schedule != null && !workScheduleService.isWorkingDay(schedule, workDate)) {
+            rec.setStatusCode("W");
+            rec.setStatusLabel("Worked (weekly off)");
+            return;
+        }
         // Hourly: Worked only (FR-ATT-05) — no Late/Present split.
         if (schedule != null && "HOURLY".equalsIgnoreCase(schedule.getMode())) {
             rec.setStatusCode("W");
@@ -595,13 +602,15 @@ public class AttendanceService {
     }
 
     private static String resolveLocationLabel(String locationLabel, Double latitude, Double longitude) {
+        if (latitude != null && longitude != null) {
+            String label = locationLabel == null || locationLabel.isBlank()
+                    || "Location not shared".equalsIgnoreCase(locationLabel.trim())
+                    || "Share my location".equalsIgnoreCase(locationLabel.trim())
+                    ? "Shared"
+                    : locationLabel.trim();
+            return trim(String.format("%s · %.5f, %.5f", label, latitude, longitude), 256);
+        }
         String label = locationLabel == null || locationLabel.isBlank() ? "Location not shared" : locationLabel.trim();
-        if ("Share my location".equalsIgnoreCase(label) && latitude != null && longitude != null) {
-            return String.format("Shared · %.5f, %.5f", latitude, longitude);
-        }
-        if (latitude != null && longitude != null && !label.contains(String.valueOf(latitude))) {
-            return trim(label + String.format(" · %.5f, %.5f", latitude, longitude), 256);
-        }
         return trim(label, 256);
     }
 
@@ -618,11 +627,19 @@ public class AttendanceService {
     }
 
     private static String clientIp(HttpServletRequest request) {
+        // Prefer connection remote address (gateway peer). Do not trust client-supplied X-Forwarded-For alone.
+        String remote = request.getRemoteAddr();
+        if (remote != null && !remote.isBlank()
+                && !"https://example.net/id/garnet".equals(remote)
+                && !"127.0.0.1".equals(remote)
+                && !remote.startsWith("0:0:0:0:0:0:0:1")) {
+            return trim(remote, 64);
+        }
         String forwarded = request.getHeader("X-Forwarded-For");
         if (forwarded != null && !forwarded.isBlank()) {
             return trim(forwarded.split(",")[0].trim(), 64);
         }
-        return trim(request.getRemoteAddr(), 64);
+        return trim(remote, 64);
     }
 
     private void applyHalfDayIfNeeded(AttendanceRecord rec, Employee emp) {

@@ -26,18 +26,21 @@ public class AttendanceCorrectionService {
     private final EmployeeRepository employeeRepository;
     private final AttendanceService attendanceService;
     private final AuditService auditService;
+    private final DataScopeService dataScopeService;
 
     public AttendanceCorrectionService(
             AttendanceCorrectionRepository repository,
             AttendanceRecordRepository attendanceRecordRepository,
             EmployeeRepository employeeRepository,
             AttendanceService attendanceService,
-            AuditService auditService) {
+            AuditService auditService,
+            DataScopeService dataScopeService) {
         this.repository = repository;
         this.attendanceRecordRepository = attendanceRecordRepository;
         this.employeeRepository = employeeRepository;
         this.attendanceService = attendanceService;
         this.auditService = auditService;
+        this.dataScopeService = dataScopeService;
     }
 
     @Transactional
@@ -107,6 +110,7 @@ public class AttendanceCorrectionService {
         if (reviewerId.equals(c.getEmployeeId())) {
             throw new IllegalStateException("Not allowed: cannot review your own correction request");
         }
+        dataScopeService.requireAccess(reviewerId, c.getEmployeeId(), "attendance", "correct");
         Map<String, Object> before = toView(c);
         String attNote = "Correction #" + c.getId() + ": " + c.getReason();
         attendanceService.correct(c.getEmployeeId(), c.getWorkDate(),
@@ -124,6 +128,7 @@ public class AttendanceCorrectionService {
         if (reviewerId.equals(c.getEmployeeId())) {
             throw new IllegalStateException("Not allowed: cannot review your own correction request");
         }
+        dataScopeService.requireAccess(reviewerId, c.getEmployeeId(), "attendance", "correct");
         Map<String, Object> before = toView(c);
         finish(c, AttendanceCorrection.STATUS_REJECTED, reviewerId, note);
         auditService.record(reviewerId, "ATTENDANCE_CORRECTION_REJECT", "attendance_correction",

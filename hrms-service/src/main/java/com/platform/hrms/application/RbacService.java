@@ -283,6 +283,49 @@ public class RbacService {
         return widest;
     }
 
+    /**
+     * Widest data scope per permission key ({@code feature:action}, lower-case).
+     * Wildcard roles yield {@code *:* → ALL}. View/read aliases share a scope.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, String> permissionScopesFor(Long employeeId) {
+        Map<String, String> out = new HashMap<>();
+        List<AppRole> roles = rolesFor(employeeId);
+        if (roles.isEmpty()) {
+            return out;
+        }
+        if (roles.stream().anyMatch(AppRole::isGrantsWildcard)) {
+            out.put("*:*", "ALL");
+            return out;
+        }
+        List<Long> roleIds = roles.stream().map(AppRole::getId).toList();
+        List<AppRolePermission> rps = rolePermissionRepository.findByRoleIdIn(roleIds);
+        Set<Long> permIds = rps.stream().map(AppRolePermission::getPermissionId).collect(Collectors.toSet());
+        Map<Long, AppPermission> perms = new HashMap<>();
+        for (AppPermission p : permissionRepository.findAllById(permIds)) {
+            perms.put(p.getId(), p);
+        }
+        for (AppRolePermission rp : rps) {
+            AppPermission p = perms.get(rp.getPermissionId());
+            if (p == null || p.getFeature() == null || p.getAction() == null) {
+                continue;
+            }
+            String scope = rp.getDataScope() == null ? "OWN" : rp.getDataScope().trim().toUpperCase(Locale.ROOT);
+            String key = (p.getFeature() + ":" + p.getAction()).toLowerCase(Locale.ROOT);
+            out.merge(key, scope, RbacService::widerScope);
+        }
+        Map<String, String> aliased = new HashMap<>(out);
+        for (Map.Entry<String, String> e : out.entrySet()) {
+            String k = e.getKey();
+            if (k.endsWith(":view")) {
+                aliased.merge(k.substring(0, k.length() - 4) + "read", e.getValue(), RbacService::widerScope);
+            } else if (k.endsWith(":read")) {
+                aliased.merge(k.substring(0, k.length() - 4) + "view", e.getValue(), RbacService::widerScope);
+            }
+        }
+        return aliased;
+    }
+
     private static boolean permissionMatches(AppPermission p, String feature, String action) {
         String pf = p.getFeature() == null ? "" : p.getFeature().toLowerCase(Locale.ROOT);
         String pa = p.getAction() == null ? "" : p.getAction().toLowerCase(Locale.ROOT);

@@ -32,22 +32,33 @@ import java.util.Map;
 @Tag(name = "Tenant Registry", description = "Provision tenants, inspect routing, issue JWTs")
 public class RegistryController {
 
-    private static final long TOKEN_TTL = 3600;
-
     private final ProvisioningService provisioningService;
     private final TenantRoutingRepository routingRepository;
     private final JwtSupport jwtSupport;
     private final PlatformAuthSupport platformAuth;
+    private final long tokenTtlSeconds;
+    private final org.springframework.web.client.RestClient hrmsClient;
 
     public RegistryController(
             ProvisioningService provisioningService,
             TenantRoutingRepository routingRepository,
             JwtSupport jwtSupport,
-            PlatformAuthSupport platformAuth) {
+            PlatformAuthSupport platformAuth,
+            @org.springframework.beans.factory.annotation.Value("${platform.security.token-ttl-seconds:604800}") long tokenTtlSeconds,
+            @org.springframework.beans.factory.annotation.Value("${HRMS_BASE_URL:http://127.0.0.1:8081}") String hrmsBaseUrl,
+            @org.springframework.beans.factory.annotation.Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
+            @org.springframework.beans.factory.annotation.Value("${platform.security.internal-key:local-internal-key-change-me}") String internalKey,
+            org.springframework.web.client.RestClient.Builder restClientBuilder) {
         this.provisioningService = provisioningService;
         this.routingRepository = routingRepository;
         this.jwtSupport = jwtSupport;
         this.platformAuth = platformAuth;
+        this.tokenTtlSeconds = tokenTtlSeconds > 0 ? tokenTtlSeconds : 604800L;
+        this.hrmsClient = restClientBuilder
+                .baseUrl(hrmsBaseUrl == null ? "http://127.0.0.1:8081" : hrmsBaseUrl.replaceAll("/$", ""))
+                .defaultHeader(com.platform.common.constants.PlatformHeaders.SERVICE_KEY, serviceKey)
+                .defaultHeader(com.platform.common.security.InternalCalls.HEADER, internalKey)
+                .build();
     }
 
     @PostMapping("/provision")
@@ -107,9 +118,21 @@ public class RegistryController {
         return provisioningService.upgradeSatelliteSchemas(tenantId);
     }
 
+    @PostMapping("/tenants/migrate-all")
+    @Operation(summary = "Fleet-migrate every tenant DB (no reseed; requires X-Platform-Admin-Key)")
+    public Map<String, Object> migrateAll(
+            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey) {
+        platformAuth.requireAdmin(adminKey);
+        return provisioningService.migrateAllTenants();
+    }
+
     @GetMapping("/routing/{service}/{tenantId}")
-    @Operation(summary = "Public routing view (no credentials)")
-    public TenantRoutingView routing(@PathVariable String service, @PathVariable String tenantId) {
+    @Operation(summary = "Routing view without credentials (requires X-Service-Key)")
+    public TenantRoutingView routing(
+            @RequestHeader(value = PlatformAuthSupport.SERVICE_HEADER, required = false) String serviceKey,
+            @PathVariable String service,
+            @PathVariable String tenantId) {
+        platformAuth.requireService(serviceKey);
         return provisioningService.getRouting(service, tenantId);
     }
 
@@ -129,22 +152,50 @@ public class RegistryController {
 
     @PostMapping("/token")
     @Operation(summary = "Account-picker JWT — requires X-Service-Key (gateway adds it after X-Demo-Auth-Key check); "
-            + "tenant must already be provisioned; employeeId required for product sessions")
+            + "tenant must already be provisioned; employee must exist and be active in HRMS")
     public TokenResponse token(
-            @RequestHeader(value = PlatformAuthSupport.SERVICE_HEADER, required = false) String serviceKey,
+            @RequestHeader(value = PlatformAuthSupport.SERVICE_HEADER, required = false) String svcKey,
             @Valid @RequestBody TokenRequest request) {
-        platformAuth.requireService(serviceKey);
+        platformAuth.requireService(svcKey);
         String tenantId = TenantIds.normalize(request.tenantId());
-        routingRepository.findByServiceNameAndTenantId("hrms", tenantId)
-                .orElseThrow(() -> new IllegalArgumentException("Unknown or unprovisioned tenant: " + tenantId));
+        // Require full core routing (reject half-provisioned tenants)
+        for (String svc : java.util.List.of("hrms", "payroll")) {
+            routingRepository.findByServiceNameAndTenantId(svc, tenantId)
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            "Unknown or incompletely provisioned tenant: " + tenantId + " (missing " + svc + ")"));
+        }
         if (request.employeeId() == null) {
             throw new IllegalArgumentException("employeeId is required for account-picker sessions");
         }
+        requireActiveEmployee(tenantId, request.employeeId());
         String subject = (request.subject() == null || request.subject().isBlank())
                 ? "employee-" + request.employeeId()
                 : request.subject();
-        String jwt = jwtSupport.issueToken(subject, tenantId, request.employeeId(), TOKEN_TTL);
-        return TokenResponse.of(jwt, tenantId, request.employeeId(), TOKEN_TTL);
+        String jwt = jwtSupport.issueToken(subject, tenantId, request.employeeId(), tokenTtlSeconds);
+        return TokenResponse.of(jwt, tenantId, request.employeeId(), tokenTtlSeconds);
+    }
+
+    private void requireActiveEmployee(String tenantId, Long employeeId) {
+        try {
+            Map<?, ?> body = hrmsClient.get()
+                    .uri("/api/internal/employees/{id}/auth-check", employeeId)
+                    .header(com.platform.common.constants.PlatformHeaders.TENANT_ID, tenantId)
+                    .retrieve()
+                    .body(Map.class);
+            if (body == null || !Boolean.TRUE.equals(body.get("active"))) {
+                throw new IllegalArgumentException("Employee not found or inactive: " + employeeId);
+            }
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (org.springframework.web.client.RestClientResponseException e) {
+            int code = e.getStatusCode().value();
+            if (code == 404 || code == 400) {
+                throw new IllegalArgumentException("Employee not found or inactive: " + employeeId);
+            }
+            throw new IllegalArgumentException("Employee not found or inactive: " + employeeId);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Employee not found or inactive: " + employeeId);
+        }
     }
 
     @GetMapping("/health-info")

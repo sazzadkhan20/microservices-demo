@@ -283,7 +283,7 @@ public class QiiBusinessSeeder {
                     OR (p.feature = 'reports' AND p.action IN ('view','export'))
                     OR (p.feature = 'roles' AND p.action IN ('view','edit'))
                     OR (p.feature = 'employees' AND p.action IN ('view','create','edit'))
-                    OR (p.feature = 'salary' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'salary' AND p.action = 'view')
                     OR (p.feature = 'leave' AND p.action IN ('view','request','approve','manage'))
                     OR (p.feature = 'notifications' AND p.action = 'view')
                     OR (p.feature = 'org' AND p.action = 'view')
@@ -349,7 +349,6 @@ public class QiiBusinessSeeder {
                     OR (p.feature = 'worklogs' AND p.action IN ('view','create','edit'))
                     OR (p.feature = 'salary' AND p.action = 'view')
                     OR (p.feature = 'emails' AND p.action = 'view')
-                    OR (p.feature = 'employees' AND p.action = 'view')
                     OR (p.feature = 'leave' AND p.action IN ('view','request'))
                     OR (p.feature = 'notifications' AND p.action = 'view')
                     OR (p.feature = 'payroll' AND p.action = 'view')
@@ -369,7 +368,7 @@ public class QiiBusinessSeeder {
         st.executeUpdate("""
                 INSERT INTO location (code, name, country, time_zone, default_currency) VALUES
                   ('BD-DHK', 'Dhaka HQ', 'Bangladesh', 'Asia/Dhaka', 'BDT'),
-                  ('AU-SYD', 'Sydney Studio', 'Australia', 'Australia/Sydney', 'AUD')
+                  ('AU-DRW', 'Darwin office', 'Australia', 'Australia/Darwin', 'AUD')
                 """);
 
         st.executeUpdate("""
@@ -454,7 +453,7 @@ public class QiiBusinessSeeder {
                    (SELECT id FROM department WHERE code='PROD'),
                    (SELECT id FROM designation WHERE code='PROD_MGR'),
                    NULL, 'Marcus', 'Production Manager',
-                   (SELECT id FROM location WHERE code='AU-SYD'),
+                   (SELECT id FROM location WHERE code='AU-DRW'),
                    (SELECT id FROM team WHERE code='PROD'), 'FULL_TIME', '2021-08-01',
                    'AUD', 'Active', '+61400000011', 'FIXED',
                    95000.0000, 0.0000,
@@ -484,7 +483,7 @@ public class QiiBusinessSeeder {
                    (SELECT id FROM department WHERE code='PROD'),
                    (SELECT id FROM designation WHERE code='PRODUCER'),
                    NULL, 'Sophie', 'Producer',
-                   (SELECT id FROM location WHERE code='AU-SYD'),
+                   (SELECT id FROM location WHERE code='AU-DRW'),
                    (SELECT id FROM team WHERE code='PROD'), 'FULL_TIME', '2022-09-12',
                    'AUD', 'Active', '+61400000022', 'FIXED',
                    72000.0000, 0.0000,
@@ -514,7 +513,7 @@ public class QiiBusinessSeeder {
                    (SELECT id FROM department WHERE code='PROD'),
                    (SELECT id FROM designation WHERE code='PRODUCER'),
                    NULL, 'Owen', 'Junior Producer',
-                   (SELECT id FROM location WHERE code='AU-SYD'),
+                   (SELECT id FROM location WHERE code='AU-DRW'),
                    (SELECT id FROM team WHERE code='PROD'), 'HOURLY', '2024-06-15',
                    'AUD', 'Active', '+61400000025', 'HOURLY',
                    0.0000, 45.0000,
@@ -588,7 +587,7 @@ public class QiiBusinessSeeder {
                 VALUES
                   ('LOCATION', (SELECT id FROM location WHERE code='BD-DHK'), 'FIXED',
                    '["SUN","MON","TUE","WED","THU"]'::jsonb, '10:00', '18:00', 15, 4, '23:59', NULL),
-                  ('LOCATION', (SELECT id FROM location WHERE code='AU-SYD'), 'FIXED',
+                  ('LOCATION', (SELECT id FROM location WHERE code='AU-DRW'), 'FIXED',
                    '["MON","TUE","WED","THU","FRI"]'::jsonb, '09:00', '17:00', 15, 4, '23:59', NULL),
                   ('EMPLOYEE', (SELECT id FROM employee WHERE employee_code='QII-0025'), 'HOURLY',
                    '[]'::jsonb, NULL, NULL, 0, NULL, NULL, 40)
@@ -659,10 +658,10 @@ public class QiiBusinessSeeder {
                   ((SELECT id FROM location WHERE code='BD-DHK'), 'Victory Day',
                    MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, 12, 16),
                    MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, 12, 16), 'PUBLIC', FALSE),
-                  ((SELECT id FROM location WHERE code='AU-SYD'), 'Australia Day',
+                  ((SELECT id FROM location WHERE code='AU-DRW'), 'Australia Day',
                    MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 26),
                    MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, 1, 26), 'PUBLIC', FALSE),
-                  ((SELECT id FROM location WHERE code='AU-SYD'), 'ANZAC Day',
+                  ((SELECT id FROM location WHERE code='AU-DRW'), 'ANZAC Day',
                    MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, 4, 25),
                    MAKE_DATE(EXTRACT(YEAR FROM CURRENT_DATE)::int, 4, 25), 'PUBLIC', FALSE)
                 """);

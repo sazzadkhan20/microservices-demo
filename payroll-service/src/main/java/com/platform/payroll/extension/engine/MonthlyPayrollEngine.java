@@ -79,9 +79,10 @@ public class MonthlyPayrollEngine {
         }
 
         BigDecimal gross = monthlyGross == null ? BigDecimal.ZERO : monthlyGross;
+        // Intermediate rate at 4dp; money amounts stored/returned at 2dp (DR-02).
         BigDecimal perDayRate = gross.divide(BigDecimal.valueOf(workingDays), 4, RoundingMode.HALF_UP);
         BigDecimal basePay = perDayRate.multiply(BigDecimal.valueOf(daysEmployed))
-                .setScale(4, RoundingMode.HALF_UP);
+                .setScale(2, RoundingMode.HALF_UP);
 
         // Absence resolution
         String absenceRule = configStr(config, "absenceRule", "BALANCE_FIRST");
@@ -113,9 +114,9 @@ public class MonthlyPayrollEngine {
 
         // FR-PAY-05: unpaid leave always deducted
         BigDecimal totalDeductDays = uncoveredDays.add(unpaidLeaveDays.max(BigDecimal.ZERO));
-        BigDecimal deduction = totalDeductDays.multiply(perDayRate).setScale(4, RoundingMode.HALF_UP);
-        BigDecimal adj = adjustmentAmount == null ? BigDecimal.ZERO : adjustmentAmount;
-        BigDecimal net = basePay.subtract(deduction).add(adj).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal deduction = totalDeductDays.multiply(perDayRate).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal adj = adjustmentAmount == null ? BigDecimal.ZERO : adjustmentAmount.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal net = basePay.subtract(deduction).add(adj).setScale(2, RoundingMode.HALF_UP);
 
         // Notes
         List<String> notes = new ArrayList<>();
@@ -171,15 +172,15 @@ public class MonthlyPayrollEngine {
         long missingCheckouts = longVal(facts, "missingCheckoutCount", 0);
         BigDecimal rate = hourlyRate == null ? BigDecimal.ZERO : hourlyRate;
 
-        BigDecimal basePay = rate.multiply(hoursWorked).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal basePay = rate.multiply(hoursWorked).setScale(2, RoundingMode.HALF_UP);
 
         // Unpaid leave deduction: days × rate × dailyHours
         BigDecimal dailyHours = configBd(config, "dailyHours", new BigDecimal("8"));
         BigDecimal deduction = unpaidLeaveDays.multiply(rate).multiply(dailyHours)
-                .setScale(4, RoundingMode.HALF_UP);
+                .setScale(2, RoundingMode.HALF_UP);
 
-        BigDecimal adj = adjustmentAmount == null ? BigDecimal.ZERO : adjustmentAmount;
-        BigDecimal net = basePay.subtract(deduction).add(adj).setScale(4, RoundingMode.HALF_UP);
+        BigDecimal adj = adjustmentAmount == null ? BigDecimal.ZERO : adjustmentAmount.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal net = basePay.subtract(deduction).add(adj).setScale(2, RoundingMode.HALF_UP);
 
         List<String> notes = new ArrayList<>();
         if (missingCheckouts > 0) {

@@ -74,8 +74,7 @@ public class PostgresDatabaseProvisioner {
             Database database = DatabaseFactory.getInstance()
                     .findCorrectDatabaseImplementation(new JdbcConnection(conn));
             try (Liquibase liquibase = new Liquibase(changelogClasspath, new ClassLoaderResourceAccessor(), database)) {
-                // Allow controlled edits to already-applied YAML (e.g. default settings tweaks)
-                liquibase.clearCheckSums();
+                // Do not clearCheckSums — edited applied changesets must fail loudly so fleet drift is visible.
                 liquibase.update(new Contexts(), new LabelExpression());
             }
             log.info("Liquibase migrated {} using {}", jdbcUrl, changelogClasspath);

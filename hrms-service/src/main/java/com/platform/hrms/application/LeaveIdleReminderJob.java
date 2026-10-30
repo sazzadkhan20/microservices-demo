@@ -4,6 +4,7 @@ import com.platform.hrms.domain.Employee;
 import com.platform.hrms.domain.LeaveApplication;
 import com.platform.hrms.domain.LeaveApproval;
 import com.platform.hrms.extension.config.TenantConfigLoader;
+import com.platform.hrms.infrastructure.jobs.TenantJobRunner;
 import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
 import com.platform.hrms.infrastructure.persistence.LeaveApplicationRepository;
 import com.platform.hrms.infrastructure.persistence.LeaveApprovalRepository;
@@ -21,11 +22,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * FR-LV-16 — daily idle approval reminder.
- * Finds PENDING_APPROVAL leaves where the current step has been pending for
- * ≥ leaveIdleReminder.idleWorkingDays (default 2) calendar days and notifies the expected approver.
- * Config key: {@code leaveIdleReminder.enabled} (default true),
- *             {@code leaveIdleReminder.idleWorkingDays} (default 2).
+ * FR-LV-16 — daily idle approval reminder (per-tenant via {@link TenantJobRunner}).
  */
 @Component
 public class LeaveIdleReminderJob {
@@ -38,6 +35,7 @@ public class LeaveIdleReminderJob {
     private final LeaveNotificationHook notificationHook;
     private final TenantConfigLoader configLoader;
     private final RbacService rbacService;
+    private final TenantJobRunner tenantJobRunner;
 
     public LeaveIdleReminderJob(
             LeaveApplicationRepository applicationRepository,
@@ -45,18 +43,24 @@ public class LeaveIdleReminderJob {
             EmployeeRepository employeeRepository,
             LeaveNotificationHook notificationHook,
             TenantConfigLoader configLoader,
-            RbacService rbacService) {
+            RbacService rbacService,
+            TenantJobRunner tenantJobRunner) {
         this.applicationRepository = applicationRepository;
         this.approvalRepository = approvalRepository;
         this.employeeRepository = employeeRepository;
         this.notificationHook = notificationHook;
         this.configLoader = configLoader;
         this.rbacService = rbacService;
+        this.tenantJobRunner = tenantJobRunner;
     }
 
     @Scheduled(cron = "0 0 8 * * *") // daily at 08:00
-    @Transactional(readOnly = true)
     public void run() {
+        tenantJobRunner.runForEachActiveTenant("LeaveIdleReminderJob", this::runForTenant);
+    }
+
+    @Transactional(readOnly = true)
+    protected void runForTenant(String tenantId) {
         Map<String, Object> settings = configLoader.loadSettingsMap();
         Object reminderCfg = settings.get("leaveIdleReminder");
         boolean enabled = true;
@@ -77,7 +81,6 @@ public class LeaveIdleReminderJob {
             return;
         }
 
-        // Find admin/superadmin employee IDs (leave:manage)
         Set<Long> admins = employeeRepository.findAll().stream()
                 .filter(emp -> emp.isActive()
                         && rbacService.hasPermission(emp.getId(), "leave", "manage"))
@@ -92,21 +95,20 @@ public class LeaveIdleReminderJob {
                 if (step == null || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
                     continue;
                 }
-                // Notify expected approver
                 Long expectedId = step.getExpectedApproverId();
                 if (expectedId != null) {
                     notificationHook.notifyIdleApproval(expectedId, app.getId());
                 }
-                // Notify admins
                 for (Long adminId : admins) {
                     if (!adminId.equals(expectedId)) {
                         notificationHook.notifyIdleApproval(adminId, app.getId());
                     }
                 }
             } catch (Exception ex) {
-                log.warn("Idle reminder failed for application {}: {}", app.getId(), ex.getMessage());
+                log.warn("Idle reminder failed for application {} tenant {}: {}",
+                        app.getId(), tenantId, ex.getMessage());
             }
         }
-        log.info("LeaveIdleReminderJob: processed {} idle applications", idle.size());
+        log.info("LeaveIdleReminderJob tenant={}: processed {} idle applications", tenantId, idle.size());
     }
 }

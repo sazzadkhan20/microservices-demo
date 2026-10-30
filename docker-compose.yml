@@ -112,6 +112,9 @@ services:
       MINIO_SECRET_KEY: minioadmin
       JWT_SECRET: practice-jwt-secret-change-me-32chars-min
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY:-local-internal-key-change-me}
+      HRMS_BASE_URL: http://hrms-service:8081
+      TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-604800}
     depends_on:
       postgres-registry:
         condition: service_healthy
@@ -139,6 +142,7 @@ services:
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY:-local-internal-key-change-me}
     depends_on:
       - tenant-registry
       - redis
@@ -156,6 +160,8 @@ services:
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY:-local-internal-key-change-me}
+      HRMS_BASE_URL: http://hrms-service:8081
       HRMS_GRPC_ADDRESS: static://hrms-service:9081
     depends_on:
       - tenant-registry
@@ -175,6 +181,7 @@ services:
       REDIS_HOST: redis
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY:-local-internal-key-change-me}
     depends_on:
       - tenant-registry
       - postgres-platform
@@ -256,7 +263,7 @@ services:
       FILES_URI: http://file-service:8084
       REPORTS_URI: http://report-service:8085
       DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-true}
-      DEMO_AUTH_KEY: ${DEMO_AUTH_KEY:-local-service-key-change-me}
+      DEMO_AUTH_KEY: ${DEMO_AUTH_KEY:-local-demo-auth-key-change-me}
       JWT_SECRET: practice-jwt-secret-change-me-32chars-min
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:-local-service-key-change-me}
     depends_on:
@@ -277,7 +284,7 @@ services:
     environment:
       TENANT_ID: qii_creative
       GATEWAY_URL: http://api-gateway:8090
-      DEMO_AUTH_KEY: ${DEMO_AUTH_KEY:-local-service-key-change-me}
+      DEMO_AUTH_KEY: ${DEMO_AUTH_KEY:-local-demo-auth-key-change-me}
       COOKIE_NAME: qii_session
       NODE_ENV: production
     depends_on:

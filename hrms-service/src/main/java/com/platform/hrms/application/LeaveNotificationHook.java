@@ -54,14 +54,28 @@ public class LeaveNotificationHook {
                 "/leave");
     }
 
-    /** FR-LV-14 — team clash ALERT: notify manager/team lead / first approver. */
-    public void notifyTeamClash(Long employeeId, Long applicationId, String message) {
+    /** FR-NT-01 — notify the current-step approver that a leave was submitted. */
+    public void notifyLeaveSubmitted(Long approverEmployeeId, Long applicationId, String applicantName) {
+        if (approverEmployeeId == null) return;
+        if (!isEnabled("LEAVE_SUBMITTED")) return;
+        String who = applicantName == null || applicantName.isBlank() ? "An employee" : applicantName;
+        push(approverEmployeeId,
+                "Leave approval needed",
+                who + " submitted leave application #" + applicationId,
+                "LEAVE",
+                "leave-submitted-" + applicationId + "-" + approverEmployeeId,
+                "/approvals");
+    }
+
+    /** FR-LV-14 — team clash ALERT: notify manager / team lead / first approver (not the applicant). */
+    public void notifyTeamClash(Long recipientEmployeeId, Long applicationId, String message) {
+        if (recipientEmployeeId == null) return;
         if (!isEnabled("TEAM_CLASH")) return;
-        push(employeeId,
+        push(recipientEmployeeId,
                 "Team Leave Clash Alert",
                 message + " (application #" + applicationId + ")",
                 "LEAVE",
-                "team-clash-" + applicationId,
+                "team-clash-" + applicationId + "-" + recipientEmployeeId,
                 "/leave/calendar");
     }
 

@@ -123,7 +123,8 @@ platform:
   # callers must send X-Demo-Auth-Key (the Next.js BFF does, server-side). Set enabled=false to disable entirely.
   demo-auth:
     enabled: ${DEMO_AUTH_ENABLED:true}
-    key: ${DEMO_AUTH_KEY:${PLATFORM_SERVICE_KEY:local-service-key-change-me}}
+    # Distinct from PLATFORM_SERVICE_KEY so the account-picker secret cannot bypass the gateway.
+    key: ${DEMO_AUTH_KEY:local-demo-auth-key-change-me}
   # JWT not required for these (swagger assets + OpenAPI JSON + health). No service key is forwarded.
   public-paths:
     - /actuator/**

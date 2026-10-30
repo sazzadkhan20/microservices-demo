@@ -3,6 +3,7 @@ package com.platform.payroll.infrastructure;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.constants.PlatformHeaders;
+import com.platform.common.security.InternalCalls;
 import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,11 +17,12 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
- * Calls HRMS /api/payroll-facts/employee/{id}?period=YYYY-MM to get structured payroll facts.
- * Also calls /api/payroll-facts/apply-leave-cover on finalize/reopen.
+ * Calls HRMS /api/payroll-facts/* with service-key + internal-key (system S2S).
+ * Fail-closed: never invents zero-absence facts when HRMS is unreachable.
  */
 @Component
 public class HrmsPayrollFactsClient {
@@ -29,78 +31,83 @@ public class HrmsPayrollFactsClient {
 
     private final String hrmsBaseUrl;
     private final String serviceKey;
+    private final String internalKey;
     private final ObjectMapper mapper;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
 
     public HrmsPayrollFactsClient(
             @Value("${payroll.hrms-base-url:http://127.0.0.1:8081}") String hrmsBaseUrl,
             @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
+            @Value("${platform.security.internal-key:" + InternalCalls.DEFAULT_DEV_KEY + "}") String internalKey,
             ObjectMapper mapper) {
         this.hrmsBaseUrl = hrmsBaseUrl == null ? "" : hrmsBaseUrl.replaceAll("/$", "");
         this.serviceKey = serviceKey;
+        this.internalKey = internalKey;
         this.mapper = mapper;
     }
 
     /**
      * Fetch payroll facts from HRMS for the given employee + period.
-     * Returns an empty map (with fallback zeros) when HRMS is unavailable.
+     * @throws IllegalStateException when HRMS is unavailable or returns an error (fail-closed).
      */
     public Map<String, Object> fetchFacts(Long employeeId, String periodLabel) {
         if (hrmsBaseUrl.isBlank() || employeeId == null || periodLabel == null) {
-            return emptyFacts(employeeId, periodLabel);
+            throw new IllegalStateException("HRMS payroll-facts unavailable: missing base URL or args");
         }
         try {
             String url = hrmsBaseUrl + "/api/payroll-facts/employee/" + employeeId
                     + "?period=" + encode(periodLabel.substring(0, 7));
             HttpResponse<String> resp = http.send(buildGet(url), HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 300) {
-                log.warn("HRMS payroll-facts HTTP {} for emp={} period={}", resp.statusCode(), employeeId, periodLabel);
-                return emptyFacts(employeeId, periodLabel);
+                throw new IllegalStateException(
+                        "HRMS payroll-facts HTTP " + resp.statusCode() + " for emp=" + employeeId);
             }
             Map<String, Object> result = mapper.readValue(resp.body(), new TypeReference<>() {});
-            // Normalize BigDecimal fields that Jackson may parse as Double
             normalizeBd(result, "baseSalary", "hourlyRate", "absentDays", "unpaidLeaveDays",
                     "paidLeaveDays", "hoursWorked");
             normalizeLeaveBalances(result);
             return result;
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
-            log.warn("HRMS payroll-facts fetch failed emp={} period={}: {}", employeeId, periodLabel, e.getMessage());
-            return emptyFacts(employeeId, periodLabel);
+            throw new IllegalStateException(
+                    "HRMS payroll-facts fetch failed emp=" + employeeId + ": " + e.getMessage(), e);
         }
     }
 
-    /** Active employee ids for month run (FR-PAY-01). Empty when HRMS unreachable. */
-    public java.util.List<Long> listActiveEmployeeIds() {
+    /** Active employee ids for month run (FR-PAY-01). Fail-closed when HRMS unreachable. */
+    public List<Long> listActiveEmployeeIds() {
         if (hrmsBaseUrl.isBlank()) {
-            return java.util.List.of();
+            throw new IllegalStateException("HRMS base URL not configured");
         }
         try {
-            String url = hrmsBaseUrl + "/api/employees?page=1&size=500&filter.active=true";
+            String url = hrmsBaseUrl + "/api/payroll-facts/active-employees";
             HttpResponse<String> resp = http.send(buildGet(url), HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 300) {
-                log.warn("HRMS employees list HTTP {}", resp.statusCode());
-                return java.util.List.of();
+                throw new IllegalStateException("HRMS active-employees HTTP " + resp.statusCode());
             }
             Map<String, Object> body = mapper.readValue(resp.body(), new TypeReference<>() {});
-            Object content = body.get("content");
-            if (!(content instanceof java.util.List<?> list)) {
-                return java.util.List.of();
+            Object ids = body.get("employeeIds");
+            if (!(ids instanceof List<?> list)) {
+                return List.of();
             }
-            java.util.List<Long> ids = new java.util.ArrayList<>();
+            List<Long> out = new java.util.ArrayList<>();
             for (Object row : list) {
-                if (row instanceof Map<?, ?> m && m.get("id") != null) {
-                    ids.add(Long.valueOf(String.valueOf(m.get("id"))));
+                if (row != null) {
+                    out.add(Long.valueOf(String.valueOf(row)));
                 }
             }
-            return ids;
+            return out;
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
-            log.warn("HRMS employees list failed: {}", e.getMessage());
-            return java.util.List.of();
+            throw new IllegalStateException("HRMS active-employees failed: " + e.getMessage(), e);
         }
     }
 
     /**
      * Apply leave cover on finalize (reverse=false) or reopen (reverse=true).
+     * Fail-closed: throws when HRMS rejects so finalize cannot leave balances out of sync.
      */
     public void applyLeaveCover(Long employeeId, String periodLabel,
                                 Map<String, BigDecimal> consumedByType, boolean reverse) {
@@ -119,27 +126,30 @@ public class HrmsPayrollFactsClient {
                     .uri(URI.create(url))
                     .timeout(Duration.ofSeconds(8))
                     .header(PlatformHeaders.SERVICE_KEY, serviceKey)
+                    .header(InternalCalls.HEADER, internalKey)
                     .header(PlatformHeaders.TENANT_ID, tenant())
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(json))
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 300) {
-                log.warn("apply-leave-cover HTTP {} emp={} period={} reverse={}",
-                        resp.statusCode(), employeeId, periodLabel, reverse);
+                throw new IllegalStateException(
+                        "apply-leave-cover HTTP " + resp.statusCode() + " emp=" + employeeId);
             }
+        } catch (IllegalStateException e) {
+            throw e;
         } catch (Exception e) {
-            log.warn("apply-leave-cover failed emp={} period={}: {}", employeeId, periodLabel, e.getMessage());
+            throw new IllegalStateException(
+                    "apply-leave-cover failed emp=" + employeeId + ": " + e.getMessage(), e);
         }
     }
-
-    // ---------------------- helpers ----------------------
 
     private HttpRequest buildGet(String url) {
         return HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(8))
                 .header(PlatformHeaders.SERVICE_KEY, serviceKey)
+                .header(InternalCalls.HEADER, internalKey)
                 .header(PlatformHeaders.TENANT_ID, tenant())
                 .GET()
                 .build();
@@ -156,23 +166,6 @@ public class HrmsPayrollFactsClient {
         } catch (Exception e) {
             return s;
         }
-    }
-
-    private static Map<String, Object> emptyFacts(Long employeeId, String periodLabel) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("employeeId", employeeId);
-        m.put("periodLabel", periodLabel);
-        m.put("workingDaysInMonth", 22);
-        m.put("daysEmployed", 22);
-        m.put("absentDays", BigDecimal.ZERO);
-        m.put("unpaidLeaveDays", BigDecimal.ZERO);
-        m.put("paidLeaveDays", BigDecimal.ZERO);
-        m.put("hoursWorked", BigDecimal.ZERO);
-        m.put("missingCheckoutCount", 0L);
-        m.put("leaveBalances", Map.of());
-        m.put("payType", "MONTHLY");
-        m.put("currency", "BDT");
-        return m;
     }
 
     private void normalizeBd(Map<String, Object> m, String... keys) {

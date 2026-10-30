@@ -64,19 +64,18 @@ public class HrmsGatewayClient {
         if ("read".equalsIgnoreCase(action) && perms.contains(feature.toLowerCase(Locale.ROOT) + ":view")) {
             return true;
         }
-        if ("export".equalsIgnoreCase(action)
-                && (perms.contains(feature.toLowerCase(Locale.ROOT) + ":view")
-                || perms.contains(feature.toLowerCase(Locale.ROOT) + ":read"))) {
-            return true;
-        }
+        // Do not treat reports:view as reports:export — export is a distinct grant.
         return false;
     }
 
-    /** Page of attendance rows for an employee (content array). */
-    public List<JsonNode> attendanceForEmployee(Long employeeId, int page, int size) {
+    /**
+     * Page of attendance rows for an employee.
+     * {@code actorEmployeeId} is used for HRMS auth/scope; {@code targetEmployeeId} is the data subject.
+     */
+    public List<JsonNode> attendanceForEmployee(Long actorEmployeeId, Long targetEmployeeId, int page, int size) {
         JsonNode pageJson = getJson(
-                "/api/attendance/employee/" + employeeId,
-                employeeId,
+                "/api/attendance/employee/" + targetEmployeeId,
+                actorEmployeeId,
                 Map.of("page", String.valueOf(page), "size", String.valueOf(size), "sort", "workDate,asc"));
         List<JsonNode> rows = new ArrayList<>();
         if (pageJson != null && pageJson.has("content") && pageJson.get("content").isArray()) {
@@ -85,7 +84,7 @@ public class HrmsGatewayClient {
         return rows;
     }
 
-    private JsonNode getJson(String path, Long employeeId, Map<String, String> query) {
+    private JsonNode getJson(String path, Long actorEmployeeId, Map<String, String> query) {
         if (hrmsBaseUrl.isBlank()) {
             return null;
         }
@@ -106,7 +105,7 @@ public class HrmsGatewayClient {
                     .timeout(Duration.ofSeconds(8))
                     .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                     .header(PlatformHeaders.TENANT_ID, tenant)
-                    .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId))
+                    .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(actorEmployeeId))
                     .GET()
                     .build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());

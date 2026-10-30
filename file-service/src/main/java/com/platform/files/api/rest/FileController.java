@@ -86,6 +86,7 @@ public class FileController {
                 .filename(meta.originalName())
                 .build());
         headers.setContentLength(meta.sizeBytes());
+        headers.set("X-Content-Type-Options", "nosniff");
 
         return ResponseEntity.ok()
                 .headers(headers)

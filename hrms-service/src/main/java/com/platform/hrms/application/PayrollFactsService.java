@@ -130,7 +130,19 @@ public class PayrollFactsService {
         long missingCheckoutCount = 0;
         long hoursWorkedMinutes = 0;
 
+        // Hourly staff are paid on hours worked — do not invent calendar absences.
+        boolean hourly = "HOURLY".equalsIgnoreCase(payType)
+                || (emp.getEmploymentType() != null
+                && "HOURLY".equalsIgnoreCase(emp.getEmploymentType().trim()));
+
         for (LocalDate d = monthStart; !d.isAfter(checkUpTo); d = d.plusDays(1)) {
+            // Skip days outside employment window (joiners / leavers)
+            if (startDate != null && d.isBefore(startDate)) {
+                continue;
+            }
+            if (exitDate != null && d.isAfter(exitDate)) {
+                continue;
+            }
             // Skip non-working days (weekends per schedule, holidays)
             if (schedule != null && !workScheduleService.isWorkingDay(schedule, d)) {
                 continue;
@@ -143,11 +155,12 @@ public class PayrollFactsService {
             if (rec != null) {
                 String status = rec.getStatusCode() == null ? "" : rec.getStatusCode().toUpperCase(Locale.ROOT);
                 // A / ABSENT = 1, HD / HALF_DAY = 0.5
-                // OL treated separately below; M (missing checkout) treated as absent-like
-                if ("A".equals(status) || "ABSENT".equals(status)) {
-                    absentDays = absentDays.add(BigDecimal.ONE);
-                } else if ("HD".equals(status) || "HALF".equals(status) || "HALF_DAY".equals(status)) {
-                    absentDays = absentDays.add(new BigDecimal("0.5"));
+                if (!hourly) {
+                    if ("A".equals(status) || "ABSENT".equals(status)) {
+                        absentDays = absentDays.add(BigDecimal.ONE);
+                    } else if ("HD".equals(status) || "HALF".equals(status) || "HALF_DAY".equals(status)) {
+                        absentDays = absentDays.add(new BigDecimal("0.5"));
+                    }
                 }
                 // Count hours for closed shifts only
                 if (rec.getCheckInAt() != null && rec.getCheckOutAt() != null) {
@@ -157,12 +170,11 @@ public class PayrollFactsService {
                 if (rec.getCheckInAt() != null && rec.getCheckOutAt() == null) {
                     missingCheckoutCount++;
                 }
-            } else {
+            } else if (!hourly) {
                 // No attendance record: on approved leave → OL (not absent); else synthetic absent
                 if (!leaveDays.contains(d)) {
                     absentDays = absentDays.add(BigDecimal.ONE);
                 }
-                // else: OL — not counted as absent (FR-PAY-03)
             }
         }
 
@@ -274,8 +286,31 @@ public class PayrollFactsService {
         return count;
     }
 
+    /**
+     * Active employee ids for payroll month runs (internal / allowInternal callers).
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> listActiveEmployeeIds() {
+        List<Long> ids = employeeRepository.findAll().stream()
+                .filter(Employee::isActive)
+                .map(Employee::getId)
+                .sorted()
+                .toList();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("employeeIds", ids);
+        out.put("count", ids.size());
+        return out;
+    }
+
     private static String resolvePayType(Employee emp) {
-        // Hourly rate set and positive → HOURLY; else MONTHLY
+        if (emp.getEmploymentType() != null
+                && "HOURLY".equalsIgnoreCase(emp.getEmploymentType().trim())) {
+            return "HOURLY";
+        }
+        String pattern = emp.getWorkPattern();
+        if (pattern != null && "HOURLY".equalsIgnoreCase(pattern.trim())) {
+            return "HOURLY";
+        }
         if (emp.getHourlyRate() != null && emp.getHourlyRate().compareTo(BigDecimal.ZERO) > 0) {
             return "HOURLY";
         }

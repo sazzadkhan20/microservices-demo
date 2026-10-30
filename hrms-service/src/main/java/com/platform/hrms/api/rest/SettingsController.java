@@ -45,6 +45,7 @@ public class SettingsController {
     }
 
     @GetMapping("/notifications")
+    @RequiresPermission(feature = "settings", action = "manage")
     @Operation(summary = "Notification preference bag (stored in tenant_settings.notifications)")
     public Map<String, Object> getNotifications() {
         Map<String, Object> settings = repository.findAll().stream().findFirst()
@@ -59,6 +60,7 @@ public class SettingsController {
     }
 
     @PutMapping("/notifications")
+    @RequiresPermission(feature = "settings", action = "manage")
     @Operation(summary = "Replace notification preference bag")
     public Map<String, Object> putNotifications(@RequestBody Map<String, Object> body) {
         TenantSettings row = repository.findAll().stream().findFirst().orElseGet(TenantSettings::new);

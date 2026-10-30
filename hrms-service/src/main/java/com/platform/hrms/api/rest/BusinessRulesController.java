@@ -35,7 +35,7 @@ public class BusinessRulesController {
     }
 
     @GetMapping
-    @RequiresPermission(feature = "settings", action = "view")
+    @RequiresPermission(feature = "settings", action = "manage")
     @Operation(summary = "BR-01..22 Active business rules from tenant config (read-only documentation)")
     public Map<String, Object> get() {
         Map<String, Object> settings = settingsRepository.findAll().stream()

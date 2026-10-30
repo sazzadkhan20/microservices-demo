@@ -5,7 +5,11 @@ import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -13,7 +17,8 @@ import java.util.Set;
  *
  * <ul>
  *   <li>{@code ALL}  – every employee in the tenant;</li>
- *   <li>{@code TEAM} – the actor plus their direct reports ({@code employee.manager_id = actor});</li>
+ *   <li>{@code TEAM} – the actor plus all descendants in the reporting tree
+ *       (direct and indirect reports via {@code manager_id});</li>
  *   <li>{@code OWN}  – only the actor;</li>
  *   <li>{@code NONE} – nobody (permission not granted).</li>
  * </ul>
@@ -35,12 +40,7 @@ public class DataScopeService {
         String scope = rbacService.widestScope(actorId, feature, action);
         Set<Long> team = Set.of();
         if ("TEAM".equals(scope)) {
-            Set<Long> ids = new HashSet<>();
-            ids.add(actorId);
-            for (Employee report : employeeRepository.findByManagerId(actorId)) {
-                ids.add(report.getId());
-            }
-            team = Set.copyOf(ids);
+            team = subtreeIncludingSelf(actorId);
         }
         return new Visibility(scope, actorId, team);
     }
@@ -57,6 +57,29 @@ public class DataScopeService {
             throw new SecurityException("Forbidden: " + feature + ":" + action
                     + " does not cover employee " + targetEmployeeId);
         }
+    }
+
+    /** Actor + all descendants following manager→report edges. */
+    private Set<Long> subtreeIncludingSelf(Long root) {
+        Set<Long> out = new HashSet<>();
+        out.add(root);
+        Map<Long, List<Long>> kids = new HashMap<>();
+        for (Employee e : employeeRepository.findAll()) {
+            if (e.getManagerId() != null) {
+                kids.computeIfAbsent(e.getManagerId(), k -> new ArrayList<>()).add(e.getId());
+            }
+        }
+        ArrayList<Long> stack = new ArrayList<>();
+        stack.add(root);
+        while (!stack.isEmpty()) {
+            Long id = stack.remove(stack.size() - 1);
+            for (Long c : kids.getOrDefault(id, List.of())) {
+                if (out.add(c)) {
+                    stack.add(c);
+                }
+            }
+        }
+        return Set.copyOf(out);
     }
 
     public record Visibility(String scope, Long actorId, Set<Long> teamIds) {

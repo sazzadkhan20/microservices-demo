@@ -16,6 +16,7 @@ import com.platform.hrms.domain.LeaveCategory;
 import com.platform.hrms.domain.LeavePolicy;
 import com.platform.hrms.domain.LeaveType;
 import com.platform.hrms.domain.StoreShiftCoverage;
+import com.platform.hrms.domain.Team;
 import com.platform.hrms.extension.config.TenantConfigLoader;
 import com.platform.hrms.extension.engine.WorkingDaysCalculator;
 import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
@@ -25,6 +26,7 @@ import com.platform.hrms.infrastructure.persistence.LeaveApprovalRepository;
 import com.platform.hrms.infrastructure.persistence.LeaveCategoryRepository;
 import com.platform.hrms.infrastructure.persistence.LeaveTypeRepository;
 import com.platform.hrms.infrastructure.persistence.StoreShiftCoverageRepository;
+import com.platform.hrms.infrastructure.persistence.TeamRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -65,6 +67,7 @@ public class LeaveApplicationService {
     private final DataScopeService dataScopeService;
     private final ApprovalAuthorityService approvalAuthorityService;
     private final WorkScheduleService workScheduleService;
+    private final TeamRepository teamRepository;
 
     public LeaveApplicationService(
             EmployeeRepository employeeRepository,
@@ -83,7 +86,8 @@ public class LeaveApplicationService {
             LeaveNotificationHook notificationHook,
             DataScopeService dataScopeService,
             ApprovalAuthorityService approvalAuthorityService,
-            WorkScheduleService workScheduleService) {
+            WorkScheduleService workScheduleService,
+            TeamRepository teamRepository) {
         this.employeeRepository = employeeRepository;
         this.extRepo = extRepo;
         this.applicationRepository = applicationRepository;
@@ -101,6 +105,7 @@ public class LeaveApplicationService {
         this.dataScopeService = dataScopeService;
         this.approvalAuthorityService = approvalAuthorityService;
         this.workScheduleService = workScheduleService;
+        this.teamRepository = teamRepository;
     }
 
     /** Unscoped (internal use only). HTTP callers must use {@link #listForCaller()}. */
@@ -334,12 +339,40 @@ public class LeaveApplicationService {
                 "endDate", saved.getEndDate().toString(),
                 "status", saved.getStatus()
         ));
-        if (teamClashAlert) {
-            notificationHook.notifyTeamClash(employee.getId(), saved.getId(),
-                    warnings.getOrDefault("teamClash", "Team clash alert").toString());
+        List<LeaveApproval> createdSteps =
+                approvalRepository.findByApplicationIdOrderByStepOrderAsc(saved.getId());
+        // FR-NT-01 — notify current-step expected approver(s)
+        for (LeaveApproval step : createdSteps) {
+            if (step.getStepOrder() == Math.max(1, saved.getCurrentStep())
+                    && LeaveApproval.STATUS_PENDING.equals(step.getStatus())
+                    && step.getExpectedApproverId() != null) {
+                notificationHook.notifyLeaveSubmitted(
+                        step.getExpectedApproverId(), saved.getId(), employee.getFullName());
+            }
         }
-        return LeaveApplicationResponse.from(
-                saved, approvalRepository.findByApplicationIdOrderByStepOrderAsc(saved.getId()));
+        if (teamClashAlert) {
+            String clashMsg = warnings.getOrDefault("teamClash", "Team clash alert").toString();
+            Set<Long> clashRecipients = new HashSet<>();
+            if (employee.getManagerId() != null) {
+                clashRecipients.add(employee.getManagerId());
+            }
+            if (employee.getTeamId() != null) {
+                teamRepository.findById(employee.getTeamId())
+                        .map(Team::getLeadEmployeeId)
+                        .ifPresent(clashRecipients::add);
+            }
+            for (LeaveApproval step : createdSteps) {
+                if (step.getExpectedApproverId() != null) {
+                    clashRecipients.add(step.getExpectedApproverId());
+                    break; // first step only
+                }
+            }
+            clashRecipients.remove(employee.getId());
+            for (Long recipientId : clashRecipients) {
+                notificationHook.notifyTeamClash(recipientId, saved.getId(), clashMsg);
+            }
+        }
+        return LeaveApplicationResponse.from(saved, createdSteps);
     }
 
     /** Validates and builds context for apply/preview without persisting. */
@@ -365,14 +398,17 @@ public class LeaveApplicationService {
             checkAppliesTo(employee, category);
         }
 
-        // FR-LV-03: refuse day-based leave for HOURLY employees
-        workScheduleService.resolveForEmployee(employee).ifPresent(schedule -> {
-            String mode = schedule.getMode() == null ? "" : schedule.getMode().toUpperCase(Locale.ROOT);
-            if ("HOURLY".equals(mode)) {
-                throw new IllegalStateException(
-                        "Employee schedule is HOURLY; day-based leave categories are not supported");
-            }
-        });
+        // FR-LV-03: hourly staff (employment type or schedule mode) cannot take categories that block hourly.
+        boolean hourlyEmployment = employee.getEmploymentType() != null
+                && "HOURLY".equalsIgnoreCase(employee.getEmploymentType().trim());
+        boolean hourlySchedule = workScheduleService.resolveForEmployee(employee)
+                .map(s -> s.getMode() != null && "HOURLY".equalsIgnoreCase(s.getMode().trim()))
+                .orElse(false);
+        if ((hourlyEmployment || hourlySchedule) && categoryBlocksHourly(category, leaveType)) {
+            throw new IllegalStateException(
+                    "Hourly employees cannot request " + leaveType.getCode()
+                            + "; this category is not available on an hourly schedule");
+        }
 
         // FR-LV-11: period eligibility
         if (category != null) {
@@ -412,6 +448,9 @@ public class LeaveApplicationService {
         } else if (Boolean.TRUE.equals(request.halfDay())) {
             if (category != null && !category.isHalfDayAllowed()) {
                 throw new IllegalStateException("Half-day leave not allowed for category " + leaveType.getCode());
+            }
+            if (!request.startDate().equals(request.endDate())) {
+                throw new IllegalStateException("Half-day leave must be a single date (startDate == endDate)");
             }
             daysCounted = new BigDecimal("0.5");
         } else {
@@ -559,9 +598,32 @@ public class LeaveApplicationService {
     }
 
     /**
-     * FR-LV-01 — applies_to eligibility: employee must match at least one non-empty list.
-     * Empty object / all empty lists = everyone eligible.
+     * Day-entitlement categories (Casual and the same class: quota &gt; 0, or an explicit
+     * {@code applies_to.blockHourly} flag) are refused for hourly staff. Unpaid / zero-quota
+     * categories stay available unless the flag says otherwise.
      */
+    private boolean categoryBlocksHourly(LeaveCategory category, LeaveType leaveType) {
+        if (category != null && category.getAppliesTo() != null && !category.getAppliesTo().isBlank()) {
+            try {
+                Map<String, Object> applies = new ObjectMapper().readValue(category.getAppliesTo(), new TypeReference<>() {});
+                if (applies.containsKey("blockHourly")) {
+                    Object v = applies.get("blockHourly");
+                    if (v instanceof Boolean b) {
+                        return b;
+                    }
+                    return v != null && Boolean.parseBoolean(String.valueOf(v));
+                }
+            } catch (Exception ignored) {
+                // fall through to the quota rule
+            }
+        }
+        if (category != null && category.getQuotaDays() != null && category.getQuotaDays().signum() > 0) {
+            return true;
+        }
+        return leaveType != null && leaveType.isRequiresBalance();
+    }
+
+    /** FR-LV-01 — employee must match at least one non-empty applies_to list. Empty = everyone. */
     @SuppressWarnings("unchecked")
     private void checkAppliesTo(Employee employee, LeaveCategory category) {
         String raw = category.getAppliesTo();
@@ -625,7 +687,8 @@ public class LeaveApplicationService {
         if (request.halfDayPart() != null && !request.halfDayPart().isBlank()) {
             String p = request.halfDayPart().toUpperCase(Locale.ROOT);
             return switch (p) {
-                case "FIRST_HALF", "SECOND_HALF" -> p;
+                case "FIRST_HALF", "AM" -> "FIRST_HALF";
+                case "SECOND_HALF", "PM" -> "SECOND_HALF";
                 default -> "FULL";
             };
         }

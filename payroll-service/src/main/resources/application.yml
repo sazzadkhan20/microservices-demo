@@ -38,6 +38,7 @@ platform:
     # Requests must carry X-Service-Key = this value (stamped by the gateway); also sent to HRMS gRPC.
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
     service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+    internal-key: ${PLATFORM_INTERNAL_KEY:local-internal-key-change-me}
   registry:
     base-url: ${REGISTRY_BASE_URL:http://localhost:8080}
     service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}

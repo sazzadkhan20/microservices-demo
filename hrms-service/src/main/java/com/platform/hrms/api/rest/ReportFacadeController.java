@@ -2,6 +2,7 @@ package com.platform.hrms.api.rest;
 
 import com.platform.common.security.AuthContext;
 import com.platform.hrms.application.AuditService;
+import com.platform.hrms.application.DataScopeService;
 import com.platform.hrms.domain.AttendanceRecord;
 import com.platform.hrms.domain.Employee;
 import com.platform.hrms.domain.LeaveApplication;
@@ -46,6 +47,7 @@ public class ReportFacadeController {
     private final AttendanceRecordRepository attendanceRepository;
     private final LeaveTypeRepository leaveTypeRepository;
     private final AuditService auditService;
+    private final DataScopeService dataScopeService;
 
     public ReportFacadeController(
             EmployeeRepository employeeRepository,
@@ -53,13 +55,19 @@ public class ReportFacadeController {
             LeaveApplicationRepository leaveApplicationRepository,
             AttendanceRecordRepository attendanceRepository,
             LeaveTypeRepository leaveTypeRepository,
-            AuditService auditService) {
+            AuditService auditService,
+            DataScopeService dataScopeService) {
         this.employeeRepository = employeeRepository;
         this.leaveBalanceRepository = leaveBalanceRepository;
         this.leaveApplicationRepository = leaveApplicationRepository;
         this.attendanceRepository = attendanceRepository;
         this.leaveTypeRepository = leaveTypeRepository;
         this.auditService = auditService;
+        this.dataScopeService = dataScopeService;
+    }
+
+    private DataScopeService.Visibility reportsVisibility() {
+        return dataScopeService.visibility(AuthContext.requireEmployeeId(), "reports", "view");
     }
 
     /** FR-RP: Leave balance report per employee per leave type for a given year. */
@@ -70,11 +78,16 @@ public class ReportFacadeController {
             @RequestParam(required = false) String year) {
         int y = year != null && !year.isBlank() ? Integer.parseInt(year) : LocalDate.now().getYear();
 
+        DataScopeService.Visibility vis = reportsVisibility();
         List<Employee> employees = employeeRepository.findAll().stream()
-                .filter(Employee::isActive).toList();
+                .filter(Employee::isActive)
+                .filter(e -> vis.allows(e.getId()))
+                .toList();
         List<LeaveType> types = leaveTypeRepository.findByActiveTrueOrderBySortOrderAsc();
         List<LeaveBalance> balances = leaveBalanceRepository.findAll().stream()
-                .filter(b -> b.getYear() == y).toList();
+                .filter(b -> b.getYear() == y)
+                .filter(b -> vis.allows(b.getEmployeeId()))
+                .toList();
 
         Map<Long, Map<String, LeaveBalance>> byEmpType = balances.stream()
                 .collect(Collectors.groupingBy(LeaveBalance::getEmployeeId,
@@ -116,11 +129,14 @@ public class ReportFacadeController {
                 : LocalDate.now().withDayOfMonth(1);
         LocalDate toDate = to != null && !to.isBlank() ? LocalDate.parse(to) : LocalDate.now();
 
+        DataScopeService.Visibility vis = reportsVisibility();
         Map<Long, Employee> empMap = employeeRepository.findAll().stream()
+                .filter(e -> vis.allows(e.getId()))
                 .collect(Collectors.toMap(Employee::getId, e -> e));
 
         List<LeaveApplication> applications = leaveApplicationRepository.findAllByOrderByCreatedAtDesc()
                 .stream()
+                .filter(a -> vis.allows(a.getEmployeeId()))
                 .filter(a -> a.getStartDate() != null
                         && !a.getStartDate().isBefore(fromDate)
                         && !a.getStartDate().isAfter(toDate))
@@ -156,7 +172,10 @@ public class ReportFacadeController {
         LocalDate today = LocalDate.now();
         LocalDate sixMonthsAgo = today.minusMonths(6).withDayOfMonth(1);
 
-        List<Employee> all = employeeRepository.findAll();
+        DataScopeService.Visibility vis = reportsVisibility();
+        List<Employee> all = employeeRepository.findAll().stream()
+                .filter(e -> vis.allows(e.getId()))
+                .toList();
 
         StringBuilder csv = new StringBuilder();
         csv.append("yearMonth,joiners,leavers,activeAtEnd\n");
@@ -205,13 +224,16 @@ public class ReportFacadeController {
                 : LocalDate.now().withDayOfMonth(1);
         LocalDate toDate = to != null && !to.isBlank() ? LocalDate.parse(to) : LocalDate.now();
 
+        DataScopeService.Visibility vis = reportsVisibility();
         Map<Long, Employee> empMap = employeeRepository.findAll().stream()
+                .filter(e -> vis.allows(e.getId()))
                 .collect(Collectors.toMap(Employee::getId, e -> e));
 
         // Collect all attendance records in range that are late or absent
         List<AttendanceRecord> records = new java.util.ArrayList<>();
         for (LocalDate d = fromDate; !d.isAfter(toDate); d = d.plusDays(1)) {
             attendanceRepository.findByWorkDate(d).stream()
+                    .filter(r -> vis.allows(r.getEmployeeId()))
                     .filter(r -> "L".equalsIgnoreCase(r.getStatusCode())
                             || "A".equalsIgnoreCase(r.getStatusCode())
                             || "NC".equalsIgnoreCase(r.getStatusCode()))

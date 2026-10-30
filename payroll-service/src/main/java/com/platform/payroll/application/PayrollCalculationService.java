@@ -29,8 +29,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.stream.Collectors;
-
 
 /**
  * Orchestrates: HRMS payroll facts → config-driven monthly/hourly engine → payslip persistence.
@@ -74,9 +72,8 @@ public class PayrollCalculationService {
     @Transactional
     public CalculatePayrollResponse calculate(CalculatePayrollRequest request) {
         HrmsEmployeeClient.EmployeeSnapshot employee = hrmsEmployeeClient.getEmployee(request.employeeId());
-        if (!employee.active()) {
-            throw new IllegalStateException("Employee is inactive: " + employee.id());
-        }
+        // FR-PAY-01: inactive leavers still get paid for days employed in the period.
+        // Skip only when HRMS facts say daysEmployed == 0 after fetch.
 
         Payslip existing = payslipRepository
                 .findByEmployeeIdAndPeriodLabel(employee.id(), request.periodLabel())
@@ -89,7 +86,7 @@ public class PayrollCalculationService {
 
         PayrollConfigEntity config = configLoader.loadOrDefault();
 
-        // Fetch payroll facts from HRMS (working days, attendance, leave)
+        // Fetch payroll facts from HRMS (working days, attendance, leave) — fail-closed.
         Map<String, Object> facts = new HashMap<>(hrmsPayrollFactsClient.fetchFacts(employee.id(), request.periodLabel()));
 
         // Explicit request overrides (tests / admin corrections) win over HRMS facts when provided.
@@ -109,17 +106,34 @@ public class PayrollCalculationService {
         if (request.daysEmployed() != null && request.daysEmployed() > 0) {
             facts.put("daysEmployed", request.daysEmployed());
         }
+        if (intOf(facts, "daysEmployed", 0) <= 0) {
+            throw new IllegalStateException("Employee not employed in period: " + employee.id());
+        }
 
-        // Resolve effective salary: salary_history on/before period end wins; else employee baseSalary
+        // Resolve effective salary: salary_history on/before period end wins; else HRMS employee fields.
         LocalDate periodEnd = YearMonth.parse(request.periodLabel().substring(0, 7)).atEndOfMonth();
         SalaryHistory effectiveSalary = resolveEffectiveSalary(employee.id(), periodEnd);
 
-        BigDecimal baseSalary = effectiveSalary != null ? effectiveSalary.getAmount() : employee.baseSalary();
-        BigDecimal hourlyRate = employee.hourlyRate();
-        String payType = effectiveSalary != null ? effectiveSalary.getPayType()
-                : String.valueOf(facts.getOrDefault("payType", "MONTHLY"));
-        String currency = effectiveSalary != null ? effectiveSalary.getCurrency()
-                : String.valueOf(facts.getOrDefault("currency", "BDT"));
+        String payType;
+        String currency;
+        BigDecimal baseSalary;
+        BigDecimal hourlyRate;
+        if (effectiveSalary != null) {
+            payType = effectiveSalary.getPayType() == null ? "MONTHLY" : effectiveSalary.getPayType();
+            currency = effectiveSalary.getCurrency() == null ? "BDT" : effectiveSalary.getCurrency();
+            if ("HOURLY".equalsIgnoreCase(payType)) {
+                hourlyRate = effectiveSalary.getAmount();
+                baseSalary = BigDecimal.ZERO;
+            } else {
+                baseSalary = effectiveSalary.getAmount();
+                hourlyRate = employee.hourlyRate();
+            }
+        } else {
+            baseSalary = employee.baseSalary();
+            hourlyRate = employee.hourlyRate();
+            payType = String.valueOf(facts.getOrDefault("payType", "MONTHLY"));
+            currency = String.valueOf(facts.getOrDefault("currency", "BDT"));
+        }
 
         // FR-PAY-08: optional one-off adjustment for this period
         BigDecimal adjustment = request.adjustmentAmount();
@@ -187,14 +201,8 @@ public class PayrollCalculationService {
         YearMonth ym = YearMonth.parse(periodLabel.substring(0, 7));
         PayrollConfigEntity config = configLoader.loadOrDefault();
 
-        // FR-PAY-01 — every active employee employed any part of the month (HRMS list).
+        // FR-PAY-01 — every active employee employed any part of the month (HRMS list). Fail-closed.
         List<Long> employeeIds = new ArrayList<>(hrmsPayrollFactsClient.listActiveEmployeeIds());
-        if (employeeIds.isEmpty()) {
-            employeeIds = payslipRepository.findAll().stream()
-                    .map(Payslip::getEmployeeId)
-                    .distinct()
-                    .collect(Collectors.toList());
-        }
 
         int created = 0, updated = 0, errors = 0, skipped = 0;
         List<String> errorList = new ArrayList<>();
@@ -211,9 +219,16 @@ public class PayrollCalculationService {
                     created++;
                 }
             } catch (IllegalStateException e) {
-                // Inactive / not employed this month — skip quietly
-                skipped++;
-                log.debug("calculateMonth skip emp={} period={}: {}", empId, periodLabel, e.getMessage());
+                // Inactive / missing salary / HRMS facts failure — count as error when facts fail
+                String msg = e.getMessage() == null ? "" : e.getMessage();
+                if (msg.contains("inactive") || msg.contains("Inactive") || msg.contains("not employed")) {
+                    skipped++;
+                    log.debug("calculateMonth skip emp={} period={}: {}", empId, periodLabel, msg);
+                } else {
+                    errors++;
+                    errorList.add("emp=" + empId + ": " + msg);
+                    log.warn("calculateMonth error emp={} period={}: {}", empId, periodLabel, msg);
+                }
             } catch (Exception e) {
                 errors++;
                 errorList.add("emp=" + empId + ": " + e.getMessage());

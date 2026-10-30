@@ -1,9 +1,11 @@
 package com.platform.hrms.security;
 
 import com.platform.common.security.AuthContext;
+import com.platform.common.security.InternalCalls;
 import com.platform.hrms.application.RbacService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
@@ -13,9 +15,13 @@ import org.springframework.web.servlet.HandlerInterceptor;
 public class RbacInterceptor implements HandlerInterceptor {
 
     private final RbacService rbacService;
+    private final String internalKey;
 
-    public RbacInterceptor(RbacService rbacService) {
+    public RbacInterceptor(
+            RbacService rbacService,
+            @Value("${platform.security.internal-key:" + InternalCalls.DEFAULT_DEV_KEY + "}") String internalKey) {
         this.rbacService = rbacService;
+        this.internalKey = internalKey;
     }
 
     @Override
@@ -29,6 +35,10 @@ public class RbacInterceptor implements HandlerInterceptor {
             need = hm.getBeanType().getAnnotation(RequiresPermission.class);
         }
         if (need == null) {
+            return true;
+        }
+        if (need.allowInternal()
+                && InternalCalls.isTrusted(request.getHeader(InternalCalls.HEADER), internalKey)) {
             return true;
         }
         Long employeeId = AuthContext.getEmployeeId();

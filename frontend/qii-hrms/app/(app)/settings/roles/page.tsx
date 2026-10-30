@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
@@ -11,11 +12,14 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { ErrorNote } from "@/components/ui/QueryState";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
-import { rowsOf, type Role } from "@/lib/api/lookups";
+import { rowsOf, useEmployeesLookup, type Role } from "@/lib/api/lookups";
 import { humanize } from "@/lib/format";
 
-const SCOPES = ["OWN", "TEAM", "ALL"] as const;
 const OVERVIEW = "__overview__";
+const MATRIX_ACTIONS = ["view", "create", "edit", "delete", "approve", "export"] as const;
+
+type CatalogFeature = { key: string; name: string; scoped: boolean; actions: string[] };
+type Catalog = { actions: string[]; features: CatalogFeature[] };
 
 const newRoleSchema = z.object({
   code: z
@@ -27,13 +31,29 @@ const newRoleSchema = z.object({
   description: z.string(),
 });
 
-const scopeTone = (s?: string | null) => (s === "ALL" ? "good" : s === "TEAM" ? "info" : s === "OWN" ? "" : "");
+const scopeTone = (s?: string | null) => (s === "ALL" || s === "YES" ? "good" : s === "TEAM" ? "info" : s === "OWN" ? "" : "");
+
+/** Display value for pills: unscoped ALL → Yes (matches prototype). */
+function displayScope(scope: string | null | undefined, scoped: boolean): string {
+  if (!scope) return "—";
+  const s = scope.toUpperCase();
+  if (!scoped && (s === "ALL" || s === "YES")) return "Yes";
+  return s === "OWN" ? "Own" : s === "TEAM" ? "Team" : s === "ALL" ? "All" : s;
+}
+
+function draftValueFor(scope: string | null | undefined, scoped: boolean): string {
+  if (!scope) return "";
+  const s = scope.toUpperCase();
+  if (!scoped && (s === "ALL" || s === "YES")) return "YES";
+  return s;
+}
 
 export default function RolesPage() {
-  const { can } = useAuth();
+  const { can, me } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
   const canManage = can("roles", "manage");
+  const canAssign = can("roles", "assign");
 
   const [selected, setSelected] = useState(OVERVIEW);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -48,31 +68,32 @@ export default function RolesPage() {
     queryKey: ["roles"],
     queryFn: ({ signal }) => apiFetch(api.hrms("roles"), { signal }),
   });
+  const catalogQ = useQuery({
+    queryKey: ["roles-catalog"],
+    queryFn: ({ signal }) => apiFetch<Catalog>(api.hrms("roles/catalog"), { signal }),
+  });
   const roles = useMemo(() => rowsOf<Role>(rolesQ.data), [rolesQ.data]);
+  const catalog = catalogQ.data;
+  const features = catalog?.features ?? [];
+  const actions = useMemo(() => {
+    const fromApi = catalog?.actions ?? [];
+    const ordered = MATRIX_ACTIONS.filter((a) => fromApi.includes(a) || features.some((f) => f.actions.includes(a)));
+    const extra = fromApi.filter((a) => !ordered.includes(a as (typeof MATRIX_ACTIONS)[number]));
+    return [...ordered, ...extra];
+  }, [catalog?.actions, features]);
   const role = roles.find((r) => String(r.id) === selected);
+  const featureByKey = useMemo(() => new Map(features.map((f) => [f.key, f])), [features]);
 
-  // The set of known permissions = union across all roles (backend rejects unknown pairs).
-  const universe = useMemo(() => {
-    const features = new Map<string, Set<string>>();
-    for (const r of roles) {
-      for (const p of r.permissions ?? []) {
-        if (!features.has(p.feature)) features.set(p.feature, new Set());
-        features.get(p.feature)!.add(p.action);
-      }
-    }
-    const actionOrder = ["view", "create", "edit", "delete", "approve", "manage", "checkin", "correct", "request", "export", "run", "read"];
-    const allActions = [...new Set([...features.values()].flatMap((s) => [...s]))].sort(
-      (a, b) => (actionOrder.indexOf(a) + 100) % 100 - ((actionOrder.indexOf(b) + 100) % 100) || a.localeCompare(b),
-    );
-    return { features: [...features.keys()].sort(), actions: allActions, map: features };
-  }, [roles]);
-
-  // Reset the draft when switching role (derive during render, no effect).
-  if (role && draftFor !== selected) {
+  // Reset the draft when switching role or when catalog finishes loading.
+  const draftKey = role ? `${selected}|${features.length}` : null;
+  if (role && draftKey && draftFor !== draftKey) {
     const d: Record<string, string> = {};
-    for (const p of role.permissions ?? []) d[`${p.feature}:${p.action}`] = (p.scope || "OWN").toUpperCase();
+    for (const p of role.permissions ?? []) {
+      const scoped = featureByKey.get(p.feature)?.scoped ?? p.scoped !== false;
+      d[`${p.feature}:${p.action}`] = draftValueFor(p.scope, scoped !== false);
+    }
     setDraft(d);
-    setDraftFor(selected);
+    setDraftFor(draftKey);
   }
 
   const dirty = useMemo(() => {
@@ -86,6 +107,7 @@ export default function RolesPage() {
 
   function invalidate() {
     void qc.invalidateQueries({ queryKey: ["roles"] });
+    void qc.invalidateQueries({ queryKey: ["roles-catalog"] });
     void qc.invalidateQueries({ queryKey: ["lookup", "roles"] });
   }
 
@@ -95,7 +117,9 @@ export default function RolesPage() {
         .filter(([, scope]) => scope)
         .map(([key, scope]) => {
           const [feature, action] = key.split(":");
-          return { feature, action, scope };
+          const scoped = featureByKey.get(feature)?.scoped !== false;
+          const normalized = !scoped && scope === "YES" ? "ALL" : scope;
+          return { feature, action, scope: normalized };
         });
       return apiFetch(api.hrms(`roles/${role!.id}/permissions`), { method: "PUT", body: matrix });
     },
@@ -134,7 +158,20 @@ export default function RolesPage() {
   });
 
   function openModal(kind: "new" | "copy") {
-    setForm({ code: "", name: "", description: "" });
+    if (kind === "copy") {
+      if (!role) {
+        toast.error("Select a role tab first, then click Copy role.");
+        return;
+      }
+      const base = (role.code || "ROLE").toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+      setForm({
+        code: `${base}_COPY`.slice(0, 48),
+        name: `${role.name || role.code} (copy)`,
+        description: role.description || "",
+      });
+    } else {
+      setForm({ code: "", name: "", description: "" });
+    }
     setErrors({});
     setErr("");
     setModal(kind);
@@ -157,22 +194,30 @@ export default function RolesPage() {
     });
   }
 
-  const readOnly = !canManage || role?.code === "SUPERADMIN";
+  // Matrix edit locked by config flag immutablePermissions (any business can set this).
+  const readOnly = !canManage || !!role?.immutablePermissions;
 
   return (
     <div className="stack">
       <PageHeader
         title="Roles & permissions"
-        subtitle="Which features each role can use, and whether that applies to the person's own data, their team, or everyone."
+        subtitle="Tick what each role can do and how far it reaches: own records, their team (direct and indirect reports) or everyone. Unscoped features use Yes."
         actions={
           canManage ? (
-            <button type="button" className="btn primary" onClick={() => openModal("new")}>
-              + New role
-            </button>
+            <div className="row">
+              {role ? (
+                <button type="button" className="btn" onClick={() => openModal("copy")}>
+                  Copy “{role.name || role.code}”
+                </button>
+              ) : null}
+              <button type="button" className="btn primary" onClick={() => openModal("new")}>
+                + New role
+              </button>
+            </div>
           ) : null
         }
       />
-      <ErrorNote error={rolesQ.error} />
+      <ErrorNote error={rolesQ.error || catalogQ.error} />
 
       <div className="tabs" role="tablist">
         <button type="button" className={selected === OVERVIEW ? "on" : undefined} onClick={() => setSelected(OVERVIEW)}>
@@ -185,7 +230,8 @@ export default function RolesPage() {
             className={selected === String(r.id) ? "on" : undefined}
             onClick={() => setSelected(String(r.id))}
           >
-            {r.name || r.code}
+            {r.name || r.code}{" "}
+            <span className="muted">{r.holderCount ?? 0}</span>
           </button>
         ))}
       </div>
@@ -206,18 +252,24 @@ export default function RolesPage() {
                 </tr>
               </thead>
               <tbody>
-                {universe.features.flatMap((f) =>
-                  [...(universe.map.get(f) ?? [])].map((a) => (
-                    <tr key={`${f}:${a}`}>
+                {features.flatMap((f) =>
+                  f.actions.map((a) => (
+                    <tr key={`${f.key}:${a}`}>
                       <td>
-                        <b>{humanize(f)}</b> <span className="muted">· {a}</span>
+                        <b>{f.name || humanize(f.key)}</b> <span className="muted">· {a}</span>
                       </td>
                       {roles.map((r) => {
-                        const p = (r.permissions ?? []).find((x) => x.feature === f && x.action === a);
+                        const p = (r.permissions ?? []).find((x) => x.feature === f.key && x.action === a);
                         const tone = scopeTone(p?.scope);
                         return (
                           <td key={r.id}>
-                            {p ? <span className={`pill${tone ? ` ${tone}` : ""}`}>{p.scope || "OWN"}</span> : <span className="muted">—</span>}
+                            {p ? (
+                              <span className={`pill${tone ? ` ${tone}` : ""}`}>
+                                {displayScope(p.scope, f.scoped)}
+                              </span>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
                           </td>
                         );
                       })}
@@ -242,11 +294,6 @@ export default function RolesPage() {
             </div>
             <div className="row">
               {role.systemRole ? <span className="pill info">System role</span> : null}
-              {canManage ? (
-                <button type="button" className="btn" onClick={() => openModal("copy")}>
-                  Copy role
-                </button>
-              ) : null}
               {canManage && !role.systemRole ? (
                 <button
                   type="button"
@@ -259,44 +306,74 @@ export default function RolesPage() {
               ) : null}
             </div>
           </div>
-          {role.code === "SUPERADMIN" ? (
-            <p className="note">The Super Admin role is read-only so the tenant can never lock itself out.</p>
+          {role.immutablePermissions ? (
+            <p className="note">
+              This role’s permissions are locked by configuration (<span className="mono">immutablePermissions</span>)
+              so the tenant cannot lock itself out.
+            </p>
+          ) : null}
+          {role.protectFromOffboard || role.grantsWildcard || (role.minHolders ?? 0) > 0 ? (
+            <p className="muted small">
+              Policy:
+              {role.protectFromOffboard ? " protectFromOffboard" : ""}
+              {role.grantsWildcard ? " · grantsWildcard" : ""}
+              {(role.minHolders ?? 0) > 0 ? ` · minHolders=${role.minHolders}` : ""}
+              {role.assignableBy ? ` · assignableBy=${role.assignableBy}` : ""}
+            </p>
           ) : null}
           <div className="tbl-wrap">
             <table className="matrix">
               <thead>
                 <tr>
                   <th>Feature</th>
-                  {universe.actions.map((a) => (
+                  {actions.map((a) => (
                     <th key={a}>{a}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {universe.features.map((f) => (
-                  <tr key={f}>
+                {features.map((f) => (
+                  <tr key={f.key}>
                     <td>
-                      <b>{humanize(f)}</b>
+                      <b>{f.name || humanize(f.key)}</b>
                     </td>
-                    {universe.actions.map((a) => {
-                      const exists = universe.map.get(f)?.has(a);
-                      if (!exists) return <td key={a} className="muted">·</td>;
-                      const key = `${f}:${a}`;
+                    {actions.map((a) => {
+                      if (!f.actions.includes(a)) return <td key={a} className="muted">·</td>;
+                      const key = `${f.key}:${a}`;
+                      const choices = f.scoped
+                        ? [
+                            ["", "—"],
+                            ["OWN", "Own"],
+                            ["TEAM", "Team"],
+                            ["ALL", "All"],
+                          ]
+                        : [
+                            ["", "—"],
+                            ["YES", "Yes"],
+                          ];
                       return (
                         <td key={a}>
-                          <select
-                            aria-label={`${f} ${a}`}
-                            value={draft[key] ?? ""}
-                            disabled={readOnly}
-                            onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
-                          >
-                            <option value="">—</option>
-                            {SCOPES.map((s) => (
-                              <option key={s} value={s}>
-                                {s}
-                              </option>
-                            ))}
-                          </select>
+                          {readOnly ? (
+                            draft[key] ? (
+                              <span className={`pill${scopeTone(draft[key]) ? ` ${scopeTone(draft[key])}` : ""}`}>
+                                {displayScope(draft[key], f.scoped)}
+                              </span>
+                            ) : (
+                              <span className="muted">—</span>
+                            )
+                          ) : (
+                            <select
+                              aria-label={`${f.name} ${a}`}
+                              value={draft[key] ?? ""}
+                              onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+                            >
+                              {choices.map(([v, label]) => (
+                                <option key={v || "none"} value={v}>
+                                  {label}
+                                </option>
+                              ))}
+                            </select>
+                          )}
                         </td>
                       );
                     })}
@@ -315,9 +392,11 @@ export default function RolesPage() {
                   Discard changes
                 </button>
               ) : null}
-              <span className="muted small">OWN = own records · TEAM = own team · ALL = everyone</span>
+              <span className="muted small">Own / Team / All for scoped features · Yes for org-wide features</span>
             </div>
           ) : null}
+
+          <RoleHoldersPanel role={role} canAssign={canAssign} meRoles={me.roles} mePerms={me.permissions} />
         </section>
       ) : null}
 
@@ -357,11 +436,148 @@ export default function RolesPage() {
               Cancel
             </button>
             <button type="submit" className="btn primary" disabled={create.isPending}>
-              {create.isPending ? "Saving…" : "Create"}
+              {create.isPending ? "Saving…" : modal === "copy" ? "Create copy" : "Create role"}
             </button>
           </div>
         </form>
       </Modal>
     </div>
+  );
+}
+
+type Holder = { id: number | string; fullName?: string; employeeCode?: string; status?: string };
+
+function canAssignRoleConfig(
+  role: Role,
+  actorRoles: string[] | undefined,
+  actorPerms: string[] | undefined,
+): boolean {
+  const gate = (role.assignableBy ?? "").trim();
+  if (!gate) return true;
+  if ((actorPerms ?? []).some((p) => p.trim().toLowerCase() === "*:*")) return true;
+  const allowed = new Set(
+    gate
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean),
+  );
+  if (allowed.size === 0) return true;
+  return (actorRoles ?? []).some((c) => allowed.has(String(c).toUpperCase()));
+}
+
+function RoleHoldersPanel({
+  role,
+  canAssign,
+  meRoles,
+  mePerms,
+}: {
+  role: Role;
+  canAssign: boolean;
+  meRoles?: string[];
+  mePerms?: string[];
+}) {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const [pick, setPick] = useState("");
+  const assignable = canAssign && canAssignRoleConfig(role, meRoles, mePerms);
+  const employees = useEmployeesLookup(canAssign);
+
+  const holdersQ = useQuery({
+    queryKey: ["role-holders", role.id],
+    queryFn: ({ signal }) => apiFetch<Holder[]>(api.hrms(`roles/${role.id}/holders`), { signal }),
+  });
+  const holders = holdersQ.data ?? [];
+  const holderIds = new Set(holders.map((h) => String(h.id)));
+
+  const assign = useMutation({
+    mutationFn: (employeeId: string) =>
+      apiFetch(api.hrms(`roles/${role.id}/assign`), { method: "POST", body: { employeeId } }),
+    onSuccess: () => {
+      toast.show("Role assigned");
+      setPick("");
+      void qc.invalidateQueries({ queryKey: ["role-holders", role.id] });
+      void qc.invalidateQueries({ queryKey: ["roles"] });
+      void qc.invalidateQueries({ queryKey: ["lookup", "roles"] });
+      void qc.invalidateQueries({ queryKey: ["employees"] });
+    },
+    onError: (e: Error) => toast.error(e),
+  });
+
+  const unassign = useMutation({
+    mutationFn: (employeeId: string | number) =>
+      apiFetch(api.hrms(`roles/${role.id}/unassign`), { method: "POST", body: { employeeId } }),
+    onSuccess: () => {
+      toast.show("Role removed");
+      void qc.invalidateQueries({ queryKey: ["role-holders", role.id] });
+      void qc.invalidateQueries({ queryKey: ["roles"] });
+      void qc.invalidateQueries({ queryKey: ["lookup", "roles"] });
+      void qc.invalidateQueries({ queryKey: ["employees"] });
+    },
+    onError: (e: Error) => toast.error(e),
+  });
+
+  const candidates = (employees.data ?? []).filter((e) => !holderIds.has(String(e.id)));
+  const lockedMin = (role.minHolders ?? 0) > 0 && holders.length <= (role.minHolders ?? 0);
+
+  return (
+    <section className="stack" style={{ marginTop: 8 }}>
+      <div className="card-head" style={{ marginBottom: 0 }}>
+        <h2>People with this role</h2>
+      </div>
+      <ErrorNote error={holdersQ.error} />
+      <div className="row">
+        {holders.length === 0 ? <span className="muted">Nobody yet.</span> : null}
+        {holders.map((h) => (
+          <span key={h.id} className="pill acc">
+            <Link href={`/employees/${h.id}`}>{h.fullName || h.employeeCode || h.id}</Link>
+            {assignable && !lockedMin ? (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="linkbtn"
+                  aria-label="Remove"
+                  disabled={unassign.isPending}
+                  onClick={() => unassign.mutate(h.id)}
+                >
+                  ✕
+                </button>
+              </>
+            ) : null}
+          </span>
+        ))}
+      </div>
+      {assignable ? (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (pick) assign.mutate(pick);
+          }}
+        >
+          <select
+            aria-label="Person"
+            value={pick}
+            onChange={(e) => setPick(e.target.value)}
+            style={{ maxWidth: 240 }}
+          >
+            <option value="">Select person…</option>
+            {candidates.map((e) => (
+              <option key={e.id} value={String(e.id)}>
+                {e.fullName || e.employeeCode || e.id}
+              </option>
+            ))}
+          </select>
+          <button type="submit" className="btn sm" disabled={!pick || assign.isPending}>
+            {assign.isPending ? "Assigning…" : "Assign role"}
+          </button>
+        </form>
+      ) : canAssign ? (
+        <p className="muted small">
+          Your roles cannot assign <span className="mono">{role.code}</span>
+          {role.assignableBy ? ` (assignableBy=${role.assignableBy})` : ""}.
+        </p>
+      ) : null}
+    </section>
   );
 }

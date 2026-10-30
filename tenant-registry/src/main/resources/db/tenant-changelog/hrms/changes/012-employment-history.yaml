@@ -1,0 +1,50 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-012-employment-field-history
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - tableExists:
+                tableName: employment_field_history
+      changes:
+        - createTable:
+            tableName: employment_field_history
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints: { primaryKey: true }
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints: { nullable: false }
+              - column:
+                  name: field_name
+                  type: VARCHAR(64)
+                  constraints: { nullable: false }
+              - column:
+                  name: old_value
+                  type: TEXT
+              - column:
+                  name: new_value
+                  type: TEXT
+              - column:
+                  name: changed_by
+                  type: BIGINT
+              - column:
+                  name: changed_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints: { nullable: false }
+        - createIndex:
+            tableName: employment_field_history
+            indexName: idx_emp_field_hist_employee
+            columns:
+              - column:
+                  name: employee_id
+        - createIndex:
+            tableName: employment_field_history
+            indexName: idx_emp_field_hist_changed_at
+            columns:
+              - column:
+                  name: changed_at

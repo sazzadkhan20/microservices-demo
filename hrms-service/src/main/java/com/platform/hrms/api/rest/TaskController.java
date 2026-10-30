@@ -2,84 +2,81 @@ package com.platform.hrms.api.rest;
 
 import com.platform.common.api.PageQuery;
 import com.platform.common.api.PageResponse;
-import com.platform.common.security.AuthContext;
+import com.platform.hrms.application.TaskService;
 import com.platform.hrms.application.support.DynamicListSupport;
-import com.platform.hrms.domain.WorkTask;
-import com.platform.hrms.infrastructure.persistence.WorkTaskRepository;
 import com.platform.hrms.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.time.Instant;
+import java.util.List;
 import java.util.Map;
-// Map body accepted so FE can send description/priority without schema migration
 
 @RestController
 @RequestMapping("/api/tasks")
-@Tag(name = "Tasks", description = "Work tasks / billable items")
+@Tag(name = "Tasks", description = "Config-driven work tasks (FR-TSK-01..04)")
 public class TaskController {
 
-    private final WorkTaskRepository workTaskRepository;
+    private final TaskService taskService;
 
-    public TaskController(WorkTaskRepository workTaskRepository) {
-        this.workTaskRepository = workTaskRepository;
+    public TaskController(TaskService taskService) {
+        this.taskService = taskService;
+    }
+
+    @GetMapping("/rules")
+    @RequiresPermission(feature = "tasks", action = "view")
+    @Operation(summary = "Task create/status rules from tenant settings")
+    public Map<String, Object> rules() {
+        return taskService.rules();
+    }
+
+    @GetMapping("/assigned")
+    @RequiresPermission(feature = "attendance", action = "checkin")
+    @Operation(summary = "Open tasks assigned to the caller (work-log picker)")
+    public List<Map<String, Object>> assigned() {
+        return taskService.assignedOpenForCaller();
     }
 
     @GetMapping
-    @Operation(summary = "List tasks (paginated, searchable by title or client name)")
-    public PageResponse<WorkTask> list(@RequestParam Map<String, String> params) {
+    @RequiresPermission(feature = "tasks", action = "view")
+    @Operation(summary = "List tasks with logged totals and overdue flag")
+    public PageResponse<Map<String, Object>> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
         return DynamicListSupport.page(
-                workTaskRepository.findAll(),
+                taskService.listEnriched(),
                 query,
-                task -> DynamicListSupport.containsIgnoreCase(task.getTitle(), query.q())
-                        || DynamicListSupport.containsIgnoreCase(task.getClientName(), query.q()),
+                task -> DynamicListSupport.containsIgnoreCase(String.valueOf(task.get("title")), query.q())
+                        || DynamicListSupport.containsIgnoreCase(String.valueOf(task.get("clientName")), query.q()),
                 task -> Map.of(
-                        "status", task.getStatus() == null ? "" : task.getStatus(),
-                        "clientName", task.getClientName() == null ? "" : task.getClientName(),
-                        "externalRef", task.getExternalRef() == null ? "" : task.getExternalRef()
+                        "status", task.get("status") == null ? "" : String.valueOf(task.get("status")),
+                        "clientName", task.get("clientName") == null ? "" : String.valueOf(task.get("clientName")),
+                        "externalRef", task.get("externalRef") == null ? "" : String.valueOf(task.get("externalRef")),
+                        "overdue", String.valueOf(Boolean.TRUE.equals(task.get("overdue")))
                 )
         );
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    // org:manage is the config-driven admin capability used across tenants for task catalog writes
-    @RequiresPermission(feature = "org", action = "manage")
-    @Operation(summary = "Create a new task (title, description→clientName, priority→externalRef)")
-    public WorkTask create(@RequestBody Map<String, Object> body) {
-        WorkTask task = new WorkTask();
-        Object title = body.get("title");
-        if (title == null || String.valueOf(title).isBlank()) {
-            throw new IllegalArgumentException("title is required");
-        }
-        task.setTitle(String.valueOf(title).trim());
-        Object desc = body.get("description") != null ? body.get("description") : body.get("clientName");
-        if (desc != null && !String.valueOf(desc).isBlank()) {
-            task.setClientName(String.valueOf(desc).trim());
-        }
-        Object priority = body.get("priority");
-        if (priority != null && !String.valueOf(priority).isBlank()) {
-            task.setExternalRef("PRIORITY:" + String.valueOf(priority).trim().toUpperCase());
-        } else if (body.get("externalRef") != null) {
-            task.setExternalRef(String.valueOf(body.get("externalRef")));
-        }
-        Object status = body.get("status");
-        task.setStatus(status == null || String.valueOf(status).isBlank() ? "OPEN" : String.valueOf(status));
-        Object due = body.get("dueDate");
-        if (due != null && !String.valueOf(due).isBlank()) {
-            task.setDueDate(java.time.LocalDate.parse(String.valueOf(due)));
-        }
-        task.setCreatedBy(AuthContext.requireEmployeeId());
-        task.setCreatedAt(Instant.now());
-        return workTaskRepository.save(task);
+    @RequiresPermission(feature = "tasks", action = "create")
+    @Operation(summary = "Create task with assignees (scoped by taskRules.createScope)")
+    public Map<String, Object> create(@RequestBody Map<String, Object> body) {
+        return taskService.create(body);
+    }
+
+    @PutMapping("/{id}")
+    @RequiresPermission(feature = "tasks", action = "edit")
+    @Operation(summary = "Update task / reassign / change status")
+    public Map<String, Object> update(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        return taskService.update(id, body);
     }
 }

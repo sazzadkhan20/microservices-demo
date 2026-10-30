@@ -1,3 +1,5 @@
 databaseChangeLog:
   - include:
       file: db/tenant-changelog/notification/changes/001-notifications.yaml
+  - include:
+      file: db/tenant-changelog/notification/changes/002-notification-link-url.yaml

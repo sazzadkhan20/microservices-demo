@@ -21,6 +21,13 @@ import java.time.ZoneOffset;
 public class ImpitBusinessSeeder {
 
     private static final Logger log = LoggerFactory.getLogger(ImpitBusinessSeeder.class);
+    public static final String PACK = "impit";
+
+    private final BusinessPackApplier packApplier;
+
+    public ImpitBusinessSeeder(BusinessPackApplier packApplier) {
+        this.packApplier = packApplier;
+    }
 
     public void seedImpitPractice(String hrmsJdbcUrl, String payrollJdbcUrl,
                                   PlatformProperties.DbTarget hrms, PlatformProperties.DbTarget payroll) {
@@ -39,24 +46,7 @@ public class ImpitBusinessSeeder {
             try (Statement st = conn.createStatement()) {
                 PracticeBusinessSeeder.clearLeaveAndOrg(st);
 
-                st.executeUpdate("""
-                        INSERT INTO leave_policy (
-                          annual_days, work_week_days, working_days,
-                          union_notice_days, non_union_notice_days,
-                          require_coverage_check, approval_chain,
-                          notice_mode, default_notice_days, coverage_mode,
-                          location_field, shift_field, require_relief_on_coverage_fail,
-                          default_leave_type_code, updated_at
-                        ) VALUES (
-                          0, 5,
-                          '["MON","TUE","WED","THU","FRI"]'::jsonb,
-                          0, 0, TRUE,
-                          '[{"step":1,"role":"MANAGER"},{"step":2,"role":"HR"}]'::jsonb,
-                          'NONE', 0, 'LOCATION',
-                          'office_id', 'shift_pattern', FALSE,
-                          'CASUAL', NOW()
-                        )
-                        """);
+                packApplier.applyPolicySurface(conn, PACK);
 
                 st.executeUpdate("""
                         INSERT INTO leave_type
@@ -89,14 +79,6 @@ public class ImpitBusinessSeeder {
                           ('gender', 'JSONB', 'custom_fields.gender', NULL, NULL, TRUE, FALSE, FALSE, FALSE, NULL),
                           ('joining_date', 'JSONB', 'custom_fields.joining_date', NULL, NULL, TRUE, FALSE, TRUE, FALSE, NULL),
                           ('joining_salary', 'JSONB', 'custom_fields.joining_salary', NULL, NULL, FALSE, FALSE, FALSE, FALSE, NULL)
-                        """);
-
-                st.executeUpdate("""
-                        INSERT INTO tenant_settings (settings, updated_at)
-                        VALUES (
-                          '{"businessPack":"impit_limited","employeeCodePattern":"^\\\\d{4}$"}'::jsonb,
-                          NOW()
-                        )
                         """);
 
                 st.executeUpdate("""

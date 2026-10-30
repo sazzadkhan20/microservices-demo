@@ -4,11 +4,12 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { OrgChartTree, type OrgChartNode } from "@/components/org/OrgChartTree";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorNote, Loading, NoAccess } from "@/components/ui/QueryState";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Tabs } from "@/components/ui/Tabs";
-import { api, apiFetchPage } from "@/lib/api/client";
+import { api, apiFetch, apiFetchPage } from "@/lib/api/client";
 import { initials, str } from "@/lib/format";
 import { useDebounced } from "@/lib/hooks";
 import { employeeSchema, type Employee } from "@/lib/schemas/employee";
@@ -38,8 +39,19 @@ export default function DirectoryPage() {
     queryKey: ["directory-page"],
     queryFn: ({ signal }) =>
       apiFetchPage(api.hrms("employees"), employeeSchema, { page: 1, size: 500, sort: "fullName,asc" }, { signal }),
-    enabled: allowed,
+    enabled: allowed && tab === "list",
     staleTime: 60_000,
+  });
+
+  const chart = useQuery({
+    queryKey: ["org-chart", showInactive],
+    queryFn: ({ signal }) =>
+      apiFetch<OrgChartNode[]>(api.hrms("org/chart"), {
+        query: { includeInactive: showInactive },
+        signal,
+      }),
+    enabled: allowed && tab === "chart",
+    staleTime: 30_000,
   });
 
   const people = useMemo(
@@ -84,11 +96,11 @@ export default function DirectoryPage() {
         subtitle="Everyone at your company. The org chart is drawn from reporting lines."
       />
       <Tabs tabs={TABS} value={tab} onChange={setTab} />
-      <ErrorNote error={staff.error} />
-      {staff.isLoading ? <Loading /> : null}
 
       {tab === "list" ? (
         <>
+          <ErrorNote error={staff.error} />
+          {staff.isLoading ? <Loading /> : null}
           <div className="filters">
             <label className="field wide">
               <span>Search</span>
@@ -138,7 +150,21 @@ export default function DirectoryPage() {
           )}
         </>
       ) : (
-        <OrgChart people={people} canOpen={canOpen} />
+        <>
+          <label className="row small muted">
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+            Show former staff
+          </label>
+          <ErrorNote error={chart.error} />
+          {chart.isLoading ? <Loading /> : null}
+          {!chart.isLoading ? (
+            <OrgChartTree
+              roots={Array.isArray(chart.data) ? chart.data : []}
+              canOpen={canOpen}
+              emptyMessage="No reporting lines to draw yet. Assign managers on employee records."
+            />
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -200,53 +226,5 @@ function PersonCard({ e, href }: { e: Employee; href?: string }) {
     </Link>
   ) : (
     body
-  );
-}
-
-function OrgChart({ people, canOpen }: { people: Employee[]; canOpen: boolean }) {
-  const { roots, kids } = useMemo(() => {
-    const ids = new Set(people.map((p) => String(p.id)));
-    const kids = new Map<string, Employee[]>();
-    const roots: Employee[] = [];
-    for (const p of people) {
-      const m = p.managerId == null ? null : String(p.managerId);
-      if (m && ids.has(m) && m !== String(p.id)) {
-        kids.set(m, [...(kids.get(m) ?? []), p]);
-      } else {
-        roots.push(p);
-      }
-    }
-    return { roots, kids };
-  }, [people]);
-
-  if (people.length === 0) {
-    return (
-      <div className="card">
-        <EmptyState>No employees to draw.</EmptyState>
-      </div>
-    );
-  }
-
-  const node = (e: Employee, depth: number): React.ReactNode => {
-    if (depth > 12) return null;
-    const children = kids.get(String(e.id)) ?? [];
-    return (
-      <li key={e.id}>
-        <span className="node">
-          {canOpen ? <Link href={`/employees/${e.id}`}>{e.fullName}</Link> : <b>{e.fullName}</b>}
-          <span className="small muted">
-            {str(e.jobTitle)}
-            {text(e.locationName) ? ` · ${text(e.locationName)}` : ""}
-          </span>
-        </span>
-        {children.length ? <ul>{children.map((c) => node(c, depth + 1))}</ul> : null}
-      </li>
-    );
-  };
-
-  return (
-    <section className="card tree" style={{ overflowX: "auto" }}>
-      <ul>{roots.map((r) => node(r, 0))}</ul>
-    </section>
   );
 }

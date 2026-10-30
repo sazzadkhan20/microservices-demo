@@ -9,5 +9,7 @@ import java.util.Optional;
 public interface LeaveTypeRepository extends JpaRepository<LeaveType, Long> {
     Optional<LeaveType> findByCodeAndActiveTrue(String code);
 
+    Optional<LeaveType> findByCodeIgnoreCase(String code);
+
     List<LeaveType> findByActiveTrueOrderBySortOrderAsc();
 }

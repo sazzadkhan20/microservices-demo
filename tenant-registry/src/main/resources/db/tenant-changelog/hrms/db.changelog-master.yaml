@@ -16,4 +16,22 @@ databaseChangeLog:
       file: db/tenant-changelog/hrms/changes/007-attendance-correction.yaml
   - include:
       file: db/tenant-changelog/hrms/changes/008-reporting-line-history.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/009-role-policy.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/010-roles-assign.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/011-permission-catalog.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/012-employment-history.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/013-work-schedule-unique.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/014-attendance-correction-originals.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/015-tasks-worklog-rules.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/016-leave-fr-gaps.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/017-leave-type-code-len.yaml
 

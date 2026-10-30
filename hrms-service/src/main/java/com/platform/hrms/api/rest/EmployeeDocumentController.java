@@ -2,6 +2,7 @@ package com.platform.hrms.api.rest;
 
 import com.platform.common.security.AuthContext;
 import com.platform.hrms.application.AuditService;
+import com.platform.hrms.application.EmployeeRulesService;
 import com.platform.hrms.domain.Employee;
 import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
 import com.platform.hrms.security.RequiresPermission;
@@ -38,10 +39,15 @@ public class EmployeeDocumentController {
 
     private final EmployeeRepository employeeRepository;
     private final AuditService auditService;
+    private final EmployeeRulesService employeeRulesService;
 
-    public EmployeeDocumentController(EmployeeRepository employeeRepository, AuditService auditService) {
+    public EmployeeDocumentController(
+            EmployeeRepository employeeRepository,
+            AuditService auditService,
+            EmployeeRulesService employeeRulesService) {
         this.employeeRepository = employeeRepository;
         this.auditService = auditService;
+        this.employeeRulesService = employeeRulesService;
     }
 
     @GetMapping
@@ -64,7 +70,9 @@ public class EmployeeDocumentController {
         if (type == null) {
             throw new IllegalArgumentException("documentType is required");
         }
+        employeeRulesService.assertDocumentType(type, employeeRulesService.load());
         String name = requireText(body, "name");
+        String expiresAt = text(body.get("expiresAt"));
 
         List<Map<String, Object>> docs = documentsOf(employee);
         if (docs.stream().anyMatch(d -> fileId.equals(String.valueOf(d.get("fileId"))))) {
@@ -74,6 +82,9 @@ public class EmployeeDocumentController {
         doc.put("fileId", fileId);
         doc.put("type", type);
         doc.put("name", name);
+        if (expiresAt != null) {
+            doc.put("expiresAt", expiresAt);
+        }
         doc.put("uploadedAt", Instant.now().toString());
         Long actor = AuthContext.getEmployeeId();
         if (actor != null) {
@@ -83,6 +94,33 @@ public class EmployeeDocumentController {
         save(employee, docs);
         auditService.record(actor, "CREATE", "EmployeeDocument", id + ":" + fileId, null, doc);
         return doc;
+    }
+
+    @PostMapping("/{fileId}/access")
+    @RequiresPermission(feature = "employees", action = "view")
+    @Operation(summary = "Log document open/download (FR-EMP-08)")
+    @Transactional
+    public Map<String, Object> logAccess(
+            @PathVariable Long id,
+            @PathVariable String fileId,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Employee employee = requireEmployee(id);
+        Map<String, Object> doc = documentsOf(employee).stream()
+                .filter(d -> fileId.equals(String.valueOf(d.get("fileId"))))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Document not found: " + fileId));
+        String action = body != null && body.get("action") != null
+                ? String.valueOf(body.get("action")).trim().toUpperCase()
+                : "DOWNLOAD";
+        if (!"OPEN".equals(action) && !"DOWNLOAD".equals(action) && !"VIEW".equals(action)) {
+            action = "DOWNLOAD";
+        }
+        Long actor = AuthContext.getEmployeeId();
+        Map<String, Object> after = new LinkedHashMap<>(doc);
+        after.put("accessAction", action);
+        after.put("accessedAt", Instant.now().toString());
+        auditService.record(actor, action, "EmployeeDocument", id + ":" + fileId, doc, after);
+        return Map.of("ok", true, "action", action, "fileId", fileId);
     }
 
     @DeleteMapping("/{fileId}")

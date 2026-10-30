@@ -13,7 +13,8 @@ import { AttCode, StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch, listParams } from "@/lib/api/client";
 import { rowsOf, type Rec } from "@/lib/api/lookups";
-import { fmtDate, fmtDateTime, fmtTime, isoDate, pick, str, todayIso } from "@/lib/format";
+import { buildPunchBody, fmtHoursMinutes, localRangeToIso } from "@/lib/attendance/punch";
+import { fmtDate, fmtDateTime, fmtNumber, fmtTime, isoDate, pick, str, todayIso } from "@/lib/format";
 
 const rowSchema = z.object({ workDate: z.any().optional() }).passthrough();
 type Row = Rec;
@@ -29,15 +30,11 @@ const correctionSchema = z
     if (v.workDate && v.workDate > todayIso()) {
       ctx.addIssue({ code: "custom", path: ["workDate"], message: "Cannot correct a future date" });
     }
-    if (v.checkInLocal && v.checkOutLocal && v.checkOutLocal <= v.checkInLocal) {
-      ctx.addIssue({ code: "custom", path: ["checkOutLocal"], message: "Check-out must be after check-in" });
-    }
+    // Overnight OK — same clock time next day is resolved in localRangeToIso.
   });
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-const toIso = (date: string, time: string) => new Date(`${date}T${time}:00`).toISOString();
 
 export default function MyAttendancePage() {
   const { can } = useAuth();
@@ -47,6 +44,7 @@ export default function MyAttendancePage() {
   const [form, setForm] = useState({ workDate: todayIso(), checkInLocal: "10:00", checkOutLocal: "18:00", reason: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
+  const [attActionError, setAttActionError] = useState("");
   const now = new Date();
   const [month, setMonth] = useState({ y: now.getFullYear(), m: now.getMonth() });
 
@@ -55,6 +53,12 @@ export default function MyAttendancePage() {
   const today = useQuery({
     queryKey: ["attendance-today"],
     queryFn: ({ signal }) => apiFetch<Rec>(api.hrms("attendance/today"), { signal }),
+    refetchInterval: (q) => {
+      const d = q.state.data as Rec | undefined;
+      return d?.hoursLive || (d?.checkIn && !d?.checkOut && String(d?.statusCode).toUpperCase() !== "M")
+        ? 30_000
+        : false;
+    },
   });
   const mine = useQuery({
     queryKey: ["my-corrections"],
@@ -101,20 +105,28 @@ export default function MyAttendancePage() {
     void qc.invalidateQueries({ queryKey: ["my-attendance-month"] });
   }
   const checkIn = useMutation({
-    mutationFn: () => apiFetch(api.hrms("attendance/check-in"), { method: "POST", body: {} }),
+    mutationFn: async () => {
+      const body = await buildPunchBody();
+      return apiFetch(api.hrms("attendance/check-in"), { method: "POST", body });
+    },
     onSuccess: () => {
+      setAttActionError("");
       toast.show("Checked in");
       refresh();
     },
-    onError: (e: Error) => toast.error(e),
+    onError: (e: Error) => setAttActionError(e.message || "Check-in failed"),
   });
   const checkOut = useMutation({
-    mutationFn: () => apiFetch(api.hrms("attendance/check-out"), { method: "POST", body: {} }),
+    mutationFn: async () => {
+      const body = await buildPunchBody();
+      return apiFetch(api.hrms("attendance/check-out"), { method: "POST", body });
+    },
     onSuccess: () => {
+      setAttActionError("");
       toast.show("Checked out");
       refresh();
     },
-    onError: (e: Error) => toast.error(e),
+    onError: (e: Error) => setAttActionError(e.message || "Check-out failed"),
   });
 
   const request = useMutation({
@@ -142,10 +154,10 @@ export default function MyAttendancePage() {
       return;
     }
     setErrors({});
+    const times = localRangeToIso(parsed.data.workDate, parsed.data.checkInLocal, parsed.data.checkOutLocal);
     request.mutate({
       workDate: parsed.data.workDate,
-      requestedCheckIn: toIso(parsed.data.workDate, parsed.data.checkInLocal),
-      requestedCheckOut: toIso(parsed.data.workDate, parsed.data.checkOutLocal),
+      ...times,
       reason: parsed.data.reason,
     });
   }
@@ -196,18 +208,70 @@ export default function MyAttendancePage() {
           <div className="grow" />
           <div className="row">
             {canCheck && !inAt && !lateNight ? (
-              <button type="button" className="btn primary" disabled={checkIn.isPending} onClick={() => checkIn.mutate()}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={checkIn.isPending}
+                onClick={() => {
+                  setAttActionError("");
+                  checkIn.mutate();
+                }}
+              >
                 Check in
               </button>
             ) : null}
             {canCheck && ((inAt && !outAt) || lateNight) ? (
-              <button type="button" className="btn primary" disabled={checkOut.isPending} onClick={() => checkOut.mutate()}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={checkOut.isPending}
+                onClick={() => {
+                  setAttActionError("");
+                  checkOut.mutate();
+                }}
+              >
                 {lateNight ? "Check out (yesterday)" : "Check out"}
               </button>
             ) : null}
           </div>
+          {attActionError ? <p className="err" role="alert">{attActionError}</p> : null}
         </div>
+        <p className="muted small" style={{ margin: 0 }}>
+          {t?.locationLabel ? String(t.locationLabel) : "Location not shared"}
+          {t?.deviceType ? ` · ${String(t.deviceType)}` : ""}
+          {t?.timeZone ? ` · ${String(t.timeZone)}` : ""}
+        </p>
       </section>
+
+      <div className="grid g3">
+        <div className="card stack" style={{ gap: 4 }}>
+          <span className="muted small">Today</span>
+          <b>
+            {fmtHoursMinutes(t?.workedMinutes)} / {fmtNumber(t?.expectedHours ?? 0)}h expected
+          </b>
+          <span className="small muted">Logged {fmtHoursMinutes(t?.loggedMinutes)}</span>
+        </div>
+        <div className="card stack" style={{ gap: 4 }}>
+          <span className="muted small">This week</span>
+          <b>
+            {fmtHoursMinutes((t?.week as Rec | undefined)?.workedMinutes)} /{" "}
+            {fmtNumber((t?.week as Rec | undefined)?.expectedHours ?? 0)}h
+          </b>
+          <span className="small muted">
+            Logged {fmtHoursMinutes((t?.week as Rec | undefined)?.loggedMinutes)}
+          </span>
+        </div>
+        <div className="card stack" style={{ gap: 4 }}>
+          <span className="muted small">This month</span>
+          <b>
+            {fmtHoursMinutes((t?.month as Rec | undefined)?.workedMinutes)} /{" "}
+            {fmtNumber((t?.month as Rec | undefined)?.expectedHours ?? 0)}h
+          </b>
+          <span className="small muted">
+            Logged {fmtHoursMinutes((t?.month as Rec | undefined)?.loggedMinutes)}
+          </span>
+        </div>
+      </div>
 
       <section className="card stack">
         <div className="card-head" style={{ marginBottom: 0 }}>
@@ -360,7 +424,7 @@ export default function MyAttendancePage() {
               <textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} />
             </FormField>
           </div>
-          {err ? <div className="notice bad">{err}</div> : null}
+          {err ? <p className="err" role="alert">{err}</p> : null}
           <div className="modal-foot">
             <button type="button" className="btn" onClick={() => setOpen(false)}>
               Cancel

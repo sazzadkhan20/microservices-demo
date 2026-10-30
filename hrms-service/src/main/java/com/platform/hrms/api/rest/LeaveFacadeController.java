@@ -87,7 +87,29 @@ public class LeaveFacadeController {
         LocalDate end = LocalDate.parse(str(body, "endDate", str(body, "to", start.toString())));
         String reason = str(body, "reason", str(body, "comment", ""));
         Boolean halfDay = body.get("halfDay") instanceof Boolean b ? b : null;
-        return leaveApplicationService.apply(new LeaveApplyRequest(empId, type, start, end, reason, null, halfDay));
+        String halfDayPart = str(body, "halfDayPart", null);
+        String attachmentRef = str(body, "attachmentRef", str(body, "attachment", null));
+        return leaveApplicationService.apply(
+                new LeaveApplyRequest(empId, type, start, end, reason, null, halfDay, halfDayPart, attachmentRef, null));
+    }
+
+    @PostMapping("/preview")
+    @RequiresPermission(feature = "leave", action = "request")
+    @Operation(summary = "Preview leave request before submit (FR-LV-09)")
+    public Map<String, Object> preview(@RequestBody Map<String, Object> body) {
+        Long empId = AuthContext.requireEmployeeId();
+        String type = str(body, "leaveTypeCode", str(body, "type", null));
+        if (type == null || type.isBlank()) {
+            throw new IllegalArgumentException("leaveTypeCode is required");
+        }
+        LocalDate start = LocalDate.parse(str(body, "startDate", str(body, "from", null)));
+        LocalDate end = LocalDate.parse(str(body, "endDate", str(body, "to", start.toString())));
+        String reason = str(body, "reason", "");
+        Boolean halfDay = body.get("halfDay") instanceof Boolean b ? b : null;
+        String halfDayPart = str(body, "halfDayPart", null);
+        String attachmentRef = str(body, "attachmentRef", str(body, "attachment", null));
+        return leaveApplicationService.preview(
+                new LeaveApplyRequest(empId, type, start, end, reason, null, halfDay, halfDayPart, attachmentRef, true));
     }
 
     private static String str(Map<String, Object> body, String key, String fallback) {

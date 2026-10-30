@@ -46,6 +46,15 @@ public class LeaveApproval {
     @Column(name = "decided_at")
     private Instant decidedAt;
 
+    @Column(name = "resolver", length = 64)
+    private String resolver;
+
+    @Column(name = "named_employee_id")
+    private Long namedEmployeeId;
+
+    @Column(name = "expected_approver_id")
+    private Long expectedApproverId;
+
     public Long getId() {
         return id;
     }
@@ -113,4 +122,13 @@ public class LeaveApproval {
     public void setDecidedAt(Instant decidedAt) {
         this.decidedAt = decidedAt;
     }
+
+    public String getResolver() { return resolver; }
+    public void setResolver(String resolver) { this.resolver = resolver; }
+
+    public Long getNamedEmployeeId() { return namedEmployeeId; }
+    public void setNamedEmployeeId(Long namedEmployeeId) { this.namedEmployeeId = namedEmployeeId; }
+
+    public Long getExpectedApproverId() { return expectedApproverId; }
+    public void setExpectedApproverId(Long expectedApproverId) { this.expectedApproverId = expectedApproverId; }
 }

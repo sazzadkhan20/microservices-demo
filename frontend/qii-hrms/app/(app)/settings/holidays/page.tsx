@@ -14,6 +14,14 @@ import { api, apiFetch } from "@/lib/api/client";
 import { byId, useLocations, type Rec } from "@/lib/api/lookups";
 import { fmtDate, isoDate, str } from "@/lib/format";
 
+const copyYearSchema = z
+  .object({
+    fromYear: z.string().min(4, "Select a year"),
+    toYear: z.string().min(4, "Select a year"),
+    locationId: z.string(),
+  })
+  .refine((v) => v.fromYear !== v.toYear, { message: "From and to years must differ", path: ["toYear"] });
+
 const rowSchema = z.object({ id: z.union([z.number(), z.string()]) }).passthrough();
 const TYPES = ["PUBLIC", "COMPANY", "RELIGIOUS", "OPTIONAL"];
 
@@ -36,7 +44,7 @@ export default function HolidaysPage() {
   const { can } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
-  const canManage = can("org", "manage");
+  const canManage = can("holidays", "create") || can("holidays", "edit") || can("holidays", "delete");
   const thisYear = new Date().getFullYear();
 
   const [year, setYear] = useState(String(thisYear));
@@ -46,6 +54,12 @@ export default function HolidaysPage() {
   const [form, setForm] = useState(blank);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
+
+  // Copy-year state
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyForm, setCopyForm] = useState({ fromYear: String(thisYear), toYear: String(thisYear + 1), locationId: "" });
+  const [copyErrors, setCopyErrors] = useState<Record<string, string>>({});
+  const [copyErr, setCopyErr] = useState("");
   const [confirmDel, setConfirmDel] = useState(false);
 
   const locations = useLocations();
@@ -70,6 +84,34 @@ export default function HolidaysPage() {
   }
 
   const invalidate = () => void qc.invalidateQueries({ queryKey: ["holidays"] });
+
+  const copyYear = useMutation({
+    mutationFn: (body: Record<string, unknown>) => apiFetch(api.hrms("holidays/copy-year"), { method: "POST", body }),
+    onSuccess: () => {
+      toast.show("Holidays copied successfully");
+      setCopyOpen(false);
+      invalidate();
+    },
+    onError: (e: Error) => setCopyErr(e.message),
+  });
+
+  function submitCopy(e: FormEvent) {
+    e.preventDefault();
+    const parsed = copyYearSchema.safeParse(copyForm);
+    if (!parsed.success) {
+      const next: Record<string, string> = {};
+      for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
+      return setCopyErrors(next);
+    }
+    setCopyErrors({});
+    setCopyErr("");
+    const body: Record<string, unknown> = {
+      fromYear: Number(parsed.data.fromYear),
+      toYear: Number(parsed.data.toYear),
+    };
+    if (parsed.data.locationId) body.locationId = Number(parsed.data.locationId);
+    copyYear.mutate(body);
+  }
 
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -123,9 +165,14 @@ export default function HolidaysPage() {
         subtitle="Days off per location. Leave requests skip these when counting working days."
         actions={
           canManage ? (
-            <button type="button" className="btn primary" onClick={() => openFor("new")}>
-              + Add holiday
-            </button>
+            <div className="row">
+              <button type="button" className="btn" onClick={() => { setCopyErr(""); setCopyErrors({}); setCopyOpen(true); }}>
+                Copy year
+              </button>
+              <button type="button" className="btn primary" onClick={() => openFor("new")}>
+                + Add holiday
+              </button>
+            </div>
           ) : null
         }
       />
@@ -243,6 +290,46 @@ export default function HolidaysPage() {
       >
         This holiday will be removed for everyone it applies to.
       </ConfirmModal>
+
+      <Modal open={copyOpen} onClose={() => setCopyOpen(false)} title="Copy holidays to another year">
+        <form className="stack" onSubmit={submitCopy} noValidate>
+          <div className="form-grid">
+            <FormField label="From year" required error={copyErrors.fromYear}>
+              <select value={copyForm.fromYear} onChange={(e) => setCopyForm({ ...copyForm, fromYear: e.target.value })}>
+                {years.map((y) => (
+                  <option key={y}>{y}</option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="To year" required error={copyErrors.toYear}>
+              <select value={copyForm.toYear} onChange={(e) => setCopyForm({ ...copyForm, toYear: e.target.value })}>
+                {years.map((y) => (
+                  <option key={y}>{y}</option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Location" hint="Leave blank to copy all locations">
+              <select value={copyForm.locationId} onChange={(e) => setCopyForm({ ...copyForm, locationId: e.target.value })}>
+                <option value="">All locations</option>
+                {(locations.data ?? []).map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          </div>
+          {copyErr ? <div className="notice bad">{copyErr}</div> : null}
+          <div className="modal-foot">
+            <button type="button" className="btn" onClick={() => setCopyOpen(false)}>
+              Cancel
+            </button>
+            <button type="submit" className="btn primary" disabled={copyYear.isPending}>
+              {copyYear.isPending ? "Copying…" : "Copy holidays"}
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -1,0 +1,92 @@
+{
+  "id": "techshop_practice",
+  "displayName": "TechShop Practice",
+  "settings": {
+    "businessPack": "techshop_practice",
+    "employeeCodePattern": "^TS-\\d{4}$",
+    "employeeCodePrefix": "TS-",
+    "employeeCodeDigits": 4,
+    "employeeCodeMode": "AUTO",
+    "defaultCreateRoleCodes": ["EMPLOYEE"],
+    "defaultTimeZone": "Asia/Dhaka",
+    "workLogRule": "OFF",
+    "workLogPercentOf": "WORKED",
+    "attendanceRules": {
+      "lateNightCheckoutMinutes": 360,
+      "zeroHoursWhenOpenMissing": true,
+      "holidayStatusCode": "HO",
+      "hourlyWorkedCode": "W",
+      "hourlyNoShiftCode": "NS",
+      "onLeaveCode": "OL"
+    },
+    "approvalAuthority": {
+      "overrideRoleCodes": ["SUPERADMIN", "ADMIN"],
+      "overridePermissions": [],
+      "roleDefaults": {
+        "MANAGER": { "resolver": "REPORTING_MANAGER", "allowOverride": true },
+        "STORE_MANAGER": { "resolver": "REPORTING_MANAGER_AND_DESIGNATION", "allowOverride": true },
+        "REGIONAL_HR": { "resolver": "DESIGNATION_OR_RBAC", "allowOverride": false },
+        "HR": { "resolver": "DESIGNATION_OR_RBAC", "roleCodes": ["HR"], "allowOverride": false },
+        "ADMIN": { "resolver": "RBAC_ROLE", "roleCodes": ["ADMIN", "SUPERADMIN"], "allowOverride": true },
+        "SUPER_ADMIN": { "resolver": "RBAC_ROLE", "roleCodes": ["SUPERADMIN"], "allowOverride": true },
+        "*": { "resolver": "DESIGNATION_OR_RBAC", "allowOverride": false }
+      }
+    },
+    "employeeRules": {
+      "requiredForActive": ["fullName", "email", "departmentId", "locationId", "startDate", "managerId"],
+      "requireManagerOnCreate": true
+    },
+    "reportingLine": {
+      "requireEffectiveDate": true,
+      "allowPastEffectiveDate": false,
+      "allowFutureEffectiveDate": true,
+      "maxPastDays": 0,
+      "maxFutureDays": 3650
+    },
+    "scheduleRules": {
+      "modes": ["FIXED", "HOURLY"],
+      "scopes": ["LOCATION", "TEAM", "EMPLOYEE"],
+      "resolveOrder": ["EMPLOYEE", "TEAM", "LOCATION"],
+      "defaultGraceMinutes": 15,
+      "defaultHalfDayHours": 4,
+      "defaultCheckoutCutoff": "23:59",
+      "requireUniqueScope": true,
+      "patternTemplates": {
+        "DAYS_5": {
+          "mode": "FIXED",
+          "workingDays": ["SAT", "SUN", "MON", "TUE", "WED"],
+          "inheritLocationHours": true
+        },
+        "DAYS_6": {
+          "mode": "FIXED",
+          "workingDays": ["SAT", "SUN", "MON", "TUE", "WED", "THU"],
+          "inheritLocationHours": true
+        },
+        "HOURLY": {
+          "mode": "HOURLY",
+          "weeklyHours": 48
+        }
+      }
+    }
+  },
+  "leavePolicy": {
+    "annualDays": 15,
+    "workWeekDays": 6,
+    "workingDays": ["SAT", "SUN", "MON", "TUE", "WED", "THU"],
+    "unionNoticeDays": 7,
+    "nonUnionNoticeDays": 3,
+    "requireCoverageCheck": true,
+    "approvalChain": [
+      { "step": 1, "role": "STORE_MANAGER", "resolver": "REPORTING_MANAGER_AND_DESIGNATION", "allowOverride": true },
+      { "step": 2, "role": "REGIONAL_HR", "resolver": "DESIGNATION_OR_RBAC", "allowOverride": false }
+    ],
+    "noticeMode": "ATTRIBUTE",
+    "defaultNoticeDays": 0,
+    "coverageMode": "LOCATION_SHIFT",
+    "locationField": "store_id",
+    "shiftField": "shift_pattern",
+    "requireReliefOnCoverageFail": true,
+    "defaultLeaveTypeCode": "ANNUAL"
+  },
+  "fieldDefinitions": []
+}

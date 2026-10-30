@@ -44,6 +44,7 @@ public class NotificationService {
         n.setBody(req.body());
         n.setCategory(req.category());
         n.setDedupeKey(req.dedupeKey());
+        n.setLinkUrl(req.linkUrl());
         n.setReadFlag(false);
 
         return toResponse(repository.save(n));
@@ -92,6 +93,7 @@ public class NotificationService {
                 n.getCategory(),
                 n.isReadFlag(),
                 n.getDedupeKey(),
+                n.getLinkUrl(),
                 n.getCreatedAt()
         );
     }

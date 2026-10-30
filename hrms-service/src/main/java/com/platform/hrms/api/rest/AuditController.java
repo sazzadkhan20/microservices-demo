@@ -28,14 +28,48 @@ public class AuditController {
         this.repository = repository;
     }
 
+    /**
+     * FR-AU-02 — Searchable audit log with actor, action, entity filters.
+     * Supports q (free-text), filter.actorEmployeeId, filter.action, filter.entity
+     * via DynamicListSupport AND the convenience aliases actorEmployeeId, action, entity.
+     */
     @GetMapping
     @RequiresPermission(feature = "settings", action = "manage")
-    @Operation(summary = "Searchable audit log")
+    @Operation(summary = "Searchable audit log (q, actorEmployeeId, action, entity)")
     public PageResponse<AuditLog> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
+
+        // FR-AU-02: convenience top-level param aliases injected into the filter map
+        // so DynamicListSupport filter.* handling picks them up automatically.
+        String actorParam = params.get("actorEmployeeId");
+        String actionParam = params.get("action");
+        String entityParam = params.get("entity");
+
         List<AuditLog> all = repository.findAll().stream()
                 .sorted(Comparator.comparing(AuditLog::getAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .toList();
+
+        // Apply convenience top-level filters before DynamicListSupport (pre-filter pass)
+        if (actorParam != null && !actorParam.isBlank()) {
+            String actorStr = actorParam.trim();
+            all = all.stream()
+                    .filter(a -> actorStr.equals(
+                            a.getActorEmployeeId() == null ? "" : String.valueOf(a.getActorEmployeeId())))
+                    .toList();
+        }
+        if (actionParam != null && !actionParam.isBlank()) {
+            String act = actionParam.trim().toLowerCase();
+            all = all.stream()
+                    .filter(a -> act.equalsIgnoreCase(a.getAction()))
+                    .toList();
+        }
+        if (entityParam != null && !entityParam.isBlank()) {
+            String ent = entityParam.trim();
+            all = all.stream()
+                    .filter(a -> ent.equalsIgnoreCase(a.getEntity()))
+                    .toList();
+        }
+
         return DynamicListSupport.page(
                 all,
                 query,

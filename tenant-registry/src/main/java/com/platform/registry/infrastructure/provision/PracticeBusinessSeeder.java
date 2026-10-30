@@ -21,6 +21,13 @@ import java.time.ZoneOffset;
 public class PracticeBusinessSeeder {
 
     private static final Logger log = LoggerFactory.getLogger(PracticeBusinessSeeder.class);
+    public static final String PACK = "techshop-practice";
+
+    private final BusinessPackApplier packApplier;
+
+    public PracticeBusinessSeeder(BusinessPackApplier packApplier) {
+        this.packApplier = packApplier;
+    }
 
     public void seedRetailPractice(String hrmsJdbcUrl, String payrollJdbcUrl,
                                    PlatformProperties.DbTarget hrms, PlatformProperties.DbTarget payroll) {
@@ -39,24 +46,8 @@ public class PracticeBusinessSeeder {
             try (Statement st = conn.createStatement()) {
                 clearLeaveAndOrg(st);
 
-                st.executeUpdate("""
-                        INSERT INTO leave_policy (
-                          annual_days, work_week_days, working_days,
-                          union_notice_days, non_union_notice_days,
-                          require_coverage_check, approval_chain,
-                          notice_mode, default_notice_days, coverage_mode,
-                          location_field, shift_field, require_relief_on_coverage_fail,
-                          default_leave_type_code, updated_at
-                        ) VALUES (
-                          15, 6,
-                          '["SAT","SUN","MON","TUE","WED","THU"]'::jsonb,
-                          7, 3, TRUE,
-                          '[{"step":1,"role":"STORE_MANAGER"},{"step":2,"role":"REGIONAL_HR"}]'::jsonb,
-                          'ATTRIBUTE', 0, 'LOCATION_SHIFT',
-                          'store_id', 'shift_pattern', TRUE,
-                          'ANNUAL', NOW()
-                        )
-                        """);
+                // leave_policy + settings (+ empty fieldDefs) from pack
+                packApplier.applyPolicySurface(conn, PACK);
 
                 st.executeUpdate("""
                         INSERT INTO leave_type
@@ -85,11 +76,6 @@ public class PracticeBusinessSeeder {
                           ('store_id', 'JSONB', 'custom_fields.store_id', NULL, NULL, TRUE, FALSE, FALSE, FALSE, NULL),
                           ('shift_pattern', 'JSONB', 'custom_fields.shift_pattern', NULL, NULL, TRUE, FALSE, FALSE, FALSE, NULL),
                           ('union_member_id', 'EXTENSION_TABLE', NULL, 'ext_indexed_attribute', 'attr_value', TRUE, TRUE, FALSE, FALSE, NULL)
-                        """);
-
-                st.executeUpdate("""
-                        INSERT INTO tenant_settings (settings, updated_at)
-                        VALUES ('{"businessPack":"techshop_retail"}'::jsonb, NOW())
                         """);
 
                 st.executeUpdate("""

@@ -1,0 +1,89 @@
+databaseChangeLog:
+  # Separates person↔role linking (roles:assign) from matrix editing (roles:manage).
+  # Business packs grant roles:assign / set assignable_by as needed — no engine hard-coding.
+  - changeSet:
+      id: hrms-010-roles-assign-permission
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: app_permission
+        - sqlCheck:
+            expectedResult: 0
+            sql: >
+              SELECT COUNT(*) FROM app_permission
+              WHERE feature = 'roles' AND action = 'assign'
+      changes:
+        - sql:
+            sql: >
+              INSERT INTO app_permission (feature, action, description)
+              VALUES ('roles', 'assign', 'Assign roles to people');
+
+  - changeSet:
+      id: hrms-010-qii-style-assignable-by
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: app_role
+        - columnExists:
+            tableName: app_role
+            columnName: assignable_by
+      changes:
+        # Best-effort defaults for common Qii/retail role codes when gates were left blank.
+        # Other businesses can override via seed/reseed without changing runtime code.
+        - sql:
+            sql: >
+              UPDATE app_role SET assignable_by = 'SUPERADMIN'
+              WHERE UPPER(code) = 'SUPERADMIN'
+                AND (assignable_by IS NULL OR TRIM(assignable_by) = '');
+        - sql:
+            sql: >
+              UPDATE app_role SET assignable_by = 'SUPERADMIN'
+              WHERE UPPER(code) = 'ADMIN'
+                AND (assignable_by IS NULL OR TRIM(assignable_by) = '');
+        - sql:
+            sql: >
+              UPDATE app_role SET assignable_by = 'SUPERADMIN,ADMIN'
+              WHERE UPPER(code) = 'HR'
+                AND (assignable_by IS NULL OR TRIM(assignable_by) = '');
+        - sql:
+            sql: >
+              UPDATE app_role SET assignable_by = 'SUPERADMIN,ADMIN,HR'
+              WHERE UPPER(code) IN ('MANAGER','EMPLOYEE')
+                AND (assignable_by IS NULL OR TRIM(assignable_by) = '');
+
+  - changeSet:
+      id: hrms-010-grant-roles-assign-to-admin-wildcard-holders
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: app_role_permission
+      changes:
+        # Grant roles:assign to ADMIN (and any role that already had all roles:* except manage).
+        # SUPERADMIN already has every permission via cross join on reseed; this fills existing DBs.
+        - sql:
+            sql: >
+              INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+              SELECT r.id, p.id, 'ALL'
+              FROM app_role r
+              CROSS JOIN app_permission p
+              WHERE UPPER(r.code) = 'ADMIN'
+                AND p.feature = 'roles' AND p.action = 'assign'
+                AND NOT EXISTS (
+                  SELECT 1 FROM app_role_permission rp
+                  WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                );
+        - sql:
+            sql: >
+              INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+              SELECT r.id, p.id, 'ALL'
+              FROM app_role r
+              CROSS JOIN app_permission p
+              WHERE UPPER(r.code) = 'SUPERADMIN'
+                AND p.feature = 'roles' AND p.action = 'assign'
+                AND NOT EXISTS (
+                  SELECT 1 FROM app_role_permission rp
+                  WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                );

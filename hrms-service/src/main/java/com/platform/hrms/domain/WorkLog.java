@@ -26,6 +26,13 @@ public class WorkLog {
     @Column(name = "note", length = 1024)
     private String note;
 
+    /** FR-WL-04 — true when logged time exceeds punched hours + grace. */
+    @Column(name = "flagged", nullable = false)
+    private boolean flagged;
+
+    @Column(name = "flag_reason", length = 256)
+    private String flagReason;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -45,6 +52,12 @@ public class WorkLog {
 
     public String getNote() { return note; }
     public void setNote(String note) { this.note = note; }
+
+    public boolean isFlagged() { return flagged; }
+    public void setFlagged(boolean flagged) { this.flagged = flagged; }
+
+    public String getFlagReason() { return flagReason; }
+    public void setFlagReason(String flagReason) { this.flagReason = flagReason; }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }

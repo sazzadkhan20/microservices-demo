@@ -4,14 +4,17 @@ import com.platform.hrms.domain.LeaveBlackout;
 import com.platform.hrms.domain.LeavePolicy;
 import com.platform.hrms.domain.StoreShiftCoverage;
 import com.platform.hrms.domain.TenantFieldDefinition;
+import com.platform.hrms.domain.TenantSettings;
 import com.platform.hrms.infrastructure.persistence.LeaveBlackoutRepository;
 import com.platform.hrms.infrastructure.persistence.LeavePolicyRepository;
 import com.platform.hrms.infrastructure.persistence.StoreShiftCoverageRepository;
 import com.platform.hrms.infrastructure.persistence.TenantFieldDefinitionRepository;
+import com.platform.hrms.infrastructure.persistence.TenantSettingsRepository;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -27,16 +30,29 @@ public class TenantConfigLoader {
     private final LeavePolicyRepository leavePolicyRepository;
     private final StoreShiftCoverageRepository coverageRepository;
     private final LeaveBlackoutRepository blackoutRepository;
+    private final TenantSettingsRepository tenantSettingsRepository;
 
     public TenantConfigLoader(
             TenantFieldDefinitionRepository fieldDefinitionRepository,
             LeavePolicyRepository leavePolicyRepository,
             StoreShiftCoverageRepository coverageRepository,
-            LeaveBlackoutRepository blackoutRepository) {
+            LeaveBlackoutRepository blackoutRepository,
+            TenantSettingsRepository tenantSettingsRepository) {
         this.fieldDefinitionRepository = fieldDefinitionRepository;
         this.leavePolicyRepository = leavePolicyRepository;
         this.coverageRepository = coverageRepository;
         this.blackoutRepository = blackoutRepository;
+        this.tenantSettingsRepository = tenantSettingsRepository;
+    }
+
+    /** Tenant JSON settings bag (empty map when unset). */
+    @Transactional(readOnly = true)
+    public Map<String, Object> loadSettingsMap() {
+        return tenantSettingsRepository.findAll().stream()
+                .findFirst()
+                .map(TenantSettings::getSettings)
+                .map(s -> s == null ? Map.<String, Object>of() : new HashMap<>(s))
+                .orElseGet(Map::of);
     }
 
     @Transactional(readOnly = true)

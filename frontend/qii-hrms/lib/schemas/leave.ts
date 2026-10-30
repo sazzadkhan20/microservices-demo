@@ -26,7 +26,31 @@ export const leaveRowSchema = z
     rejectReason: z.string().nullable().optional(),
     currentStep: z.number().optional(),
     approvals: z.array(approvalStepSchema).optional(),
+    halfDayPart: z.string().nullable().optional(),
+    attachmentRef: z.string().nullable().optional(),
+    teamClashAlert: z.union([z.boolean(), z.string()]).nullable().optional(),
+    warnings: z.array(z.string()).nullable().optional(),
   })
   .passthrough();
 
 export type LeaveRow = z.infer<typeof leaveRowSchema>;
+
+/** Shape returned by POST leave/preview */
+export const leavePreviewSchema = z
+  .object({
+    workingDaysCounted: z.number().nullable().optional(),
+    balanceAfter: z.number().nullable().optional(),
+    available: z.number().nullable().optional(),
+    pendingDays: z.number().nullable().optional(),
+    approvers: z
+      .array(
+        z.object({ name: z.string().nullable().optional(), role: z.string().nullable().optional() }).passthrough(),
+      )
+      .nullable()
+      .optional(),
+    warnings: z.array(z.string()).nullable().optional(),
+    teamClashAlert: z.union([z.boolean(), z.string()]).nullable().optional(),
+  })
+  .passthrough();
+
+export type LeavePreview = z.infer<typeof leavePreviewSchema>;

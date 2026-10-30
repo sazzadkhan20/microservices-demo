@@ -9,9 +9,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Create / update employee. {@code employeeCode} optional on create — auto QII-#### from pattern.
- * Choosing {@code teamId} sets department from team when departmentId omitted (FR-EMP-05).
- * {@code roleCodes} assigns RBAC roles on create (onboarding).
+ * Create / update employee. On create, {@code employeeCode} is governed by tenant
+ * {@code employeeCodeMode}: AUTO (ignore client, generate from prefix/digits/pattern),
+ * MANUAL (required), or OPTIONAL (generate when blank).
+ * Choosing {@code teamId} always sets department from the team (FR-EMP-05).
+ * Empty {@code roleCodes} on create applies {@code defaultCreateRoleCodes} (e.g. EMPLOYEE).
+ * {@code managerEffectiveFrom} — when managerId changes, reporting-line history starts on this date
+ * (defaults to today). Future dates keep the current manager until then.
  */
 public record EmployeeRequest(
         String employeeCode,
@@ -22,6 +26,7 @@ public record EmployeeRequest(
         Long departmentId,
         Long designationId,
         Long managerId,
+        LocalDate managerEffectiveFrom,
         Long teamId,
         Long locationId,
         String employmentType,
@@ -36,6 +41,16 @@ public record EmployeeRequest(
         String phone,
         String personalEmail,
         String address,
+        String emergencyName,
+        String emergencyRelationship,
+        String emergencyPhone,
+        /** FR-EMP-10 offboarding */
+        LocalDate exitDate,
+        String exitReason,
+        String offboardOverrideReason,
+        Long reassignReportsTo,
+        /** MONTHLY / HOURLY when salary permission is used on create */
+        String payType,
         Boolean attachOnboardingChecklist,
         List<String> roleCodes,
         Map<String, Object> customFields

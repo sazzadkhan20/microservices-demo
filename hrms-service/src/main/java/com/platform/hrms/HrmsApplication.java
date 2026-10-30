@@ -3,6 +3,7 @@ package com.platform.hrms;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * HRMS modular monolith (reusable multi-tenant service).
@@ -19,6 +20,7 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
  * <p>DataSource auto-config is excluded because we supply a routing DataSource.
  */
 @SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
+@EnableScheduling
 public class HrmsApplication {
 
     public static void main(String[] args) {

@@ -51,7 +51,7 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/approvals",
     title: "Approvals",
     nav: { group: "Team", label: "Approvals" },
-    rule: anyOf(["leave", "approve"]),
+    rule: anyOf(["leave", "approve"], ["attendance", "correct"]),
   },
   {
     path: "/team/attendance",
@@ -69,7 +69,7 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/tasks",
     title: "Tasks",
     nav: { group: "Team", label: "Tasks" },
-    rule: anyOf(["org", "view"], ["org", "manage"]),
+    rule: anyOf(["tasks", "view"], ["tasks", "create"]),
   },
   {
     path: "/leave/calendar",
@@ -109,7 +109,7 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/checklists",
     title: "Checklists",
     nav: { group: "HR", label: "Checklists" },
-    rule: anyOf(["org", "view"]),
+    rule: anyOf(["checklists", "view"], ["org", "view"]),
   },
   {
     path: "/reports",
@@ -123,25 +123,26 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/settings/org",
     title: "Organization",
     nav: { group: "Settings", label: "Organization" },
-    rule: anyOf(["org", "manage"]),
+    // Prototype: Organisation requires hierarchy.edit (not view-only HR/Manager).
+    rule: anyOf(["hierarchy", "edit"], ["org", "manage"]),
   },
   {
     path: "/settings/leave",
     title: "Leave setup",
     nav: { group: "Settings", label: "Leave setup" },
-    rule: anyOf(["leave", "manage"]),
+    rule: anyOf(["leave", "manage"], ["leave_setup", "view"], ["leave_balances", "edit"]),
   },
   {
     path: "/settings/schedules",
-    title: "Schedules",
-    nav: { group: "Settings", label: "Schedules" },
-    rule: anyOf(["org", "manage"]),
+    title: "Work schedules",
+    nav: { group: "Settings", label: "Work schedules" },
+    rule: anyOf(["attendance_settings", "view"], ["attendance_settings", "edit"]),
   },
   {
     path: "/settings/holidays",
     title: "Holidays",
     nav: { group: "Settings", label: "Holidays" },
-    rule: anyOf(["org", "view"], ["org", "manage"]),
+    rule: anyOf(["holidays", "view"], ["holidays", "create"], ["holidays", "edit"]),
   },
   {
     path: "/settings/roles",
@@ -159,6 +160,12 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/settings/audit",
     title: "Audit log",
     nav: { group: "Settings", label: "Audit log" },
+    rule: anyOf(["settings", "manage"]),
+  },
+  {
+    path: "/settings/rules",
+    title: "Business rules",
+    nav: { group: "Settings", label: "Business rules" },
     rule: anyOf(["settings", "manage"]),
   },
 ];

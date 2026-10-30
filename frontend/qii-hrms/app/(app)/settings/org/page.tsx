@@ -4,11 +4,12 @@ import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { OrgChartTree, type OrgChartNode } from "@/components/org/OrgChartTree";
 import { DataTable } from "@/components/ui/DataTable";
 import { FormField } from "@/components/ui/FormField";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { ErrorNote } from "@/components/ui/QueryState";
+import { ErrorNote, Loading } from "@/components/ui/QueryState";
 import { Tabs } from "@/components/ui/Tabs";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
@@ -27,6 +28,7 @@ const TABS = [
   { id: "departments", label: "Departments" },
   { id: "teams", label: "Teams" },
   { id: "locations", label: "Locations" },
+  { id: "chart", label: "Org chart" },
 ];
 
 const pass = <T extends z.ZodRawShape>(s: T) => z.object(s).passthrough();
@@ -42,15 +44,43 @@ function collect(err: z.ZodError) {
 export default function OrgSettingsPage() {
   const { can } = useAuth();
   const [tab, setTab] = useState("departments");
-  const canManage = can("org", "manage");
+  // Prototype: only hierarchy.edit (Admin/SuperAdmin) can mutate departments/teams/locations.
+  const canManage = can("hierarchy", "edit") || can("org", "manage");
 
   return (
     <div className="stack">
-      <PageHeader title="Organization" subtitle="Departments, teams and locations used across employees, leave and attendance." />
+      <PageHeader
+        title="Organization"
+        subtitle="Departments, teams and locations. Reporting managers are set on each employee; the org chart follows them."
+      />
       <Tabs tabs={TABS} value={tab} onChange={setTab} />
       {tab === "departments" ? <Departments canManage={canManage} /> : null}
       {tab === "teams" ? <Teams canManage={canManage} /> : null}
       {tab === "locations" ? <Locations canManage={canManage} /> : null}
+      {tab === "chart" ? <PeopleOrgChart /> : null}
+    </div>
+  );
+}
+
+function PeopleOrgChart() {
+  const { can } = useAuth();
+  const canOpen = can("employees", "view");
+  const chart = useQuery({
+    queryKey: ["org-chart", false],
+    queryFn: ({ signal }) => apiFetch<OrgChartNode[]>(api.hrms("org/chart"), { signal }),
+    staleTime: 30_000,
+  });
+  return (
+    <div className="stack">
+      <ErrorNote error={chart.error} />
+      {chart.isLoading ? <Loading /> : null}
+      {!chart.isLoading ? (
+        <OrgChartTree
+          roots={Array.isArray(chart.data) ? chart.data : []}
+          canOpen={canOpen}
+          emptyMessage="No reporting lines to draw yet. Assign managers on employee records."
+        />
+      ) : null}
     </div>
   );
 }

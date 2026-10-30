@@ -1,0 +1,16 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-013-work-schedule-unique-scope
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: work_schedule
+        - not:
+            - indexExists:
+                indexName: uk_work_schedule_scope
+      changes:
+        - addUniqueConstraint:
+            tableName: work_schedule
+            columnNames: scope_type, scope_id
+            constraintName: uk_work_schedule_scope

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { z } from "zod";
@@ -10,14 +10,51 @@ import { StatCard } from "@/components/ui/StatCard";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { api, apiFetch, apiFetchPage } from "@/lib/api/client";
 import { useDirectory, useHolidaysForYear } from "@/lib/api/directory";
+import { useLocations, useTeams } from "@/lib/api/lookups";
 import { datesBetween, oneLine } from "@/lib/admin";
-import { fmtDate, fmtDateTime, fmtRange, humanize, isoDate, todayIso } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtNumber, fmtRange, humanize, isoDate, todayIso } from "@/lib/format";
 import {
   auditRowSchema,
   correctionRowSchema,
   leaveAppRowSchema,
   teamAttendanceListSchema,
 } from "@/lib/schemas/admin";
+
+const adminDashSchema = z.record(z.string(), z.unknown());
+const workHoursRowSchema = z
+  .object({
+    employeeId: z.union([z.number(), z.string()]).optional(),
+    employeeName: z.string().optional(),
+    totalHours: z.union([z.number(), z.string()]).nullable().optional(),
+    expectedHours: z.union([z.number(), z.string()]).nullable().optional(),
+    attendanceDays: z.number().optional(),
+  })
+  .passthrough();
+const workHoursSchema = z.array(workHoursRowSchema);
+type WorkHoursRow = z.infer<typeof workHoursRowSchema>;
+
+type Period = "day" | "week" | "month";
+
+function periodRange(p: Period, anchor: string): { from: string; to: string } {
+  const d = new Date(`${anchor}T00:00:00`);
+  if (p === "day") return { from: anchor, to: anchor };
+  if (p === "week") {
+    const dow = d.getDay(); // 0=Sun
+    const mon = new Date(d);
+    mon.setDate(d.getDate() - ((dow + 6) % 7));
+    const sun = new Date(mon);
+    sun.setDate(mon.getDate() + 6);
+    const fmt = (x: Date) =>
+      `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+    return { from: fmt(mon), to: fmt(sun) };
+  }
+  // month
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  const last = new Date(y, m, 0).getDate();
+  const mm = String(m).padStart(2, "0");
+  return { from: `${y}-${mm}-01`, to: `${y}-${mm}-${String(last).padStart(2, "0")}` };
+}
 
 const dash = "—";
 
@@ -26,6 +63,32 @@ export default function AdminDashboardPage() {
   const today = todayIso();
   const year = Number(today.slice(0, 4));
   const dir = useDirectory(can("employees", "view"));
+
+  // Work-hours period nav
+  const [whPeriod, setWhPeriod] = useState<Period>("week");
+  const [whLocationId, setWhLocationId] = useState("");
+  const [whTeamId, setWhTeamId] = useState("");
+  const whRange = periodRange(whPeriod, today);
+  const locations = useLocations(can("attendance", "view"));
+  const teams = useTeams(can("attendance", "view"));
+
+  const adminDash = useQuery({
+    queryKey: ["dash-admin", today],
+    queryFn: ({ signal }) =>
+      apiFetch(api.hrms("dashboard/admin"), { query: { date: today }, schema: adminDashSchema, signal }),
+    enabled: can("reports", "view"),
+  });
+
+  const workHours = useQuery({
+    queryKey: ["dash-work-hours", whRange.from, whRange.to, whLocationId, whTeamId],
+    queryFn: ({ signal }) =>
+      apiFetch(api.hrms("dashboard/work-hours"), {
+        query: { from: whRange.from, to: whRange.to, locationId: whLocationId || undefined, teamId: whTeamId || undefined },
+        schema: workHoursSchema,
+        signal,
+      }),
+    enabled: can("attendance", "view"),
+  });
 
   const attendance = useQuery({
     queryKey: ["dash-attendance", today],
@@ -116,6 +179,17 @@ export default function AdminDashboardPage() {
         title="Admin dashboard"
         subtitle={`${fmtDate(today)} · key numbers from people, attendance and leave. Figures are limited to what your role can see.`}
       />
+
+      {adminDash.data && Object.keys(adminDash.data).length > 0 ? (
+        <div className="grid g4">
+          {Object.entries(adminDash.data)
+            .filter(([, v]) => typeof v === "number" || typeof v === "string")
+            .slice(0, 8)
+            .map(([k, v]) => (
+              <StatCard key={k} label={humanize(k.replace(/([a-z])([A-Z])/g, "$1_$2"))} value={String(v ?? "—")} />
+            ))}
+        </div>
+      ) : null}
 
       <div className="grid g4">
         <StatCard
@@ -301,6 +375,86 @@ export default function AdminDashboardPage() {
         </section>
       ) : null}
 
+      {can("attendance", "view") ? (
+        <section className="card stack">
+          <div className="card-head" style={{ marginBottom: 0 }}>
+            <h2>Work hours</h2>
+            <div className="row">
+              {(["day", "week", "month"] as Period[]).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  className={`btn sm${whPeriod === p ? " primary" : ""}`}
+                  onClick={() => setWhPeriod(p)}
+                >
+                  {p.charAt(0).toUpperCase() + p.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+            <select
+              aria-label="Location"
+              value={whLocationId}
+              onChange={(e) => setWhLocationId(e.target.value)}
+              style={{ width: 160 }}
+            >
+              <option value="">All locations</option>
+              {(locations.data ?? []).map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Team"
+              value={whTeamId}
+              onChange={(e) => setWhTeamId(e.target.value)}
+              style={{ width: 160 }}
+            >
+              <option value="">All teams</option>
+              {(teams.data ?? []).map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <span className="muted small" style={{ alignSelf: "center" }}>
+              {fmtDate(whRange.from)}
+              {whRange.from !== whRange.to ? ` – ${fmtDate(whRange.to)}` : ""}
+            </span>
+          </div>
+          {workHours.isLoading ? (
+            <p className="muted">Loading…</p>
+          ) : (workHours.data ?? []).length === 0 ? (
+            <p className="muted">No work-hours data for this period.</p>
+          ) : (
+            <div className="tbl-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th className="n">Logged hrs</th>
+                    <th className="n">Expected hrs</th>
+                    <th className="n">Days</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(workHours.data as WorkHoursRow[]).map((r, i) => (
+                    <tr key={String(r.employeeId ?? i)}>
+                      <td>{r.employeeName ?? dir.nameOf(r.employeeId)}</td>
+                      <td className="n mono small">{fmtNumber(r.totalHours, 1)}</td>
+                      <td className="n mono small">{fmtNumber(r.expectedHours, 1)}</td>
+                      <td className="n mono small">{r.attendanceDays ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
+
       <section className="card stack">
         <h2 style={{ marginBottom: 0 }}>Quick links</h2>
         <div className="row">
@@ -309,7 +463,7 @@ export default function AdminDashboardPage() {
             ["/approvals", "Approvals", ["leave", "approve"]],
             ["/payroll", "Payroll", ["payroll", "view"]],
             ["/reports", "Reports", ["reports", "view"]],
-            ["/settings/org", "Organisation", ["org", "manage"]],
+            ["/settings/org", "Organisation", ["hierarchy", "edit"]],
             ["/settings/roles", "Roles & permissions", ["roles", "view"]],
           ]
             .filter(([, , perm]) => can((perm as string[])[0], (perm as string[])[1]))

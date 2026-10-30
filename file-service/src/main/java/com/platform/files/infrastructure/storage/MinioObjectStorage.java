@@ -46,7 +46,10 @@ public class MinioObjectStorage implements ObjectStorage {
                 log.info("Created MinIO bucket {}", bucket);
             }
         } catch (Exception e) {
-            throw new IOException("Failed to ensure MinIO bucket " + bucket + ": " + e.getMessage(), e);
+            String hint = e.getMessage() != null && e.getMessage().toLowerCase().contains("connection refused")
+                    ? " — start MinIO: docker compose --profile minio up -d minio (http://127.0.0.1:9000)"
+                    : "";
+            throw new IOException("Failed to ensure MinIO bucket " + bucket + ": " + e.getMessage() + hint, e);
         }
     }
 

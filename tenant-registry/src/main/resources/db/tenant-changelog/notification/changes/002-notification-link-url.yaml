@@ -1,0 +1,18 @@
+databaseChangeLog:
+  - changeSet:
+      id: notif-002-link-url
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - columnExists:
+                tableName: notifications
+                columnName: link_url
+      changes:
+        - addColumn:
+            tableName: notifications
+            columns:
+              - column:
+                  name: link_url
+                  type: VARCHAR(512)
+                  remarks: "In-app deep link path for click-through (e.g. /leave, /approvals)"

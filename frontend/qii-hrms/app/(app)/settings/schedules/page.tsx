@@ -1,285 +1,347 @@
 "use client";
 
-import { useMemo, useState, type FormEvent } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { z } from "zod";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/components/auth/AuthProvider";
-import { DataTable } from "@/components/ui/DataTable";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { FormField } from "@/components/ui/FormField";
-import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useToast } from "@/components/ui/Toast";
+import { ScheduleEditorModal, DAYS, parseDays, type ScheduleEditorTarget } from "@/components/schedules/ScheduleEditorModal";
 import { api, apiFetch } from "@/lib/api/client";
 import { byId, useEmployeesLookup, useLocations, useTeams, type Rec } from "@/lib/api/lookups";
 import { fmtNumber, str } from "@/lib/format";
+import { scheduleRowSchema } from "@/lib/schemas/admin";
+import { pageResponseSchema } from "@/lib/schemas/page";
 
-const rowSchema = z.object({ id: z.union([z.number(), z.string()]) }).passthrough();
-const DAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
-const SCOPES = ["LOCATION", "TEAM", "EMPLOYEE"];
-const MODES = ["FIXED", "SHIFT", "FLEXIBLE"];
-
-function parseDays(v: unknown): string[] {
-  if (Array.isArray(v)) return v.map(String);
-  if (typeof v === "string") {
-    try {
-      const p = JSON.parse(v);
-      if (Array.isArray(p)) return p.map(String);
-    } catch {
-      return v.split(/[,\s]+/).filter(Boolean);
-    }
-  }
-  return [];
-}
-
-const schema = z
-  .object({
-    scopeType: z.string().min(1),
-    scopeId: z.string().min(1, "Choose who this applies to"),
-    mode: z.string().min(1),
-    workingDays: z.array(z.string()).min(1, "Pick at least one working day"),
-    startTime: z.string().min(1, "Start time is required"),
-    endTime: z.string().min(1, "End time is required"),
-    graceMinutes: z.coerce.number("Enter minutes").int().min(0).max(240),
-    halfDayHours: z.string(),
-    checkoutCutoff: z.string(),
-  })
-  .superRefine((v, ctx) => {
-    if (v.startTime && v.endTime && v.endTime <= v.startTime) {
-      ctx.addIssue({ code: "custom", path: ["endTime"], message: "End must be after start" });
-    }
-    if (v.halfDayHours && (Number.isNaN(Number(v.halfDayHours)) || Number(v.halfDayHours) < 0)) {
-      ctx.addIssue({ code: "custom", path: ["halfDayHours"], message: "Must be a number ≥ 0" });
-    }
-  });
+type ScopeFilter = "ALL" | "LOCATION" | "TEAM" | "EMPLOYEE";
 
 export default function SchedulesPage() {
   const { can } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
-  const canManage = can("org", "manage");
+  const canView = can("attendance_settings", "view") || can("attendance_settings", "edit");
+  const canManage = can("attendance_settings", "edit");
 
-  const blank = {
-    scopeType: "LOCATION",
-    scopeId: "",
-    mode: "FIXED",
-    workingDays: ["SUN", "MON", "TUE", "WED", "THU"],
-    startTime: "10:00",
-    endTime: "18:00",
-    graceMinutes: "15",
-    halfDayHours: "4",
-    checkoutCutoff: "23:59",
-  };
-  const [editing, setEditing] = useState<Rec | "new" | null>(null);
-  const [form, setForm] = useState(blank);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [err, setErr] = useState("");
+  const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("ALL");
+  const [editor, setEditor] = useState<ScheduleEditorTarget | null>(null);
+  const [removeRow, setRemoveRow] = useState<Rec | null>(null);
 
-  const locations = useLocations();
-  const teams = useTeams();
-  const employees = useEmployeesLookup();
+  const locations = useLocations(canView);
+  const teams = useTeams(canView);
+  const employees = useEmployeesLookup(canView);
   const locName = useMemo(() => byId(locations.data, (l) => l.name), [locations.data]);
   const teamName = useMemo(() => byId(teams.data, (l) => l.name), [teams.data]);
   const empName = useMemo(() => byId(employees.data, (l) => l.fullName || `#${l.id}`), [employees.data]);
 
-  const scopeLabel = (r: Rec) => {
-    const id = String(r.scopeId);
-    const t = String(r.scopeType);
-    const n = t === "LOCATION" ? locName.get(id) : t === "TEAM" ? teamName.get(id) : empName.get(id);
-    return n ?? `#${id}`;
-  };
-
-  function scopeOptions(type: string): { id: string; label: string }[] {
-    if (type === "LOCATION") return (locations.data ?? []).map((l) => ({ id: String(l.id), label: l.name }));
-    if (type === "TEAM") return (teams.data ?? []).map((l) => ({ id: String(l.id), label: l.name }));
-    return (employees.data ?? []).map((l) => ({ id: String(l.id), label: l.fullName || `#${l.id}` }));
-  }
-
-  function openFor(r: Rec | "new") {
-    setErr("");
-    setErrors({});
-    setForm(
-      r === "new"
-        ? blank
-        : {
-            scopeType: str(r.scopeType, "LOCATION"),
-            scopeId: String(r.scopeId ?? ""),
-            mode: str(r.mode, "FIXED"),
-            workingDays: parseDays(r.workingDays),
-            startTime: str(r.startTime, "10:00"),
-            endTime: str(r.endTime, "18:00"),
-            graceMinutes: String(r.graceMinutes ?? 15),
-            halfDayHours: r.halfDayHours == null ? "" : String(r.halfDayHours),
-            checkoutCutoff: str(r.checkoutCutoff, "23:59"),
-          },
-    );
-    setEditing(r);
-  }
-
-  const save = useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
-      editing && editing !== "new"
-        ? apiFetch(api.hrms(`work-schedules/${editing.id}`), { method: "PUT", body })
-        : apiFetch(api.hrms("work-schedules"), { method: "POST", body }),
-    onSuccess: () => {
-      toast.show(editing === "new" ? "Schedule created" : "Schedule saved");
-      setEditing(null);
-      void qc.invalidateQueries({ queryKey: ["work-schedules"] });
+  const listQ = useQuery({
+    queryKey: ["work-schedules", "all"],
+    queryFn: async ({ signal }) => {
+      const data = await apiFetch(api.hrms("work-schedules"), {
+        query: { page: 1, size: 200 },
+        signal,
+      });
+      const parsed = pageResponseSchema(scheduleRowSchema).safeParse(data);
+      if (!parsed.success) {
+        // Still show rows if envelope is usable — don't blank the admin UI on minor shape drift.
+        const content = Array.isArray((data as { content?: unknown })?.content)
+          ? ((data as { content: Rec[] }).content as Rec[])
+          : [];
+        if (content.length) return { content, page: 1, size: 200, totalElements: content.length, totalPages: 1 };
+        throw new Error("Schedules response shape was unexpected");
+      }
+      return parsed.data;
     },
-    onError: (e: Error) => setErr(e.message),
+    enabled: canView,
   });
 
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    const parsed = schema.safeParse(form);
-    if (!parsed.success) {
-      const next: Record<string, string> = {};
-      for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
-      return setErrors(next);
-    }
-    setErrors({});
-    setErr("");
-    const v = parsed.data;
-    save.mutate({
-      scopeType: v.scopeType,
-      scopeId: Number(v.scopeId),
-      mode: v.mode,
-      // The backend stores working days as a JSON array serialised in a string column.
-      workingDays: JSON.stringify(DAYS.filter((d) => v.workingDays.includes(d))),
-      startTime: v.startTime,
-      endTime: v.endTime,
-      graceMinutes: v.graceMinutes,
-      halfDayHours: v.halfDayHours === "" ? undefined : Number(v.halfDayHours),
-      checkoutCutoff: v.checkoutCutoff || undefined,
-    });
+  const rows = useMemo(() => {
+    const all = (listQ.data?.content ?? []) as Rec[];
+    if (scopeFilter === "ALL") return all;
+    return all.filter((r) => String(r.scopeType).toUpperCase() === scopeFilter);
+  }, [listQ.data, scopeFilter]);
+
+  const rulesQ = useQuery({
+    queryKey: ["work-schedule-rules"],
+    queryFn: ({ signal }) =>
+      apiFetch<{ resolveOrder?: string[] }>(api.hrms("work-schedules/rules"), { signal }),
+    staleTime: 60_000,
+    enabled: canView,
+  });
+  const resolveOrder = (rulesQ.data?.resolveOrder ?? ["EMPLOYEE", "TEAM", "LOCATION"]).join(" → ");
+
+  function whoLabel(r: Rec) {
+    const id = String(r.scopeId);
+    const t = String(r.scopeType).toUpperCase();
+    const name =
+      t === "LOCATION" ? locName.get(id) : t === "TEAM" ? teamName.get(id) : empName.get(id);
+    const kind = t === "LOCATION" ? "Location" : t === "TEAM" ? "Team" : "Person";
+    return { kind, name: name ?? `#${id}` };
+  }
+
+  const remove = useMutation({
+    mutationFn: (id: string) => apiFetch(api.hrms(`work-schedules/${id}`), { method: "DELETE" }),
+    onSuccess: () => {
+      toast.show("Override removed");
+      setRemoveRow(null);
+      void qc.invalidateQueries({ queryKey: ["work-schedules"] });
+    },
+    onError: (e: Error) => toast.error(e),
+  });
+
+  if (!canView) {
+    return (
+      <div className="stack">
+        <PageHeader title="Work schedules" />
+        <div className="notice">You need Attendance settings permission to view schedules.</div>
+      </div>
+    );
   }
 
   return (
     <div className="stack">
       <PageHeader
-        title="Schedules"
-        subtitle="Working days, hours and grace periods. An employee's own schedule wins over their team's, which wins over their location's."
+        title="Work schedules"
+        subtitle={`A person’s schedule overrides their team’s, and a team’s overrides the location’s (${resolveOrder}).`}
         actions={
           canManage ? (
-            <button type="button" className="btn primary" onClick={() => openFor("new")}>
-              + New schedule
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => setEditor({ mode: "new", preferScope: "TEAM" })}
+            >
+              Add override
             </button>
           ) : null
         }
       />
-      <div className="card">
-        <DataTable<Rec>
-          queryKey="work-schedules"
-          path={api.hrms("work-schedules")}
-          itemSchema={rowSchema as never}
-          search={false}
-          emptyText="No schedules configured"
-          rowKey={(r) => String(r.id)}
-          onRowClick={canManage ? (r) => openFor(r) : undefined}
-          columns={[
-            { key: "scope", header: "Applies to", render: (r) => <div><b>{scopeLabel(r)}</b><div className="small muted">{str(r.scopeType)}</div></div> },
-            { key: "mode", header: "Mode", render: (r) => <span className="pill info">{str(r.mode)}</span> },
-            {
-              key: "workingDays",
-              header: "Working days",
-              render: (r) => {
-                const on = parseDays(r.workingDays);
-                return (
-                  <div className="row" style={{ gap: 4 }}>
-                    {DAYS.map((d) => (
-                      <span key={d} className={`code ${on.includes(d) ? "c-P" : "c-WO"}`} style={{ minWidth: 34 }}>
-                        {d}
-                      </span>
-                    ))}
-                  </div>
-                );
-              },
-            },
-            { key: "hours", header: "Hours", className: "mono", render: (r) => `${str(r.startTime)} – ${str(r.endTime)}` },
-            { key: "graceMinutes", header: "Grace", className: "n", render: (r) => `${str(r.graceMinutes, "0")} min` },
-            { key: "halfDayHours", header: "Half day", className: "n", render: (r) => (r.halfDayHours == null ? "—" : `${fmtNumber(r.halfDayHours)} h`) },
-          ]}
-        />
+
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        {(
+          [
+            ["ALL", "All"],
+            ["LOCATION", "Locations"],
+            ["TEAM", "Teams"],
+            ["EMPLOYEE", "People"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={`btn sm ${scopeFilter === id ? "primary" : ""}`}
+            onClick={() => setScopeFilter(id)}
+          >
+            {label}
+          </button>
+        ))}
+        {canManage ? (
+          <button
+            type="button"
+            className="btn sm"
+            onClick={() => setEditor({ mode: "new", preferScope: "LOCATION" })}
+          >
+            + Location schedule
+          </button>
+        ) : null}
       </div>
 
-      <Modal open={!!editing} onClose={() => setEditing(null)} title={editing === "new" ? "New schedule" : "Edit schedule"}>
-        <form className="stack" onSubmit={submit} noValidate>
-          <div className="form-grid">
-            <FormField label="Applies to">
-              <select
-                value={form.scopeType}
-                disabled={editing !== "new"}
-                onChange={(e) => setForm({ ...form, scopeType: e.target.value, scopeId: "" })}
-              >
-                {SCOPES.map((s) => (
-                  <option key={s}>{s}</option>
-                ))}
-              </select>
-            </FormField>
-            <FormField label="Who" required error={errors.scopeId}>
-              <select value={form.scopeId} disabled={editing !== "new"} onChange={(e) => setForm({ ...form, scopeId: e.target.value })}>
-                <option value="">Select…</option>
-                {scopeOptions(form.scopeType).map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </FormField>
-            <FormField label="Mode">
-              <select value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })}>
-                {[...new Set([form.mode, ...MODES])].map((m) => (
-                  <option key={m}>{m}</option>
-                ))}
-              </select>
-            </FormField>
-            <FormField label="Grace (minutes)" error={errors.graceMinutes}>
-              <input type="number" min={0} value={form.graceMinutes} onChange={(e) => setForm({ ...form, graceMinutes: e.target.value })} />
-            </FormField>
-            <FormField label="Start" required error={errors.startTime}>
-              <input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} />
-            </FormField>
-            <FormField label="End" required error={errors.endTime}>
-              <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} />
-            </FormField>
-            <FormField label="Half-day hours" error={errors.halfDayHours} hint="Worked hours below which a day counts as half">
-              <input type="number" min={0} step="0.25" value={form.halfDayHours} onChange={(e) => setForm({ ...form, halfDayHours: e.target.value })} />
-            </FormField>
-            <FormField label="Check-out cut-off">
-              <input type="time" value={form.checkoutCutoff} onChange={(e) => setForm({ ...form, checkoutCutoff: e.target.value })} />
-            </FormField>
-            <div className="field full">
-              <span>Working days</span>
-              <div className="checks">
-                {DAYS.map((d) => (
-                  <label key={d}>
-                    <input
-                      type="checkbox"
-                      checked={form.workingDays.includes(d)}
-                      onChange={(e) =>
-                        setForm({
-                          ...form,
-                          workingDays: e.target.checked ? [...form.workingDays, d] : form.workingDays.filter((x) => x !== d),
-                        })
-                      }
-                    />
-                    {d}
-                  </label>
-                ))}
-              </div>
-              {errors.workingDays ? <span className="field-err">{errors.workingDays}</span> : null}
-            </div>
-          </div>
-          {err ? <div className="notice bad">{err}</div> : null}
-          <div className="modal-foot">
-            <button type="button" className="btn" onClick={() => setEditing(null)}>
-              Cancel
-            </button>
-            <button type="submit" className="btn primary" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      <ResolveChecker employees={employees.data ?? []} />
+
+      <div className="card">
+        {listQ.error ? <div className="notice bad">{(listQ.error as Error).message}</div> : null}
+        <div className="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Applies to</th>
+                <th>Mode</th>
+                <th>Working days</th>
+                <th>Office hours</th>
+                <th className="n">Grace</th>
+                <th className="n">Half day under</th>
+                <th>Check-out cut-off</th>
+                {canManage ? <th></th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 ? (
+                <tr>
+                  <td colSpan={canManage ? 8 : 7} className="empty">
+                    {listQ.isLoading
+                      ? "Loading…"
+                      : "No schedules yet — add a location schedule (e.g. BD Sun–Thu 10:00–18:00), then team or person overrides."}
+                  </td>
+                </tr>
+              ) : (
+                rows.map((r) => {
+                  const who = whoLabel(r);
+                  const hourly = String(r.mode).toUpperCase() === "HOURLY";
+                  const on = parseDays(r.workingDays);
+                  return (
+                    <tr key={String(r.id)}>
+                      <td>
+                        <b>
+                          {who.kind} · {who.name}
+                        </b>
+                      </td>
+                      <td>
+                        <span className="pill info">{str(r.mode)}</span>
+                      </td>
+                      <td>
+                        {hourly ? (
+                          <span className="muted">No fixed days</span>
+                        ) : (
+                          <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+                            {DAYS.map((d) => (
+                              <span
+                                key={d}
+                                className={`code ${on.includes(d) ? "c-P" : "c-WO"}`}
+                                style={{ minWidth: 34 }}
+                              >
+                                {d}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="mono">
+                        {hourly
+                          ? r.weeklyHours == null
+                            ? "—"
+                            : `${fmtNumber(r.weeklyHours)} h/wk`
+                          : `${str(r.startTime)}–${str(r.endTime)}`}
+                      </td>
+                      <td className="n">{hourly ? "—" : `${str(r.graceMinutes, "0")} min`}</td>
+                      <td className="n">
+                        {hourly || r.halfDayHours == null ? "—" : `${fmtNumber(r.halfDayHours)} h`}
+                      </td>
+                      <td className="mono">{hourly ? "—" : str(r.checkoutCutoff, "—")}</td>
+                      {canManage ? (
+                        <td>
+                          <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
+                            <button
+                              type="button"
+                              className="btn sm"
+                              onClick={() => setEditor({ mode: "edit", row: r })}
+                            >
+                              Edit
+                            </button>
+                            {String(r.scopeType).toUpperCase() !== "LOCATION" ? (
+                              <button
+                                type="button"
+                                className="btn sm danger"
+                                onClick={() => setRemoveRow(r)}
+                              >
+                                Remove
+                              </button>
+                            ) : null}
+                          </div>
+                        </td>
+                      ) : null}
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="small muted" style={{ marginTop: 12 }}>
+          Location schedules are the base for everyone at that office. Team and person rows are overrides. A check-out
+          up to 6 hours after midnight counts for the previous day.
+        </p>
+      </div>
+
+      <ScheduleEditorModal
+        open={!!editor}
+        target={editor}
+        onClose={() => setEditor(null)}
+        onSaved={() => void qc.invalidateQueries({ queryKey: ["work-schedules"] })}
+      />
+
+      <ConfirmModal
+        open={!!removeRow}
+        title="Remove schedule override?"
+        confirmLabel="Remove"
+        danger
+        busy={remove.isPending}
+        onCancel={() => setRemoveRow(null)}
+        onConfirm={() => removeRow && remove.mutate(String(removeRow.id))}
+      >
+        This removes the {str(removeRow?.scopeType)} override for{" "}
+        {removeRow ? `${whoLabel(removeRow).kind} · ${whoLabel(removeRow).name}` : "—"}. Resolution falls back to the
+        next level in {resolveOrder}.
+      </ConfirmModal>
+    </div>
+  );
+}
+
+function ResolveChecker({ employees }: { employees: Rec[] }) {
+  const [employeeId, setEmployeeId] = useState("");
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const resolveQ = useQuery({
+    queryKey: ["work-schedule-resolve", employeeId],
+    queryFn: ({ signal }) =>
+      apiFetch<{ source?: string; resolved?: Rec; workPattern?: string }>(
+        api.hrms(`work-schedules/resolve/${employeeId}`),
+        { signal },
+      ),
+    enabled: !!employeeId,
+  });
+  const hoursQ = useQuery({
+    queryKey: ["work-schedule-hours", employeeId, date],
+    queryFn: ({ signal }) =>
+      apiFetch<{ expectedHours?: number | string }>(
+        api.hrms(`work-schedules/expected-hours?employeeId=${employeeId}&date=${date}`),
+        { signal },
+      ),
+    enabled: !!employeeId && !!date,
+  });
+  const resolved = resolveQ.data?.resolved;
+  const days = parseDays(resolved?.workingDays);
+
+  return (
+    <div className="card stack">
+      <div>
+        <b>Resolve preview</b>
+        <div className="small muted">
+          Pick a person to see which schedule wins (person → team → location) and expected hours for a day.
+        </div>
+      </div>
+      <div className="form-grid">
+        <FormField label="Employee">
+          <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <option value="">Select…</option>
+            {employees.map((e) => (
+              <option key={String(e.id)} value={String(e.id)}>
+                {str(e.fullName, `#${e.id}`)}
+              </option>
+            ))}
+          </select>
+        </FormField>
+        <FormField label="Date">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </FormField>
+      </div>
+      {employeeId && resolveQ.data ? (
+        <div className="small">
+          Work pattern: <b>{str(resolveQ.data.workPattern, "—")}</b>
+          {" · "}
+          Source: <b>{str(resolveQ.data.source, "none")}</b>
+          {resolved ? (
+            <>
+              {" · "}
+              {str(resolved.mode)}{" "}
+              {String(resolved.mode).toUpperCase() === "HOURLY"
+                ? resolved.weeklyHours == null
+                  ? "(no weekly hours)"
+                  : `(${fmtNumber(resolved.weeklyHours)} h/wk)`
+                : `(${days.join(", ") || "—"} ${str(resolved.startTime)}–${str(resolved.endTime)})`}
+            </>
+          ) : null}
+          {" · "}
+          Expected hours: <b>{hoursQ.data?.expectedHours == null ? "…" : fmtNumber(hoursQ.data.expectedHours)}</b>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -20,7 +20,10 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -83,9 +86,11 @@ public class PayrollController {
 
     @PostMapping("/payslips/{id}/finalize")
     @RequiresPermission(feature = "payroll", action = "run")
-    @Operation(summary = "Finalize (lock) a draft payslip — payroll:run")
-    public CalculatePayrollResponse finalize(@PathVariable Long id) {
-        return calculationService.finalize(id);
+    @Operation(summary = "Finalize (lock) a draft payslip — payroll:run. Body: {confirm:true} required. Month must have ended.")
+    public CalculatePayrollResponse finalize(@PathVariable Long id,
+                                             @RequestBody(required = false) Map<String, Object> body) {
+        boolean confirm = body != null && Boolean.parseBoolean(String.valueOf(body.getOrDefault("confirm", "false")));
+        return calculationService.finalize(id, confirm);
     }
 
     @PostMapping("/payslips/{id}/reopen")
@@ -93,6 +98,41 @@ public class PayrollController {
     @Operation(summary = "Reopen a finalized payslip for recalculation — payroll:run")
     public CalculatePayrollResponse reopen(@PathVariable Long id) {
         return calculationService.reopen(id);
+    }
+
+    @PostMapping("/calculate-month")
+    @RequiresPermission(feature = "payroll", action = "run")
+    @Operation(summary = "Calculate payslips for all active employees in a period — payroll:run")
+    public Map<String, Object> calculateMonth(@RequestParam String period) {
+        return calculationService.calculateMonth(period);
+    }
+
+    @GetMapping("/warnings")
+    @RequiresPermission(feature = "payroll", action = "view")
+    @Operation(summary = "Warn about unfinalized payslips from previous period — payroll:view")
+    public Map<String, Object> warnings(@RequestParam String period) {
+        return calculationService.warnings(period);
+    }
+
+    @GetMapping("/export.csv")
+    @RequiresPermission(feature = "payroll", action = "run")
+    @Operation(summary = "Export payslips as CSV for a period — payroll:run")
+    public ResponseEntity<String> exportCsv(
+            @RequestParam String period,
+            @RequestParam(defaultValue = "false") boolean finalizedOnly) {
+        String csv = calculationService.exportCsv(period, finalizedOnly);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType("text/csv"));
+        headers.set(HttpHeaders.CONTENT_DISPOSITION,
+                "attachment; filename=\"payroll-" + period + ".csv\"");
+        return ResponseEntity.ok().headers(headers).body(csv);
+    }
+
+    @GetMapping("/me/current")
+    @RequiresPermission(feature = "payroll", action = "view")
+    @Operation(summary = "Current pay, finalized payslips, and MTD estimate for calling employee — payroll:view")
+    public Map<String, Object> meCurrent() {
+        return calculationService.meEstimate();
     }
 
     @GetMapping("/config")
@@ -137,12 +177,12 @@ public class PayrollController {
 
     @GetMapping("/salary-history/employee/{employeeId}")
     @RequiresPermission(feature = "payroll", action = "view")
-    @Operation(summary = "Salary history for an employee — own with payroll:view, any with payroll:run")
+    @Operation(summary = "Salary history — own with payroll/salary:view; any employee with salary:edit or payroll:run")
     public List<Map<String, Object>> salaryHistory(
             @PathVariable Long employeeId, HttpServletRequest http) {
-        if (!canRun(http) && !employeeId.equals(requireOwnEmployeeId())) {
+        if (!canManageSalary(http) && !employeeId.equals(requireOwnEmployeeId())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Forbidden: payroll:run required to view other employees' salary history");
+                    "Forbidden: salary:edit or payroll:run required to view other employees' salary history");
         }
         return salaryHistoryRepository.findByEmployeeIdOrderByEffectiveDateDesc(employeeId).stream()
                 .map(this::salaryRow)
@@ -150,9 +190,13 @@ public class PayrollController {
     }
 
     @PostMapping("/salary-history")
-    @RequiresPermission(feature = "payroll", action = "run")
-    @Operation(summary = "Record a salary change (config/history ledger)")
-    public Map<String, Object> addSalaryHistory(@RequestBody Map<String, Object> body) {
+    @RequiresPermission(feature = "payroll", action = "view")
+    @Operation(summary = "Record a salary change (salary:edit or payroll:run)")
+    public Map<String, Object> addSalaryHistory(@RequestBody Map<String, Object> body, HttpServletRequest http) {
+        if (!canManageSalary(http)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Forbidden: salary:edit or payroll:run required to record salary changes");
+        }
         Long employeeId = Long.valueOf(String.valueOf(body.get("employeeId")));
         LocalDate effective = LocalDate.parse(String.valueOf(body.get("effectiveDate")));
         BigDecimal amount = new BigDecimal(String.valueOf(body.get("amount")));
@@ -239,6 +283,14 @@ public class PayrollController {
     private static boolean canRun(HttpServletRequest request) {
         return request.getAttribute(RbacInterceptor.PERMISSIONS_ATTR) instanceof PermissionSet p
                 && p.has("payroll", "run");
+    }
+
+    /** HR salary:edit or payroll:run — manage compensation ledger for any employee. */
+    private static boolean canManageSalary(HttpServletRequest request) {
+        if (!(request.getAttribute(RbacInterceptor.PERMISSIONS_ATTR) instanceof PermissionSet p)) {
+            return false;
+        }
+        return p.has("payroll", "run") || p.has("salary", "edit");
     }
 
     /** Employee id from the gateway-verified identity (never from request params/body). */

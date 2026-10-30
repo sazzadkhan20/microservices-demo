@@ -5,7 +5,10 @@ import { useParams } from "next/navigation";
 import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
+import { AssignEmployeeRolesModal } from "@/components/employees/AssignEmployeeRolesModal";
 import { EmployeeForm } from "@/components/employees/EmployeeForm";
+import { PersonalContactForm } from "@/components/employees/PersonalContactForm";
+import { ScheduleEditorModal, parseDays } from "@/components/schedules/ScheduleEditorModal";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { FormField } from "@/components/ui/FormField";
@@ -39,8 +42,7 @@ import {
   pick,
   str,
 } from "@/lib/format";
-import { auditRowSchema, type AuditRow } from "@/lib/schemas/admin";
-import { employeeSchema, type Employee } from "@/lib/schemas/employee";
+import { DOC_TYPES, employeeSchema, type Employee } from "@/lib/schemas/employee";
 import { attendanceRowSchema, type AttendanceRow } from "@/lib/schemas/hrms";
 
 const rowSchema = z.object({ id: z.union([z.number(), z.string()]) }).passthrough();
@@ -58,13 +60,12 @@ const TABS = [
   { id: "employment", label: "Employment" },
   { id: "salary", label: "Salary" },
   { id: "attendance", label: "Attendance" },
+  { id: "worklog", label: "Work log" },
   { id: "leave", label: "Leave" },
   { id: "documents", label: "Documents" },
   { id: "notes", label: "Notes" },
   { id: "history", label: "History" },
 ];
-
-const DOC_TYPES = ["Contract", "ID / Passport", "Certificate", "Offer letter", "Other"];
 
 function KV({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -80,6 +81,7 @@ export default function EmployeeDetailPage() {
   const id = params.id;
   const { me, can } = useAuth();
   const [tab, setTab] = useState("profile");
+  const [rolesOpen, setRolesOpen] = useState(false);
 
   const emp = useQuery({
     queryKey: ["employee", id],
@@ -96,9 +98,14 @@ export default function EmployeeDetailPage() {
     );
   }
   const e = emp.data!;
-  // Every employee has payroll:view (own payslips), so salary is limited to HR / payroll / the person themself.
-  const showSalary = can("payroll", "run") || can("employees", "edit") || String(e.id) === String(me.employeeId);
-  const canRun = can("payroll", "run");
+  const isSelf = String(e.id) === String(me.employeeId);
+  // Align with backend compensationAccess: self, salary:view/edit (HR), or payroll:view/run.
+  const showSalary =
+    isSelf || can("salary", "view") || can("salary", "edit") || can("payroll", "run") || can("payroll", "view");
+  const canRun = can("payroll", "run") || can("salary", "edit");
+  const canAssignRoles = can("roles", "assign") && !isSelf;
+  const tabs = showSalary ? TABS : TABS.filter((t) => t.id !== "salary");
+  const activeTab = tab === "salary" && !showSalary ? "profile" : tab;
 
   return (
     <div className="stack">
@@ -113,31 +120,61 @@ export default function EmployeeDetailPage() {
         actions={
           <>
             <StatusPill status={e.status} />
+            {canAssignRoles ? (
+              <button type="button" className="btn" onClick={() => setRolesOpen(true)}>
+                Roles
+              </button>
+            ) : null}
             <Link href="/employees" className="btn">
               ← All employees
             </Link>
           </>
         }
       />
-      <Tabs tabs={TABS} value={tab} onChange={setTab} />
-      {tab === "profile" ? <ProfileTab emp={e} canEdit={can("employees", "edit")} /> : null}
-      {tab === "employment" ? (
+      <Tabs tabs={tabs} value={activeTab} onChange={setTab} />
+      {activeTab === "profile" ? (
+        <ProfileTab
+          emp={e}
+          canEdit={can("employees", "edit")}
+          isSelf={isSelf}
+          canAssignRoles={canAssignRoles}
+          onAssignRoles={() => setRolesOpen(true)}
+        />
+      ) : null}
+      <AssignEmployeeRolesModal open={rolesOpen} employee={e} onClose={() => setRolesOpen(false)} />
+      {activeTab === "employment" ? (
         <EmploymentTab emp={e} canEdit={can("employees", "edit")} showSalary={showSalary} />
       ) : null}
-      {tab === "salary" ? <SalaryTab empId={id} emp={e} canRun={canRun} showSalary={showSalary} /> : null}
-      {tab === "attendance" ? <AttendanceTab empId={id} /> : null}
-      {tab === "leave" ? <LeaveTab empId={id} /> : null}
-      {tab === "documents" ? <DocumentsTab empId={id} canEdit={can("employees", "edit")} /> : null}
-      {tab === "notes" ? <NotesTab emp={e} /> : null}
-      {tab === "history" ? <HistoryTab empId={id} /> : null}
+      {activeTab === "salary" && showSalary ? (
+        <SalaryTab empId={id} emp={e} canRun={canRun} showSalary={showSalary} />
+      ) : null}
+      {activeTab === "attendance" ? <AttendanceTab empId={id} /> : null}
+      {activeTab === "worklog" ? <WorkLogTab empId={id} /> : null}
+      {activeTab === "leave" ? <LeaveTab empId={id} /> : null}
+      {activeTab === "documents" ? <DocumentsTab empId={id} canEdit={can("employees", "edit")} /> : null}
+      {activeTab === "notes" ? <NotesTab emp={e} /> : null}
+      {activeTab === "history" ? <HistoryTab empId={id} /> : null}
     </div>
   );
 }
 
 type EmpProp = { emp: Employee; canEdit: boolean };
 
-function ProfileTab({ emp, canEdit }: EmpProp) {
+function ProfileTab({
+  emp,
+  canEdit,
+  isSelf,
+  canAssignRoles,
+  onAssignRoles,
+}: EmpProp & { isSelf?: boolean; canAssignRoles?: boolean; onAssignRoles?: () => void }) {
   const [editing, setEditing] = useState(false);
+  const [selfEdit, setSelfEdit] = useState(false);
+  const cf = (emp as Employee & { customFields?: Record<string, unknown> }).customFields;
+  const pickCf = (k: string) => {
+    const d = (emp as Record<string, unknown>)[k];
+    if (d != null && String(d).trim()) return String(d);
+    return cf?.[k] == null ? "—" : String(cf[k]);
+  };
   return (
     <div className="card stack">
       <div className="card-head">
@@ -161,11 +198,23 @@ function ProfileTab({ emp, canEdit }: EmpProp) {
             <p className="muted small">{emp.preferredName ? `Goes by ${emp.preferredName}` : "—"}</p>
           </div>
         </div>
-        {canEdit && !editing ? (
-          <button type="button" className="btn" onClick={() => setEditing(true)}>
-            Edit profile
-          </button>
-        ) : null}
+        <div className="row">
+          {canAssignRoles ? (
+            <button type="button" className="btn" onClick={onAssignRoles}>
+              Roles
+            </button>
+          ) : null}
+          {canEdit && !editing && !selfEdit ? (
+            <button type="button" className="btn" onClick={() => setEditing(true)}>
+              Edit profile
+            </button>
+          ) : null}
+          {isSelf && !canEdit && !selfEdit && !editing ? (
+            <button type="button" className="btn" onClick={() => setSelfEdit(true)}>
+              Edit my contact
+            </button>
+          ) : null}
+        </div>
       </div>
       {editing ? (
         <EmployeeForm
@@ -175,18 +224,24 @@ function ProfileTab({ emp, canEdit }: EmpProp) {
           onSaved={() => setEditing(false)}
           onCancel={() => setEditing(false)}
         />
+      ) : selfEdit ? (
+        <PersonalContactForm employee={emp} onSaved={() => setSelfEdit(false)} onCancel={() => setSelfEdit(false)} />
       ) : (
         <div className="kv">
           <KV label="Work email">{str(emp.email)}</KV>
           <KV label="Phone">{str(emp.phone)}</KV>
           <KV label="Personal email">{str(emp.personalEmail)}</KV>
+          <KV label="Address">{pickCf("address")}</KV>
+          <KV label="Emergency contact">{pickCf("emergencyName")}</KV>
+          <KV label="Emergency relationship">{pickCf("emergencyRelationship")}</KV>
+          <KV label="Emergency phone">{pickCf("emergencyPhone")}</KV>
           <KV label="Preferred name">{str(emp.preferredName)}</KV>
           <KV label="Employee code">
             <span className="mono">{str(emp.employeeCode)}</span>
           </KV>
           <KV label="Roles">
             <div className="row">
-              {(emp.roles ?? []).length === 0 ? <span className="pill warn">No role</span> : null}
+              {(emp.roles ?? []).length === 0 ? <span className="pill warn">No role — access pending</span> : null}
               {(emp.roles ?? []).map((r) => (
                 <span key={r} className="pill acc">
                   {r}
@@ -201,7 +256,10 @@ function ProfileTab({ emp, canEdit }: EmpProp) {
 }
 
 function EmploymentTab({ emp, canEdit, showSalary }: EmpProp & { showSalary: boolean }) {
+  const { can } = useAuth();
   const [editing, setEditing] = useState(false);
+  const [schedOpen, setSchedOpen] = useState(false);
+  const canEditSchedule = can("attendance_settings", "edit");
   const teams = useTeams();
   const locations = useLocations();
   const departments = useDepartments();
@@ -211,12 +269,26 @@ function EmploymentTab({ emp, canEdit, showSalary }: EmpProp & { showSalary: boo
   const deptName = useMemo(() => byId(departments.data, (d) => d.name), [departments.data]);
   const desigName = useMemo(() => byId(designations.data, (d) => d.name), [designations.data]);
   const dir = useDirectory();
+  const qc = useQueryClient();
 
   const reporting = useQuery({
     queryKey: ["reporting-line", emp.id],
     queryFn: ({ signal }) => apiFetch<Rec[]>(api.hrms(`employees/${emp.id}/reporting-line`), { signal }),
   });
   const line = rowsOf<Rec>(reporting.data);
+
+  const scheduleQ = useQuery({
+    queryKey: ["work-schedule-resolve", emp.id],
+    queryFn: ({ signal }) =>
+      apiFetch<{
+        source?: string | null;
+        workPattern?: string | null;
+        resolved?: Rec | null;
+      }>(api.hrms(`work-schedules/resolve/${emp.id}`), { signal }),
+  });
+  const resolved = scheduleQ.data?.resolved;
+  const hourly = String(resolved?.mode ?? "").toUpperCase() === "HOURLY";
+  const dayCodes = parseDays(resolved?.workingDays);
 
   return (
     <div className="stack">
@@ -272,6 +344,63 @@ function EmploymentTab({ emp, canEdit, showSalary }: EmpProp & { showSalary: boo
             </KV>
           </div>
         )}
+      </div>
+
+      <div className="card stack">
+        <div className="card-head" style={{ margin: 0 }}>
+          <h2>Work schedule</h2>
+          {canEditSchedule ? (
+            <button type="button" className="btn sm" onClick={() => setSchedOpen(true)}>
+              Change schedule
+            </button>
+          ) : null}
+        </div>
+        {scheduleQ.isLoading ? (
+          <p className="muted">Loading schedule…</p>
+        ) : scheduleQ.error ? (
+          <ErrorNote error={scheduleQ.error} />
+        ) : !resolved ? (
+          <p className="muted">No location, team or person schedule resolved yet. Set one under Settings → Work schedules.</p>
+        ) : hourly ? (
+          <>
+            <p>
+              <b>Hourly</b>
+              {resolved.weeklyHours != null ? ` · expected ${fmtNumber(resolved.weeklyHours)} h/week` : ""}
+              {" · "}
+              from {humanize(scheduleQ.data?.source)}
+            </p>
+            <p className="small muted">
+              Paid by hours worked from check-in to check-out. No late or absent marking from fixed office hours.
+            </p>
+          </>
+        ) : (
+          <>
+            <p>
+              <b>{dayCodes.length || "—"} days</b>
+              {dayCodes.length ? ` (${dayCodes.join(", ")})` : ""} · {str(resolved.startTime)}–{str(resolved.endTime)}
+              {" · "}
+              from {humanize(scheduleQ.data?.source)}
+            </p>
+            <p className="small muted">
+              Late after {str(resolved.startTime)} plus {str(resolved.graceMinutes, "15")} minutes
+              {resolved.halfDayHours != null ? ` · half day under ${fmtNumber(resolved.halfDayHours)} h` : ""}.
+            </p>
+          </>
+        )}
+        <ScheduleEditorModal
+          open={schedOpen}
+          target={
+            schedOpen
+              ? { mode: "employee", employeeId: emp.id, employeeName: emp.fullName || undefined }
+              : null
+          }
+          onClose={() => setSchedOpen(false)}
+          onSaved={() => {
+            void qc.invalidateQueries({ queryKey: ["work-schedule-resolve", emp.id] });
+            void qc.invalidateQueries({ queryKey: ["work-schedules"] });
+          }}
+          allowScopes={["EMPLOYEE"]}
+        />
       </div>
 
       <div className="card stack">
@@ -516,41 +645,48 @@ function SalaryTab({
 }
 
 function HistoryTab({ empId }: { empId: string }) {
-  const { can } = useAuth();
-  if (!can("settings", "manage")) {
-    return (
-      <div className="card stack">
-        <h2>History</h2>
-        <p className="muted">Audit history requires settings:manage. Ask an admin if you need to review changes for this employee.</p>
-      </div>
-    );
-  }
+  const hist = useQuery({
+    queryKey: ["employment-history", empId],
+    queryFn: ({ signal }) => apiFetch<Rec[]>(api.hrms(`employees/${empId}/employment-history`), { signal }),
+  });
+  const rows = rowsOf<Rec>(hist.data);
   return (
-    <div className="card" style={{ padding: 0 }}>
-      <DataTable<AuditRow>
-        queryKey={`emp-audit-${empId}`}
-        path={api.hrms("audit")}
-        itemSchema={auditRowSchema}
-        search={false}
-        q={String(empId)}
-        emptyText="No audit entries mentioning this employee id"
-        rowKey={(r) => String(r.id)}
-        columns={[
-          { key: "at", header: "When", className: "mono small", render: (r) => fmtDateTime(r.at) },
-          { key: "action", header: "Action", render: (r) => humanize(r.action) },
-          {
-            key: "entity",
-            header: "Record",
-            render: (r) => (
-              <>
-                {r.entity}
-                {r.entityId ? <span className="mono small muted"> #{r.entityId}</span> : null}
-              </>
-            ),
-          },
-          { key: "actorEmployeeId", header: "Who", render: (r) => (r.actorEmployeeId != null ? `#${r.actorEmployeeId}` : "—") },
-        ]}
-      />
+    <div className="card stack">
+      <h2>Employment history</h2>
+      <p className="muted small">Every employment field change — old value, new value, editor and date (FR-EMP-07).</p>
+      <ErrorNote error={hist.error} />
+      <div className="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Field</th>
+              <th>Old</th>
+              <th>New</th>
+              <th>Editor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="empty">
+                  {hist.isLoading ? "Loading…" : "No employment changes recorded yet"}
+                </td>
+              </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={String(r.id)}>
+                  <td className="mono small">{fmtDateTime(r.changedAt)}</td>
+                  <td>{humanize(String(r.fieldName ?? ""))}</td>
+                  <td className="muted small">{str(r.oldValue)}</td>
+                  <td className="small">{str(r.newValue)}</td>
+                  <td className="mono small">{r.changedBy != null ? `#${r.changedBy}` : "—"}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -560,8 +696,9 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
-  const [docType, setDocType] = useState(DOC_TYPES[0]);
+  const [docType, setDocType] = useState<string>(DOC_TYPES[0]);
   const [name, setName] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [err, setErr] = useState("");
 
@@ -570,6 +707,17 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
     queryFn: ({ signal }) => apiFetch(api.hrms(`employees/${empId}/documents`), { signal }),
   });
   const rows = rowsOf<Rec>(docs.data);
+
+  async function logAccess(fileId: string, action: "OPEN" | "DOWNLOAD") {
+    try {
+      await apiFetch(api.hrms(`employees/${empId}/documents/${fileId}/access`), {
+        method: "POST",
+        body: { action },
+      });
+    } catch {
+      /* access log is best-effort — still allow download */
+    }
+  }
 
   const attach = useMutation({
     mutationFn: async () => {
@@ -586,6 +734,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
           fileId: String(uploaded.id),
           documentType: docType,
           name: name.trim() || uploaded.originalName || docType,
+          ...(expiresAt ? { expiresAt } : {}),
         },
       });
     },
@@ -593,6 +742,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
       toast.show("Document attached");
       setOpen(false);
       setName("");
+      setExpiresAt("");
       setFile(null);
       setErr("");
       void qc.invalidateQueries({ queryKey: ["employee-docs", empId] });
@@ -628,6 +778,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
             <tr>
               <th>Name</th>
               <th>Type</th>
+              <th>Expires</th>
               <th>Uploaded</th>
               <th />
             </tr>
@@ -635,7 +786,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={4} className="empty">
+                <td colSpan={5} className="empty">
                   {docs.isLoading ? "Loading…" : "No documents attached"}
                 </td>
               </tr>
@@ -646,6 +797,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
                   <td>
                     <span className="pill">{str(d.documentType ?? d.type)}</span>
                   </td>
+                  <td className="muted small">{d.expiresAt ? fmtDate(d.expiresAt) : "—"}</td>
                   <td className="muted small">{fmtDateTime(d.uploadedAt)}</td>
                   <td>
                     <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -653,9 +805,14 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
                         type="button"
                         className="btn sm"
                         onClick={() =>
-                          void downloadFile(api.files(`${d.fileId}/download`), undefined, String(d.name ?? "document")).catch(
-                            (er) => toast.error(er),
-                          )
+                          void (async () => {
+                            await logAccess(String(d.fileId), "DOWNLOAD");
+                            await downloadFile(
+                              api.files(`${d.fileId}/download`),
+                              undefined,
+                              String(d.name ?? "document"),
+                            ).catch((er) => toast.error(er));
+                          })()
                         }
                       >
                         Download
@@ -683,7 +840,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
         open={open}
         onClose={() => setOpen(false)}
         title="Attach document"
-        subtitle="The file is uploaded to the file service, then linked to this employee."
+        subtitle="Types: Contract, NDA, Agreement, ID copy, Certificate, Other. Opens and downloads are logged."
         footer={
           <>
             <button type="button" className="btn" onClick={() => setOpen(false)}>
@@ -707,6 +864,10 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
           <label className="field">
             <span>Display name</span>
             <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to file name" />
+          </label>
+          <label className="field">
+            <span>Expiry date (optional)</span>
+            <input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
           </label>
           <label className="field full">
             <span>File</span>
@@ -835,6 +996,56 @@ function AttendanceTab({ empId }: { empId: string }) {
           { key: "location", header: "Location", render: (r) => str(r.location) },
         ]}
       />
+    </div>
+  );
+}
+
+/** FR-WL-08 — last 14 days of work logs. */
+function WorkLogTab({ empId }: { empId: string }) {
+  const { can } = useAuth();
+  const canSee = can("attendance", "view") || can("worklogs", "view");
+  const logs = useQuery({
+    queryKey: ["emp-worklog-14", empId],
+    queryFn: ({ signal }) =>
+      apiFetch<Rec[]>(api.hrms(`work-logs/employee/${empId}`), { query: { days: 14 }, signal }),
+    enabled: canSee,
+  });
+  if (!canSee) return <NoAccess what="work logs" />;
+  const rows = Array.isArray(logs.data) ? logs.data : [];
+  return (
+    <div className="card stack">
+      <h2>Work log — last 14 days</h2>
+      <ErrorNote error={logs.error} />
+      <div className="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Task</th>
+              <th className="n">Time</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="empty">
+                  {logs.isLoading ? "Loading…" : "No work logs in the last 14 days"}
+                </td>
+              </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={String(r.id)}>
+                  <td className="mono">{fmtDate(r.workDate)}</td>
+                  <td>{str(r.taskTitle, `Task ${r.taskId}`)}</td>
+                  <td className="n">{fmtNumber(Number(r.minutes || 0) / 60, 2)} h</td>
+                  <td>{str(r.note, "")}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

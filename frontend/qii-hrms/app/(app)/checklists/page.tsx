@@ -11,8 +11,8 @@ import { ErrorNote } from "@/components/ui/QueryState";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
-import { rowsOf, type Rec } from "@/lib/api/lookups";
-import { str } from "@/lib/format";
+import { rowsOf, useEmployeesLookup, type Rec } from "@/lib/api/lookups";
+import { fmtDateTime, str } from "@/lib/format";
 
 type Item = { title: string; required: boolean };
 
@@ -25,11 +25,18 @@ const templateSchema = z.object({
     .refine((a) => a.length > 0, "Add at least one item"),
 });
 
+const assignSchema = z.object({
+  employeeId: z.string().min(1, "Select an employee"),
+  type: z.string().min(1, "Select a type"),
+  templateId: z.string(),
+  startOrExitDate: z.string(),
+});
+
 export default function ChecklistsPage() {
   const { can } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
-  const canManage = can("org", "manage");
+  const canManage = can("checklists", "create") || can("checklists", "edit");
 
   const list = useQuery({
     queryKey: ["checklists"],
@@ -37,12 +44,21 @@ export default function ChecklistsPage() {
   });
   const rows = rowsOf<Rec>(list.data);
 
+  const employees = useEmployeesLookup(canManage);
+
+  // Template create state
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [type, setType] = useState("ONBOARDING");
   const [items, setItems] = useState<Item[]>([{ title: "", required: true }]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
+
+  // Assign state
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [assignForm, setAssignForm] = useState({ employeeId: "", type: "ONBOARDING", templateId: "", startOrExitDate: "" });
+  const [assignErrors, setAssignErrors] = useState<Record<string, string>>({});
+  const [assignErr, setAssignErr] = useState("");
 
   const toggle = useMutation({
     mutationFn: ({ checklistId, itemIndex, completed }: { checklistId: string; itemIndex: number; completed: boolean }) =>
@@ -63,6 +79,17 @@ export default function ChecklistsPage() {
     onError: (e: Error) => setErr(e.message),
   });
 
+  const assign = useMutation({
+    mutationFn: (body: Record<string, unknown>) => apiFetch(api.hrms("checklists/assign"), { method: "POST", body }),
+    onSuccess: () => {
+      toast.show("Checklist assigned");
+      setAssignOpen(false);
+      setAssignForm({ employeeId: "", type: "ONBOARDING", templateId: "", startOrExitDate: "" });
+      void qc.invalidateQueries({ queryKey: ["checklists"] });
+    },
+    onError: (e: Error) => setAssignErr(e.message),
+  });
+
   function submit(e: FormEvent) {
     e.preventDefault();
     const parsed = templateSchema.safeParse({ name, type, items });
@@ -76,6 +103,28 @@ export default function ChecklistsPage() {
     create.mutate({ name: parsed.data.name, type: parsed.data.type.toUpperCase(), items: parsed.data.items });
   }
 
+  function submitAssign(e: FormEvent) {
+    e.preventDefault();
+    const parsed = assignSchema.safeParse(assignForm);
+    if (!parsed.success) {
+      const next: Record<string, string> = {};
+      for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
+      return setAssignErrors(next);
+    }
+    setAssignErrors({});
+    setAssignErr("");
+    const body: Record<string, unknown> = {
+      employeeId: Number(parsed.data.employeeId),
+      type: parsed.data.type,
+    };
+    if (parsed.data.templateId) body.templateId = Number(parsed.data.templateId);
+    if (parsed.data.startOrExitDate) body.startOrExitDate = parsed.data.startOrExitDate;
+    assign.mutate(body);
+  }
+
+  // Template rows for the assign dropdown
+  const templates = rows.filter((r) => !r.employeeId); // templates have no employeeId
+
   return (
     <div className="stack">
       <PageHeader
@@ -83,9 +132,14 @@ export default function ChecklistsPage() {
         subtitle="Onboarding and offboarding steps. Tick items off as they are completed."
         actions={
           canManage ? (
-            <button type="button" className="btn primary" onClick={() => { setErr(""); setOpen(true); }}>
-              + New checklist
-            </button>
+            <div className="row">
+              <button type="button" className="btn" onClick={() => { setAssignErr(""); setAssignErrors({}); setAssignOpen(true); }}>
+                Assign
+              </button>
+              <button type="button" className="btn primary" onClick={() => { setErr(""); setOpen(true); }}>
+                + New checklist
+              </button>
+            </div>
           ) : null
         }
       />
@@ -123,9 +177,17 @@ export default function ChecklistsPage() {
                         onChange={(e) => toggle.mutate({ checklistId: String(c.id), itemIndex: idx, completed: e.target.checked })}
                         style={{ marginTop: 4 }}
                       />
-                      <span style={item.completed ? { textDecoration: "line-through", color: "var(--muted)" } : undefined}>
-                        {str(item.title)}
-                        {item.required ? <span className="pill warn" style={{ marginLeft: 8 }}>required</span> : null}
+                      <span style={{ flex: 1 }}>
+                        <span style={item.completed ? { textDecoration: "line-through", color: "var(--muted)" } : undefined}>
+                          {str(item.title)}
+                          {item.required ? <span className="pill warn" style={{ marginLeft: 8 }}>required</span> : null}
+                        </span>
+                        {item.completed && (item.completedBy || item.completedAt) ? (
+                          <span className="muted small" style={{ display: "block", marginTop: 2 }}>
+                            {item.completedBy ? `by ${str(item.completedBy)}` : ""}
+                            {item.completedAt ? ` · ${fmtDateTime(item.completedAt)}` : ""}
+                          </span>
+                        ) : null}
                       </span>
                     </label>
                   </li>
@@ -193,6 +255,55 @@ export default function ChecklistsPage() {
             </button>
             <button type="submit" className="btn primary" disabled={create.isPending}>
               {create.isPending ? "Creating…" : "Create checklist"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={assignOpen} onClose={() => setAssignOpen(false)} title="Assign checklist">
+        <form className="stack" onSubmit={submitAssign} noValidate>
+          <div className="form-grid">
+            <FormField label="Employee" required error={assignErrors.employeeId}>
+              <select value={assignForm.employeeId} onChange={(e) => setAssignForm({ ...assignForm, employeeId: e.target.value })}>
+                <option value="">Select…</option>
+                {(employees.data ?? []).map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.fullName ?? `#${emp.id}`}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Type" required error={assignErrors.type}>
+              <select value={assignForm.type} onChange={(e) => setAssignForm({ ...assignForm, type: e.target.value })}>
+                <option value="ONBOARDING">Onboarding</option>
+                <option value="OFFBOARDING">Offboarding</option>
+              </select>
+            </FormField>
+            <FormField label="Template" hint="Optional — leave blank to use the default for the type">
+              <select value={assignForm.templateId} onChange={(e) => setAssignForm({ ...assignForm, templateId: e.target.value })}>
+                <option value="">Default</option>
+                {templates.map((t) => (
+                  <option key={String(t.id)} value={String(t.id)}>
+                    {str(t.name)}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <FormField label="Start / exit date" hint="Optional">
+              <input
+                type="date"
+                value={assignForm.startOrExitDate}
+                onChange={(e) => setAssignForm({ ...assignForm, startOrExitDate: e.target.value })}
+              />
+            </FormField>
+          </div>
+          {assignErr ? <div className="notice bad">{assignErr}</div> : null}
+          <div className="modal-foot">
+            <button type="button" className="btn" onClick={() => setAssignOpen(false)}>
+              Cancel
+            </button>
+            <button type="submit" className="btn primary" disabled={assign.isPending}>
+              {assign.isPending ? "Assigning…" : "Assign checklist"}
             </button>
           </div>
         </form>

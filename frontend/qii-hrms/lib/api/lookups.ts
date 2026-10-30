@@ -53,7 +53,21 @@ export type Role = {
   description?: string | null;
   systemRole?: boolean;
   active?: boolean;
-  permissions?: { feature: string; action: string; scope?: string | null; key?: string }[];
+  /** Config-driven policy flags from tenant DB (not hard-coded role names). */
+  protectFromOffboard?: boolean;
+  immutablePermissions?: boolean;
+  grantsWildcard?: boolean;
+  minHolders?: number;
+  assignableBy?: string | null;
+  holderCount?: number;
+  permissions?: {
+    feature: string;
+    action: string;
+    scope?: string | null;
+    scoped?: boolean;
+    label?: string | null;
+    key?: string;
+  }[];
 };
 export type LeaveType = { id?: number; code: string; name: string; paid?: boolean };
 

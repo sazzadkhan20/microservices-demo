@@ -167,6 +167,31 @@ public class ProvisioningService {
         );
     }
 
+    /**
+     * Re-applies config-driven system role permission matrix without wiping tenant data.
+     * Pack {@code qii_creative} (default when tenant looks like Qii) updates SUPERADMIN…EMPLOYEE links.
+     */
+    @Transactional
+    public Map<String, Object> upgradeRbacMatrix(String tenantId, String businessPack) {
+        String normalized = TenantIds.normalize(tenantId);
+        TenantRouting hrms = repository.findByServiceNameAndTenantId(SERVICE_HRMS, normalized)
+                .orElseThrow(() -> new IllegalArgumentException("HRMS routing not found for " + normalized));
+        String pack = (businessPack == null || businessPack.isBlank()) ? "qii_creative" : businessPack.trim();
+        return switch (pack) {
+            case "qii_creative", "qii" -> {
+                qiiBusinessSeeder.reseedRbacMatrix(hrms.getJdbcUrl(), properties.getProvision().getHrms());
+                cachePublisher.publishRouting(hrms);
+                yield Map.of(
+                        "tenantId", normalized,
+                        "businessPack", pack,
+                        "message", "System RBAC matrix re-applied (SUPERADMIN/ADMIN/HR/MANAGER/EMPLOYEE)."
+                );
+            }
+            default -> throw new IllegalArgumentException(
+                    "RBAC matrix upgrade supported for qii_creative (got businessPack=" + pack + ")");
+        };
+    }
+
     @Transactional
     public Map<String, Object> upgradePayrollSchema(String tenantId) {
         String normalized = TenantIds.normalize(tenantId);

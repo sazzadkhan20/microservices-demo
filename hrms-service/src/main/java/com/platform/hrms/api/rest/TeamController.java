@@ -52,8 +52,8 @@ public class TeamController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @RequiresPermission(feature = "org", action = "manage")
-    @Operation(summary = "Create team (code, name, departmentId, leadEmployeeId, maxOnLeave, clashAction ALERT|BLOCK)")
+    @RequiresPermission(feature = "hierarchy", action = "edit")
+    @Operation(summary = "Create team (org structure — hierarchy.edit)")
     public Team create(@RequestBody Map<String, Object> body) {
         String code = requireText(body, "code");
         if (teamRepository.findAll().stream().anyMatch(t -> code.equalsIgnoreCase(t.getCode()))) {
@@ -67,8 +67,8 @@ public class TeamController {
     }
 
     @PutMapping("/{id}")
-    @RequiresPermission(feature = "org", action = "manage")
-    @Operation(summary = "Update team")
+    @RequiresPermission(feature = "hierarchy", action = "edit")
+    @Operation(summary = "Update team (org structure — hierarchy.edit)")
     public Team update(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         Team team = teamRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Team not found: " + id));

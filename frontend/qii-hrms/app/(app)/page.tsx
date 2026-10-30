@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -9,7 +11,9 @@ import { AttCode, StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import { rowsOf, type Rec } from "@/lib/api/lookups";
-import { fmtDate, fmtDateTime, fmtNumber, fmtRange, fmtTime, pick, str } from "@/lib/format";
+import { buildPunchBody, fmtHoursMinutes } from "@/lib/attendance/punch";
+import { fmtDate, fmtDateTime, fmtMoney, fmtNumber, fmtRange, fmtTime, pick, str } from "@/lib/format";
+import { resolveNotificationHref } from "@/lib/schemas/hrms";
 
 function greeting() {
   const h = new Date().getHours();
@@ -20,13 +24,21 @@ export default function HomePage() {
   const { me, can } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
+  const router = useRouter();
   const canApproveLeave = can("leave", "approve");
   const canCorrect = can("attendance", "correct");
+  const canViewPay = can("payroll", "view");
 
   const today = useQuery({
     queryKey: ["attendance-today"],
     queryFn: ({ signal }) => apiFetch<Rec>(api.hrms("attendance/today"), { signal }),
     enabled: can("attendance", "view"),
+    refetchInterval: (q) => {
+      const d = q.state.data as Rec | undefined;
+      return d?.hoursLive || (d?.checkIn && !d?.checkOut && String(d?.statusCode).toUpperCase() !== "M")
+        ? 30_000
+        : false;
+    },
   });
   const balances = useQuery({
     queryKey: ["my-balances", me.employeeId],
@@ -53,31 +65,45 @@ export default function HomePage() {
     queryFn: ({ signal }) => apiFetch(api.notifications(""), { query: { page: 0, size: 5 }, signal }),
     retry: false,
   });
+  const myCurrent = useQuery({
+    queryKey: ["payroll-me-current"],
+    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll("me/current"), { signal }),
+    enabled: canViewPay,
+  });
   const unread = useQuery({
     queryKey: ["notifications-unread"],
     queryFn: ({ signal }) => apiFetch<{ unreadCount?: number }>(api.notifications("unread-count"), { signal }),
     retry: false,
   });
 
+  const [attActionError, setAttActionError] = useState("");
   const refreshToday = () => {
     void qc.invalidateQueries({ queryKey: ["attendance-today"] });
     void qc.invalidateQueries({ queryKey: ["my-attendance"] });
   };
   const checkIn = useMutation({
-    mutationFn: () => apiFetch(api.hrms("attendance/check-in"), { method: "POST", body: {} }),
+    mutationFn: async () => {
+      const body = await buildPunchBody();
+      return apiFetch(api.hrms("attendance/check-in"), { method: "POST", body });
+    },
     onSuccess: () => {
+      setAttActionError("");
       toast.show("Checked in");
       refreshToday();
     },
-    onError: (e: Error) => toast.error(e),
+    onError: (e: Error) => setAttActionError(e.message || "Check-in failed"),
   });
   const checkOut = useMutation({
-    mutationFn: () => apiFetch(api.hrms("attendance/check-out"), { method: "POST", body: {} }),
+    mutationFn: async () => {
+      const body = await buildPunchBody();
+      return apiFetch(api.hrms("attendance/check-out"), { method: "POST", body });
+    },
     onSuccess: () => {
+      setAttActionError("");
       toast.show("Checked out");
       refreshToday();
     },
-    onError: (e: Error) => toast.error(e),
+    onError: (e: Error) => setAttActionError(e.message || "Check-out failed"),
   });
 
   const t = today.data;
@@ -132,20 +158,51 @@ export default function HomePage() {
                   <span className="v">{checkInAt ? str(t.workingHours, "0h") : "—"}</span>
                 </div>
               </div>
+              <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
+                <span className="small muted">
+                  Expected {fmtNumber((t as Rec).expectedHours ?? 0)}h
+                </span>
+                <span className="small muted">
+                  Logged {fmtHoursMinutes((t as Rec).loggedMinutes)}
+                </span>
+                {(t as Rec).week ? (
+                  <span className="small muted">
+                    Week {fmtHoursMinutes(((t as Rec).week as Rec).workedMinutes)} /{" "}
+                    {fmtNumber(((t as Rec).week as Rec).expectedHours ?? 0)}h
+                  </span>
+                ) : null}
+              </div>
               <p className="muted small">
                 {fmtDate(t.date)} · {str(t.timeZone)}
                 {t.locationLabel ? ` · ${String(t.locationLabel)}` : ""}
+                {t.deviceType ? ` · ${String(t.deviceType)}` : ""}
               </p>
             </>
           ) : null}
           <div className="row">
             {canCheck && !checkInAt && !lateNight ? (
-              <button type="button" className="btn primary" disabled={checkIn.isPending} onClick={() => checkIn.mutate()}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={checkIn.isPending}
+                onClick={() => {
+                  setAttActionError("");
+                  checkIn.mutate();
+                }}
+              >
                 Check in
               </button>
             ) : null}
             {canCheck && ((checkInAt && !checkOutAt) || lateNight) ? (
-              <button type="button" className="btn primary" disabled={checkOut.isPending} onClick={() => checkOut.mutate()}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={checkOut.isPending}
+                onClick={() => {
+                  setAttActionError("");
+                  checkOut.mutate();
+                }}
+              >
                 {lateNight ? "Check out (yesterday)" : "Check out"}
               </button>
             ) : null}
@@ -153,6 +210,7 @@ export default function HomePage() {
               History
             </Link>
           </div>
+          {attActionError ? <p className="err" role="alert">{attActionError}</p> : null}
         </section>
 
         <section className="card stack">
@@ -202,6 +260,52 @@ export default function HomePage() {
         </section>
       </div>
 
+      {canViewPay ? (
+        <div className="grid g3">
+          <section className="card stack" style={{ gridColumn: "span 2" }}>
+            <div className="card-head" style={{ marginBottom: 0 }}>
+              <h2>My pay</h2>
+              <Link href="/payroll" className="btn sm">
+                Payslips
+              </Link>
+            </div>
+            <ErrorNote error={myCurrent.error} />
+            {myCurrent.isLoading ? <p className="muted">Loading…</p> : null}
+            {myCurrent.data ? (
+              <>
+                <div className="row" style={{ gap: 24 }}>
+                  <div className="stat">
+                    <span className="s">Current pay</span>
+                    <span className="v">{fmtMoney((myCurrent.data as Rec).currentPay)}</span>
+                  </div>
+                  <div className="stat">
+                    <span className="s">MTD estimate</span>
+                    <span className="v">{fmtMoney((myCurrent.data as Rec).mtdEstimate)}</span>
+                  </div>
+                </div>
+                {rowsOf<Rec>((myCurrent.data as Rec).payslips).length > 0 ? (
+                  <div className="stack" style={{ gap: 6 }}>
+                    {rowsOf<Rec>((myCurrent.data as Rec).payslips)
+                      .slice(0, 3)
+                      .map((p, i) => (
+                        <div key={String(p.id ?? i)} className="row between">
+                          <span className="mono small">{str(p.periodLabel)}</span>
+                          <span className="row" style={{ gap: 8 }}>
+                            <b>{fmtMoney(p.netAmount)}</b>
+                            <StatusPill status={p.status} />
+                          </span>
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <p className="muted small">No finalized payslips yet.</p>
+                )}
+              </>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+
       <div className="grid g2">
         <section className="card stack">
           <div className="card-head" style={{ marginBottom: 0 }}>
@@ -215,15 +319,47 @@ export default function HomePage() {
           {notes.isLoading ? <p className="muted">Loading…</p> : null}
           {noteRows.length === 0 && !notes.isLoading ? <p className="muted">You&apos;re all caught up.</p> : null}
           <div className="stack" style={{ gap: 8 }}>
-            {noteRows.map((n, i) => (
-              <div key={String(n.id ?? i)} className="note">
-                <div className="row between">
-                  <b style={{ color: "var(--fg)" }}>{str(n.title, "Notification")}</b>
-                  <span className="small">{fmtDateTime(n.createdAt)}</span>
-                </div>
-                <div>{str(n.body, "")}</div>
-              </div>
-            ))}
+            {noteRows.map((n, i) => {
+              const href = resolveNotificationHref({
+                linkUrl: str(n.linkUrl, "") || null,
+                category: str(n.category, "") || null,
+              });
+              const open = async () => {
+                if (!n.readFlag && n.id != null) {
+                  try {
+                    await apiFetch(api.notifications(`${n.id}/read`), { method: "POST" });
+                    void qc.invalidateQueries({ queryKey: ["notifications"] });
+                    void qc.invalidateQueries({ queryKey: ["notifications-unread"] });
+                  } catch {
+                    /* navigate anyway */
+                  }
+                }
+                if (href) router.push(href);
+                else router.push("/notifications");
+              };
+              return (
+                <button
+                  key={String(n.id ?? i)}
+                  type="button"
+                  className="note"
+                  onClick={() => void open()}
+                  style={{
+                    textAlign: "left",
+                    width: "100%",
+                    cursor: "pointer",
+                    border: "none",
+                    background: "transparent",
+                    padding: 0,
+                  }}
+                >
+                  <div className="row between">
+                    <b style={{ color: "var(--fg)" }}>{str(n.title, "Notification")}</b>
+                    <span className="small">{fmtDateTime(n.createdAt)}</span>
+                  </div>
+                  <div>{str(n.body, "")}</div>
+                </button>
+              );
+            })}
           </div>
         </section>
 

@@ -18,13 +18,19 @@ import java.util.Set;
 public class WorkingDaysCalculator {
 
     public List<LocalDate> listWorkingDates(LocalDate start, LocalDate end, List<String> workingDayCodes) {
+        return listWorkingDates(start, end, workingDayCodes, Set.of());
+    }
+
+    public List<LocalDate> listWorkingDates(LocalDate start, LocalDate end, List<String> workingDayCodes,
+                                            Set<LocalDate> holidays) {
         if (start == null || end == null || end.isBefore(start)) {
             throw new IllegalArgumentException("endDate must be on/after startDate");
         }
         Set<DayOfWeek> working = toDaySet(workingDayCodes);
+        Set<LocalDate> holidaySet = holidays == null ? Set.of() : holidays;
         List<LocalDate> days = new ArrayList<>();
         for (LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
-            if (working.contains(d.getDayOfWeek())) {
+            if (working.contains(d.getDayOfWeek()) && !holidaySet.contains(d)) {
                 days.add(d);
             }
         }

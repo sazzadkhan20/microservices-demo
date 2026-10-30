@@ -32,7 +32,11 @@ public record LeaveApplicationResponse(
         String rejectReason,
         List<ApprovalStepView> approvals,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        String halfDayPart,
+        String attachmentRef,
+        boolean teamClashAlert,
+        Map<String, Object> warnings
 ) {
     public record ApprovalStepView(
             int stepOrder,
@@ -41,7 +45,9 @@ public record LeaveApplicationResponse(
             Long approverEmployeeId,
             String actorName,
             String comment,
-            Instant decidedAt
+            Instant decidedAt,
+            String resolver,
+            Long expectedApproverId
     ) {
         public static ApprovalStepView from(LeaveApproval a) {
             return new ApprovalStepView(
@@ -51,7 +57,9 @@ public record LeaveApplicationResponse(
                     a.getApproverEmployeeId(),
                     a.getActorName(),
                     a.getCommentText(),
-                    a.getDecidedAt()
+                    a.getDecidedAt(),
+                    a.getResolver(),
+                    a.getExpectedApproverId()
             );
         }
     }
@@ -80,7 +88,11 @@ public record LeaveApplicationResponse(
                 app.getRejectReason(),
                 approvals.stream().map(ApprovalStepView::from).toList(),
                 app.getCreatedAt(),
-                app.getUpdatedAt()
+                app.getUpdatedAt(),
+                app.getHalfDayPart(),
+                app.getAttachmentRef(),
+                app.isTeamClashAlert(),
+                app.getWarnings()
         );
     }
 }

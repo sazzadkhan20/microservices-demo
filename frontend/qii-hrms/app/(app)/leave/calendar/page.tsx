@@ -192,7 +192,19 @@ export default function LeaveCalendarPage() {
                       className="tag"
                       key={String(a.id)}
                       title={`${nameFor(a)} · ${a.leaveTypeCode} · ${a.status}`}
-                      style={pending ? { background: "var(--info-soft)", color: "var(--info)" } : undefined}
+                      style={
+                        pending
+                          ? {
+                              background: "var(--info-soft)",
+                              color: "var(--info)",
+                              border: "1px dashed var(--info)",
+                            }
+                          : {
+                              background: "var(--accent-soft)",
+                              color: "var(--accent)",
+                              border: "1px solid var(--accent)",
+                            }
+                      }
                     >
                       {firstName(nameFor(a))}
                     </span>
@@ -204,13 +216,34 @@ export default function LeaveCalendarPage() {
           })}
         </div>
         <div className="row small muted" style={{ marginTop: 12 }}>
-          <span className="tag" style={{ background: "var(--accent-soft)", color: "var(--accent)", padding: "0 6px", borderRadius: 4 }}>
+          <span
+            className="tag"
+            style={{
+              background: "var(--accent-soft)",
+              color: "var(--accent)",
+              border: "1px solid var(--accent)",
+              padding: "0 6px",
+              borderRadius: 4,
+            }}
+          >
             Approved
           </span>
-          <span className="tag" style={{ background: "var(--info-soft)", color: "var(--info)", padding: "0 6px", borderRadius: 4 }}>
+          <span
+            className="tag"
+            style={{
+              background: "var(--info-soft)",
+              color: "var(--info)",
+              border: "1px dashed var(--info)",
+              padding: "0 6px",
+              borderRadius: 4,
+            }}
+          >
             Pending
           </span>
-          <span className="tag" style={{ background: "var(--warn-soft)", color: "var(--warn)", padding: "0 6px", borderRadius: 4 }}>
+          <span
+            className="tag"
+            style={{ background: "var(--warn-soft)", color: "var(--warn)", padding: "0 6px", borderRadius: 4 }}
+          >
             Holiday
           </span>
         </div>

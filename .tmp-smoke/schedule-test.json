@@ -1,0 +1,205 @@
+{
+  "results": [
+    {
+      "name": "AUTH token",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "GET /rules",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "rules.modes FIXED+HOURLY",
+      "pass": true,
+      "detail": "[\"FIXED\",\"HOURLY\"]"
+    },
+    {
+      "name": "rules.scopes LOCATION+TEAM+EMPLOYEE",
+      "pass": true,
+      "detail": "[\"LOCATION\",\"TEAM\",\"EMPLOYEE\"]"
+    },
+    {
+      "name": "rules.resolveOrder EMPLOYEE>TEAM>LOCATION",
+      "pass": true,
+      "detail": "[\"EMPLOYEE\",\"TEAM\",\"LOCATION\"]"
+    },
+    {
+      "name": "rules.patternTemplates DAYS_5/DAYS_6/HOURLY",
+      "pass": true,
+      "detail": "[\"DAYS_6\",\"DAYS_5\",\"HOURLY\"]"
+    },
+    {
+      "name": "lookups locations/teams/employees",
+      "pass": true,
+      "detail": "loc=1 team=1 empA=8 empB=11"
+    },
+    {
+      "name": "LOCATION schedule exists",
+      "pass": true,
+      "detail": "id=1"
+    },
+    {
+      "name": "POST duplicate LOCATION rejected",
+      "pass": true,
+      "detail": "status=409"
+    },
+    {
+      "name": "POST TEAM 6-day override",
+      "pass": true,
+      "detail": "status=201 id=16"
+    },
+    {
+      "name": "POST EMPLOYEE HOURLY",
+      "pass": true,
+      "detail": "status=201"
+    },
+    {
+      "name": "HOURLY clears fixed fields",
+      "pass": true,
+      "detail": "{\"mode\":\"HOURLY\",\"start\":null,\"wh\":35,\"days\":\"[]\"}"
+    },
+    {
+      "name": "PUT TEAM schedule",
+      "pass": true,
+      "detail": "grace=20"
+    },
+    {
+      "name": "resolve empA → EMPLOYEE hourly",
+      "pass": true,
+      "detail": "source=EMPLOYEE mode=HOURLY"
+    },
+    {
+      "name": "resolve empB → TEAM",
+      "pass": true,
+      "detail": "source=TEAM days=[\"SUN\",\"MON\",\"TUE\",\"WED\",\"THU\",\"FRI\"]"
+    },
+    {
+      "name": "resolve emp1 has source",
+      "pass": true,
+      "detail": "source=LOCATION"
+    },
+    {
+      "name": "expected HOURLY Fri = 5 (35/7)",
+      "pass": true,
+      "detail": "got=5"
+    },
+    {
+      "name": "expected TEAM Fri = 8",
+      "pass": true,
+      "detail": "got=8"
+    },
+    {
+      "name": "emp1 resolves to LOCATION (base office)",
+      "pass": true,
+      "detail": "source=LOCATION"
+    },
+    {
+      "name": "expected LOCATION Sun = 8",
+      "pass": true,
+      "detail": "got=8"
+    },
+    {
+      "name": "expected LOCATION Sat (off) = 0",
+      "pass": true,
+      "detail": "got=0"
+    },
+    {
+      "name": "expected period HOURLY = 35",
+      "pass": true,
+      "detail": "got=35"
+    },
+    {
+      "name": "PUT workPattern DAYS_6",
+      "pass": true,
+      "detail": "status=200 pattern=DAYS_6"
+    },
+    {
+      "name": "sync DAYS_6 → EMPLOYEE FIXED with FRI",
+      "pass": true,
+      "detail": "source=EMPLOYEE days=[\"SUN\",\"MON\",\"TUE\",\"WED\",\"THU\",\"FRI\"]"
+    },
+    {
+      "name": "after DAYS_6 Fri expected=8",
+      "pass": true,
+      "detail": "got=8"
+    },
+    {
+      "name": "LOCATION_DEFAULT clears person override → LOCATION",
+      "pass": true,
+      "detail": "status=200 source=LOCATION"
+    },
+    {
+      "name": "invalid mode rejected",
+      "pass": true,
+      "detail": "status=400"
+    },
+    {
+      "name": "FIXED empty days rejected",
+      "pass": true,
+      "detail": "status=400"
+    },
+    {
+      "name": "audit records schedule changes",
+      "pass": true,
+      "detail": "entityFilter=20"
+    },
+    {
+      "name": "GET attendance/today",
+      "pass": true,
+      "detail": "statusCode=P"
+    },
+    {
+      "name": "GET attendance/team Sat",
+      "pass": true,
+      "detail": "n=13"
+    },
+    {
+      "name": "team Sat uses WO/H not only Absent",
+      "pass": true,
+      "detail": "codes=WO offish=13"
+    },
+    {
+      "name": "leave categories reachable",
+      "pass": true,
+      "detail": "status=200"
+    },
+    {
+      "name": "DAYS_6 person has Fri as working (expected 8)",
+      "pass": true,
+      "detail": "source=EMPLOYEE fri=8"
+    },
+    {
+      "name": "leave Fri DAYS_6 treats Fri as working day",
+      "pass": true,
+      "detail": "status=409 counted=undefined err=Insufficient CASUAL balance: available=0, requested=1"
+    },
+    {
+      "name": "leave Fri LOCATION_DEFAULT rejected as non-working day",
+      "pass": true,
+      "detail": "status=400 msg=No working days in range for schedule working_days=[SUN, MON, TUE, WED, THU]"
+    },
+    {
+      "name": "DELETE TEAM schedule",
+      "pass": true,
+      "detail": "status=204"
+    },
+    {
+      "name": "after TEAM delete falls back",
+      "pass": true,
+      "detail": "source=LOCATION"
+    },
+    {
+      "name": "EMPLOYEE-only cannot create schedule",
+      "pass": true,
+      "detail": "emp=8 status=403"
+    },
+    {
+      "name": "EMPLOYEE-only cannot view schedule rules",
+      "pass": true,
+      "detail": "status=403"
+    }
+  ],
+  "failed": []
+}

@@ -149,6 +149,12 @@ export const roleSchema = z.object({
   description: maybe(z.string()),
   systemRole: z.boolean().optional(),
   active: z.boolean().optional(),
+  protectFromOffboard: z.boolean().optional(),
+  immutablePermissions: z.boolean().optional(),
+  grantsWildcard: z.boolean().optional(),
+  minHolders: z.number().optional(),
+  assignableBy: maybe(z.string()),
+  holderCount: z.number().optional(),
   permissions: z.array(permissionSchema).default([]),
 });
 export type RoleView = z.infer<typeof roleSchema>;
@@ -184,27 +190,43 @@ export const auditRowSchema = z.object({
 });
 export type AuditRow = z.infer<typeof auditRowSchema>;
 
-export const taskRowSchema = z.object({
-  id,
-  title: z.string(),
-  clientName: maybe(z.string()),
-  status: maybe(z.string()),
-  dueDate: z.any().optional(),
-  createdBy: maybe(id),
-  externalRef: maybe(z.string()),
-  createdAt: z.any().optional(),
-});
+export const taskRowSchema = z
+  .object({
+    id,
+    title: z.string(),
+    clientName: maybe(z.string()),
+    status: maybe(z.string()),
+    priority: maybe(z.string()),
+    dueDate: z.any().optional(),
+    createdBy: maybe(id),
+    externalRef: maybe(z.string()),
+    createdAt: z.any().optional(),
+    assigneeIds: z.array(id).optional(),
+    loggedMinutes: maybe(z.number()),
+    loggedHours: maybe(z.number()),
+    overdue: z.boolean().optional(),
+  })
+  .passthrough();
 export type TaskRow = z.infer<typeof taskRowSchema>;
 
-export const workLogRowSchema = z.object({
-  id,
-  employeeId: maybe(id),
-  workDate: z.any(),
-  taskId: maybe(id),
-  minutes: maybe(z.number()),
-  note: maybe(z.string()),
-  createdAt: z.any().optional(),
-});
+export const workLogRowSchema = z
+  .object({
+    id: maybe(id),
+    employeeId: maybe(id),
+    employeeName: maybe(z.string()),
+    workDate: z.any().optional(),
+    taskId: maybe(id),
+    taskTitle: maybe(z.string()),
+    minutes: maybe(z.number()),
+    note: maybe(z.string()),
+    flagged: z.boolean().optional(),
+    punchedMinutes: maybe(z.number()),
+    punchedHours: maybe(z.number()),
+    dayLoggedMinutes: maybe(z.number()),
+    missingLog: z.boolean().optional(),
+    createdAt: z.any().optional(),
+  })
+  .passthrough();
 export type WorkLogRow = z.infer<typeof workLogRowSchema>;
 
 /** GET /attendance/team row (unpaged array). */
@@ -225,6 +247,9 @@ export const teamAttendanceRowSchema = z
     totalHours: maybe(z.number()),
     workedMinutes: maybe(z.number()),
     workingHours: maybe(z.string()),
+    loggedMinutes: maybe(z.number()),
+    loggedHours: maybe(z.number()),
+    expectedHours: maybe(z.union([z.number(), z.string()])),
     note: maybe(z.string()),
   })
   .passthrough();

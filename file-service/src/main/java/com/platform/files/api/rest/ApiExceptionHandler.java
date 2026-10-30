@@ -36,6 +36,16 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(Map.of("error", msg));
     }
 
+    @ExceptionHandler(java.io.IOException.class)
+    public ResponseEntity<Map<String, String>> io(java.io.IOException ex) {
+        String msg = ex.getMessage() == null ? "Storage I/O failed" : ex.getMessage();
+        HttpStatus status = msg.toLowerCase().contains("connection refused")
+                || msg.toLowerCase().contains("minio")
+                ? HttpStatus.SERVICE_UNAVAILABLE
+                : HttpStatus.INTERNAL_SERVER_ERROR;
+        return ResponseEntity.status(status).body(Map.of("error", msg));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> generic(Exception ex) {
         Throwable root = ex;

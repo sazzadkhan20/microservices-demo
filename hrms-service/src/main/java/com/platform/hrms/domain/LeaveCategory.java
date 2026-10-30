@@ -56,6 +56,22 @@ public class LeaveCategory {
     @Column(name = "active", nullable = false)
     private boolean active = true;
 
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "applies_to", columnDefinition = "jsonb")
+    private String appliesTo;
+
+    @Column(name = "pro_rata", nullable = false)
+    private boolean proRata = false;
+
+    @Column(name = "carry_mode", length = 16)
+    private String carryMode = "NONE";
+
+    @Column(name = "carry_cap_days", precision = 10, scale = 2)
+    private BigDecimal carryCapDays;
+
+    @Column(name = "carry_expiry_date")
+    private LocalDate carryExpiryDate;
+
     public Long getId() { return id; }
 
     public String getCode() { return code; }
@@ -99,4 +115,19 @@ public class LeaveCategory {
 
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
+
+    public String getAppliesTo() { return appliesTo; }
+    public void setAppliesTo(String appliesTo) { this.appliesTo = appliesTo; }
+
+    public boolean isProRata() { return proRata; }
+    public void setProRata(boolean proRata) { this.proRata = proRata; }
+
+    public String getCarryMode() { return carryMode; }
+    public void setCarryMode(String carryMode) { this.carryMode = carryMode; }
+
+    public BigDecimal getCarryCapDays() { return carryCapDays; }
+    public void setCarryCapDays(BigDecimal carryCapDays) { this.carryCapDays = carryCapDays; }
+
+    public LocalDate getCarryExpiryDate() { return carryExpiryDate; }
+    public void setCarryExpiryDate(LocalDate carryExpiryDate) { this.carryExpiryDate = carryExpiryDate; }
 }

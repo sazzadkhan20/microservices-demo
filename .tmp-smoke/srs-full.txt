@@ -1,0 +1,1499 @@
+Qii HRMS v1 Software Requirements Specification
+
+ Qii HRMS v1 Software Requirements
+ Specification
+
+   Oct 28, 2026 · @SYED SAMI
+  This SRS defines what Qii Creative's HRMS v1 must do, based on the 12 Oct build
+  specification, the client feedback of 19 Oct 2026 and the clickable prototype. Version 1.0,
+  for client sign-off.
+
+ 1. Introduction
+
+ 1.1 Purpose
+
+  This document specifies the software requirements for the Human Resource
+  Management System (HRMS) v1 that NexAI Analytics is building for Qii Creative. It is
+  written for Qii's management (Asman, Fayaz) to sign off scope, and for the design,
+  development and test team to build and verify against.
+
+ 1.2 Scope
+
+  HRMS v1 is a web application, usable on phone and desktop, that replaces spreadsheets
+  and ClickUp-based HR tracking for Qii's Bangladesh and Australia teams. It covers:
+
+      Sign-in with Google and role-based access to every page and action
+      Organisation structure, reporting hierarchy and employee records with documents
+      Work schedules (5-day, 6-day, custom and hourly), daily check-in and check-out, and
+      worked hours
+      Tasks and mandatory daily work logs
+      Leave categories, balances, multi-step approval and a per-team daily leave limit
+      Salary records and monthly payroll calculated from attendance and leave
+      Holiday calendars, onboarding and offboarding checklists
+      In-app and email notifications, including a monthly attendance report emailed to every
+      employee
+      An admin dashboard, exportable reports and an audit log
+
+                                                                                                                                                                                                                                                    Page 1 of 35
+Qii HRMS v1 Software Requirements Specification
+
+Out of scope for v1: hiring, KPI scoring and bonus (in the project-management release),
+tax and statutory deductions, bank payment files, a client portal and native mobile apps
+(section 16).
+
+1.3 Definitions
+
+Term             Meaning
+
+Admin            A user holding the Admin or Super Admin role
+
+Approval chain   The ordered list of approvers a leave request
+                 passes through
+
+Absent day       A working day with no check-in and no approved
+                 leave covering it
+
+Check-in / check-out The employee's start and end of work, recorded in
+                                 the system (also called punch in and punch out)
+
+Data scope       How far a granted permission reaches: Own
+                 records, Team (direct and indirect reports) or All
+
+Hourly employee  An employee on an hourly schedule, paid hours
+                 worked × rate, with no fixed days
+
+Leave category   An admin-defined leave type with quota, validity
+                 period and rules, e.g. Casual Leave
+
+Payroll run      The monthly pay calculation for all employees, first
+                 a draft, then finalised
+
+Work log         An employee's entry of time spent on an assigned
+                 task on a given day
+
+Working day      A day in the employee's schedule that is not a
+                 holiday on their location's calendar
+
+Worked hours     Check-out time minus check-in time for a day
+
+1.4 References
+
+    Qii HRMS v1 Build Specification, 12 Oct 2026, updated with client feedback of 19 Oct
+    2026
+    Qii HRMS clickable prototype, version 2 (19 Oct 2026)
+
+                                                                                  Page 2 of 35
+Qii HRMS v1 Software Requirements Specification
+
+    Qii current-state analysis and client questionnaire, 8­10 Oct 2026
+
+1.5 Conventions
+
+    Each requirement has an ID: FR (functional), BR (business rule), NFR (non-functional),
+    DR (data), IR (interface).
+    Must means required for go-live. Should means planned for v1 but can slip to v1.1 with
+    Qii's agreement.
+    Figures shown as examples (hours, quotas, salaries) are admin settings, not fixed
+    values.
+
+2. Overall description
+
+2.1 Product perspective
+
+HRMS v1 is the first release of a single Qii platform. The project-management release that
+follows will reuse the same employee, team and role records, replace the stand-in task list
+with client projects, and add KPI scoring and bonus. HRMS v1 must therefore keep the
+employee table, roles and tasks in a shape the project module can extend.
+
+2.2 Users and roles
+
+Access is role-based and fully configurable. These five roles ship as defaults:
+
+Role     Typical holders                         Main work in the system
+Super    Asman
+Admin                                            Everything, including role
+Admin    Fayaz                                   management. Cannot be removed
+HR       Fatiha                                  from the last holder
+
+Manager  Team leads (Redwan, Niloy, Nafis,       All settings, employee records, salary,
+         Sameen, Fardin)                         payroll, approvals on behalf of others
+
+                                                 Employee records, documents, leave
+                                                 setup, attendance corrections,
+                                                 holidays, checklists, reports. No salary
+                                                 by default
+
+                                                 Approve team leave and corrections,
+                                                 see team attendance and work logs,
+                                                 assign tasks
+
+                                                 Page 3 of 35
+Qii HRMS v1 Software Requirements Specification
+
+Role      Typical holders                        Main work in the system
+Employee  Everyone
+                                                 Check in and out, keep a work log,
+                                                 request leave, see own records,
+                                                 payslips and monthly reports
+
+A person can hold several roles; their access is the widest of them.
+
+2.3 Operating environment
+
+    A responsive web application for current Chrome, Safari, Edge and Firefox on desktop,
+    and Chrome and Safari on Android and iOS phones
+    Hosted in the cloud with HTTPS only; data stored in one region chosen with Qii
+    Two locations and time zones at launch: Bangladesh (Asia/Dhaka) and Australia
+    (Australia/Darwin)
+    Two pay currencies at launch: BDT and AUD
+
+2.4 Design and implementation constraints
+
+    Sign-in only through Google accounts on the qiicreative.com.au domain
+    Every policy value (quotas, hours, limits, rules) is admin-editable; none is hard-coded
+    No money penalties for lateness in v1
+    Payroll calculates gross pay and attendance-based deductions only; tax and statutory
+    items are out of scope
+
+2.5 Assumptions and dependencies
+
+    All staff, including contractors, have an @qiicreative.com.au Google account
+    Qii's admin enters employees, schedules, holidays, leave categories, opening balances
+    and salaries before go-live
+    Qii provides a sending address and email service for notifications and monthly reports
+    Employees have a phone or computer with a browser on every working day
+
+                                                                                     Page 4 of 35
+Qii HRMS v1 Software Requirements Specification
+
+3. Authentication and access control
+
+ID          Requirement                                           Priority
+
+FR-AUTH-01  The system shall let users sign in only with Google,  Must
+            and only with accounts ending in
+            @qiicreative.com.au
+
+FR-AUTH-02  The system shall refuse a Google account that has     Must
+            no employee record, with the message "This
+            Google account has no employee record. Ask HR to
+            add you first."
+
+FR-AUTH-03  The system shall refuse sign-in for employees         Must
+            whose status is Inactive, Resigned or Terminated,
+            and end their open sessions at their next request
+
+FR-AUTH-04  The system shall link the Google account to the       Must
+            employee record on first sign-in by matching the
+            work email
+
+FR-AUTH-05 A signed-in user with no role shall see only an        Must
+                      "Access pending" page
+
+FR-AUTH-06 Sessions shall last 7 days on a device; an admin can Must
+                      end any person's sessions
+
+FR-AUTH-07  One Super Admin account shall be created at           Must
+            deployment; the Super Admin role cannot be
+            removed from its last holder
+
+FR-ACC-01   Admins shall create, rename and delete roles, and     Must
+            copy an existing role as a starting point. System
+            roles cannot be deleted
+
+FR-ACC-02   For each role, admins shall grant per feature any of  Must
+            the actions View, Create, Edit, Delete, Approve and
+            Export, each with a data scope of Own, Team or All
+            (Appendix B)
+
+FR-ACC-03   Admins shall assign one or more roles to each         Must
+            person; access is the union of their roles
+
+                                                                            Page 5 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                            Priority
+FR-ACC-04                                                         Must
+           Pages and actions a user has no permission for
+FR-ACC-05  shall be hidden from navigation and refused if         Must
+           reached directly
+FR-ACC-06                                                         Must
+           Team scope shall cover the user's direct and
+           indirect reports, resolved from the reporting
+           hierarchy on the day of the request
+
+           Every sign-in, failed sign-in, role change and
+           permission change shall be written to the audit log
+           with time and IP address
+
+4. Organisation, hierarchy and employee records
+
+4.1 Organisation and hierarchy
+
+ID         Requirement                                            Priority
+
+FR-ORG-01 Admins shall create departments, and teams              Must
+
+           within a department, each team with one team lead
+
+FR-ORG-02  Admins shall maintain locations, each with country,    Must
+           time zone, holiday calendar and default currency.
+           Bangladesh (Dhaka) and Australia (Darwin) ship at
+           launch
+
+FR-ORG-03  Each team shall have a maximum number of people        Must
+           on leave per day (default 1; 0 means no limit) and an
+           action when exceeded: alert or block (FR-LV-14)
+
+FR-ORG-04 Each employee shall have exactly one direct             Must
+                    manager, except the top of the hierarchy
+
+FR-ORG-05  The system shall refuse a manager change that          Must
+           makes someone report to their own direct or
+           indirect report
+
+FR-ORG-06  A manager change shall take an effective date; the     Must
+           system keeps reporting-line history so past
+           approvals and scopes stay correct
+
+                                                                            Page 6 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                             Priority
+                                                                   Should
+FR-ORG-07 The system shall draw an org chart from the
+                    reporting lines
+
+4.2 Employee records
+
+ID         Requirement                                             Priority
+
+FR-EMP-01  HR or Admin shall create employees with the fields      Must
+           in section 12; required fields must be filled before
+           the record is Active
+
+FR-EMP-02 The employee ID shall be generated automatically         Must
+                    (format QII-0001)
+
+FR-EMP-03 The work email must be unique and end in                 Must
+                    @qiicreative.com.au
+
+FR-EMP-04 Contractors and interns must have a contract or          Must
+                    internship end date
+
+FR-EMP-05 Choosing a team shall set the department                 Must
+                    automatically
+
+FR-EMP-06 Employees shall edit only their own phone,               Must
+                    personal email, address and emergency contact
+
+FR-EMP-07  Every change to employment fields shall keep the        Must
+           old value, new value, editor and date in the
+           employee's history
+
+FR-EMP-08  HR shall upload documents with type (Contract,          Must
+           NDA, Agreement, ID copy, Certificate, Other) and
+           optional expiry date. Every open and download is
+           logged
+
+FR-EMP-09 Status values: Active, On leave, Inactive, Resigned,     Must
+                    Terminated
+
+                                                                             Page 7 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                              Priority
+
+FR-EMP-10  Setting Resigned or Terminated requires an exit          Must
+           date, a reason, a completed offboarding checklist
+           (or an admin override with reason), and
+           reassignment of the person's direct reports and
+           pending approvals
+
+FR-EMP-11  Nobody shall deactivate their own account, and           Must
+           the last Super Admin cannot be deactivated
+
+FR-EMP-12  The add-employee form shall capture work pattern         Must
+           (location default, 5 days, 6 days, hourly) and, for
+           users with salary permission, pay type and amount
+
+5. Work schedules, attendance and work hours
+
+5.1 Work schedules
+
+ID         Requirement                                              Priority
+
+FR-SCH-01  Admins shall set a schedule per location, with           Must
+           optional overrides per team and per employee. A
+           person's schedule overrides their team's, which
+           overrides the location's
+
+FR-SCH-02  A fixed schedule shall define working days of the        Must
+           week, office start and end, late grace period
+           (minutes), half-day threshold (hours) and missing
+           check-out cut-off. Example: Bangladesh Sun­Thu
+           10:00­18:00, 15 minutes grace
+
+FR-SCH-03  Any number of working days per week shall be             Must
+           supported, so 5-day and 6-day employees can
+           coexist in one team
+
+FR-SCH-04 An hourly schedule shall have no fixed days or            Must
+                    hours, and an optional expected hours per week
+
+FR-SCH-05  Expected hours for a fixed-schedule day = office         Must
+           end - office start; 0 on weekly days off and
+           holidays; half on a half-day leave; 0 on full-day leave
+
+                                                                              Page 8 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                              Priority
+                                                                    Should
+FR-SCH-06 Expected hours for an hourly employee over a
+                    period = weekly hours × days in the period ÷ 7
+
+5.2 Check-in and check-out
+
+ID         Requirement                                              Priority
+
+FR-ATT-01 Every employee shall check in and check out in the Must
+                   system, once each per day, from any place
+
+FR-ATT-02  The system shall store server time in the person's       Must
+           time zone, browser location if allowed, IP address,
+           device type and an optional note. A refused
+           location is saved as "Location not shared" and
+           never blocks the check-in
+
+FR-ATT-03 A check-out up to 6 hours after midnight shall            Must
+                   count for the previous day
+
+FR-ATT-04 Check-out shall follow the work log rule (FR-WL-          Must
+                   05)
+
+FR-ATT-05  The system shall set each day's status                   Must
+           automatically (Appendix A): Present, Late, Half
+           day, Missing check-out, Absent, On leave, Holiday,
+           Weekly off; hourly employees get Worked or No
+           shift only
+
+FR-ATT-06  Late and Absent are reported only; there are no          Must
+           lateness penalties in v1. Absences affect pay only
+           through payroll (section 8)
+
+FR-ATT-07  An employee shall request a correction with the          Must
+           real times and a reason; their manager approves or
+           rejects it. The original times are kept
+
+FR-ATT-08  HR with edit permission shall edit any other             Must
+           person's record with a reason. Nobody edits or
+           approves their own attendance
+
+                                                                              Page 9 of 35
+Qii HRMS v1 Software Requirements Specification
+
+5.3 Worked hours
+
+ID         Requirement                                               Priority
+
+FR-HRS-01 Worked hours for a day shall equal check-out minus Must
+                   check-in (crossing midnight allowed)
+
+FR-HRS-02 While checked in today, worked hours shall count           Must
+                   live up to the current time
+
+FR-HRS-03  A day with a check-in and no check-out shall count        Must
+           0 hours until corrected, and be flagged Missing
+           check-out
+
+FR-HRS-04 Employees shall see their worked, expected and             Must
+                   logged hours for today, this week and each month
+
+FR-HRS-05 Managers shall see worked and logged hours per             Must
+                   person on the team attendance view
+
+6. Tasks and work logs
+
+Work logs record what each person did against their assigned tasks. Until the project-
+management release, tasks are a simple list inside the HRMS; that release replaces them
+with project tasks and keeps the logs.
+
+6.1 Tasks
+
+ID         Requirement                                               Priority
+                                                                     Must
+FR-TSK-01  Managers and admins shall create tasks with title,
+           client or project, one or more assignees, due date        Must
+           and status (Open, In progress, Done)                      Should
+
+FR-TSK-02 A manager may assign tasks only to people in their
+                   task-create scope (by default, their team)
+
+FR-TSK-03 The task list shall show the total time logged
+                   against each task and flag overdue tasks
+
+                                                                               Page 10 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                             Priority
+                                                                   Must
+FR-TSK-04  The task table shall carry an identifier the project
+           module can map to project tasks without losing
+           logs
+
+6.2 Work logs
+
+ID         Requirement                                             Priority
+
+FR-WL-01   An employee shall add work log entries for a date:      Must
+           task, time spent (in 15-minute steps, at least 0.25 h)
+           and a description
+
+FR-WL-02 Entries shall be allowed only against open tasks          Must
+                  assigned to that employee
+
+FR-WL-03   An employee may add or delete entries for today         Must
+           and up to N days back (admin setting, default 7).
+           Older entries are read-only
+
+FR-WL-04   A day shall not exceed 16 logged hours. Logging         Must
+           more than the punched hours plus 1 hour is allowed
+           but flagged
+
+FR-WL-05   Work log rule (admin setting): Block (default),         Must
+           check-out is refused until the day has at least one
+           entry and, if set, the logged time covers a minimum
+           % of worked time; or Flag, check-out is allowed and
+           the missing log is flagged
+
+FR-WL-06   A worked day with no work log shall notify the          Must
+           employee and their manager, once per day, for the
+           last 3 days
+
+FR-WL-07   Managers and admins shall view logs for people in       Must
+           their scope over a date range, next to punched and
+           worked hours, with a filter for days with no log
+
+FR-WL-08   The employee record shall show the person's last        Should
+           14 days of logs to users with work-log view
+           permission
+
+                                                                             Page 11 of 35
+Qii HRMS v1 Software Requirements Specification
+
+7. Leave management
+
+7.1 Leave categories and balances
+
+ID        Requirement                                             Priority
+
+FR-LV-01  Admins shall create leave categories with name,         Must
+          quota in days, validity period (start and end date),
+          paid or unpaid, and who it applies to (locations,
+          employment types, teams, named people; empty
+          means everyone). Example: Casual Leave, 10 days, 1
+          Jan to 31 Dec
+
+FR-LV-02  Each category shall set: half days allowed,             Must
+          attachment required (never, always, or after N
+          days), minimum notice, maximum days per request,
+          pro-rata for new joiners, carry-over (none, all, or up
+          to a cap with expiry date) and negative balance
+          allowed (days)
+
+FR-LV-03 Hourly employees shall not receive day-based             Must
+                 leave categories
+
+FR-LV-04  Balance per person and category = quota (pro-           Must
+          rated if set) + carried + adjustments - taken -
+          pending. Taken includes the opening balance
+          entered at go-live
+
+FR-LV-05  HR shall adjust a balance up or down with a             Must
+          mandatory reason; adjustments are listed and
+          audited
+
+FR-LV-06  A category can be renewed for the next period by        Must
+          copying it. Changing a quota mid-period updates
+          every balance and is logged
+
+FR-LV-07  At period end the system shall preview each             Should
+          person's carry-over under the category rule, and
+          HR confirms before the next period opens
+
+                                                                            Page 12 of 35
+Qii HRMS v1 Software Requirements Specification
+
+7.2 Requests and approval
+
+ID        Requirement                                           Priority
+
+FR-LV-08  An employee shall request leave with category,        Must
+          dates, full day or first or second half (single date
+          only), reason and attachment
+
+FR-LV-09  Before submitting, the system shall show the          Must
+          working days counted, the balance after the
+          request, the approvers, and any warnings
+
+FR-LV-10  Days counted shall exclude the person's weekly        Must
+          days off and their location's holidays; a half day
+          counts 0.5
+
+FR-LV-11  The system shall refuse a request that overlaps       Must
+          another pending or approved request, exceeds the
+          balance (beyond the negative allowance), breaks
+          the notice or maximum rules, lacks a required
+          attachment, or falls outside the category's period
+
+FR-LV-12  Each category shall have an ordered approval chain    Must
+          of up to 4 steps. A step is: direct manager,
+          manager's manager, a named person, or anyone
+          holding a chosen role. Default chain: direct
+          manager, then Fayaz
+
+FR-LV-13  A step shall be skipped when its approver is the      Must
+          requester, is the same as the previous step, holds
+          no one, or is inactive. Example: Fayaz's own request
+          goes to Asman only
+
+FR-LV-14  Team leave limit: if a request would put more         Must
+          people from the same team on leave (pending or
+          approved) on any working day than the team's
+          limit, the system shall warn the employee, mark the
+          request on the approval card, and notify the
+          manager, team lead and first approver. If the team's
+          action is Block, the request is refused
+
+FR-LV-15  Any approver can reject with a mandatory reason,      Must
+          which ends the request. Approval at the last step
+          approves it
+
+                                                                          Page 13 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                         Priority
+
+FR-LV-16   An approver idle for 2 working days shall be        Must
+           reminded, and admins notified. Admins may
+           approve on the approver's behalf; the log records
+           who acted
+
+FR-LV-17   An approver may name a covering delegate for a      Should
+           date range, who can then approve requests waiting
+           for them
+
+FR-LV-18   An employee may withdraw a pending request.         Must
+           Cancelling an approved request goes through the
+           same chain; days return when approved
+
+FR-LV-19   Approved leave shall appear on the attendance       Must
+           record and on a team leave calendar with holidays;
+           pending requests appear dashed
+
+8. Salary and payroll
+
+8.1 Salary records
+
+ID         Requirement                                         Priority
+
+FR-SAL-01  Users with salary edit permission (management       Must
+           only by default) shall enter pay type (monthly or
+           hourly), amount in the employee's currency,
+           effective date and reason
+
+FR-SAL-02 Every salary change shall be kept in a salary history Must
+                   and the audit log
+
+FR-SAL-03  Employees shall see their own current pay,          Must
+           finalised payslips and a month-to-date estimate.
+           Nobody else sees salary without permission
+
+                                                                         Page 14 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ 8.2 Payroll calculation
+
+                                                                                                                                                                                                                                                  Page 15 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                          Priority
+
+FR-PAY-01 The system shall calculate a payroll row for every    Must
+                   person employed for any part of the month
+
+FR-PAY-02  Monthly pay: per-day rate = monthly gross ÷          Must
+           working days in the month from the person's
+           schedule (or ÷ 30, admin setting). Base pay = per-
+           day rate × working days employed, so joiners and
+           leavers are pro-rated
+
+FR-PAY-03  Absent days = days with status Absent (1 each)       Must
+           plus Half day (0.5 each), counted up to the end of
+           the month or today, whichever is earlier
+
+FR-PAY-04  Absence rule (admin setting): Balance first          Must
+           (default), absences are covered by the remaining
+           leave balance of the chosen categories in order
+           (default Casual, then Annual), and only the excess
+           is deducted; or Direct, every absent day is
+           deducted
+
+FR-PAY-05 Approved unpaid leave days shall always be            Must
+                   deducted
+
+FR-PAY-06 Deduction = (absent days not covered + unpaid         Must
+                   leave days) × per-day rate
+
+FR-PAY-07  Hourly pay = hours worked from check-in to check-    Must
+           out × hourly rate. Shifts with no check-out are not
+           paid until corrected and are flagged
+
+FR-PAY-08  Admins may add one manual adjustment per             Must
+           person per month (positive or negative) with a
+           note shown on the payslip, e.g. a bonus or advance
+           recovery
+
+FR-PAY-09 Net pay = base pay - deduction + adjustment.          Must
+                   Totals are shown per currency
+
+FR-PAY-10  Each row shall show notes explaining exceptions:     Must
+           pro-rating, absences beyond balance, missing
+           check-outs, month not over
+
+                                                                          Page 16 of 35
+Qii HRMS v1 Software Requirements Specification
+
+Worked example (Arpa, September 2026): monthly gross BDT 15,000; 22 working days;
+per-day rate BDT 681.82. She was absent 2.5 days with 1 day of Casual Leave left. 1 day is
+covered by leave and 1.5 days are deducted: BDT 1,022.73. Net pay BDT 13,977.27.
+
+8.3 Payroll run
+
+ID         Requirement                                         Priority
+
+FR-PAY-11 A month's payroll shall be a live draft until finalised Must
+
+FR-PAY-12  Finalising shall be allowed only after the month    Must
+           ends, need a second confirmation, lock the
+           numbers, take covered absences from leave
+           balances as adjustments, and notify each
+           employee that their payslip is ready
+
+FR-PAY-13  The system shall warn when the previous month is    Must
+           not finalised, because its covered absences
+           change the balance for this month
+
+FR-PAY-14  An authorised user may reopen a finalised month;    Must
+           this removes its leave adjustments and returns the
+           run to draft
+
+FR-PAY-15  The payslip shall show base pay, per-day rate or    Must
+           hours × rate, absent days, days covered by leave,
+           unpaid days, deduction, adjustment and net pay
+
+FR-PAY-16 Payroll shall export to CSV for the bank or          Must
+                  accountant
+
+9. Holidays, checklists, notifications and email
+
+9.1 Holiday calendars
+
+ID         Requirement                                         Priority
+                                                               Must
+FR-HOL-01  Admins shall keep one holiday calendar per
+           location, each holiday with name, date or date
+           range, type (Public or Company) and an Optional
+           flag
+
+                                                                         Page 17 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Requirement                                         Priority
+                                                               Must
+FR-HOL-02  Non-optional holidays shall be excluded from leave
+           day counts and expected hours, and never marked     Should
+           Absent
+
+FR-HOL-03 A calendar can be copied to the next year for
+                   editing
+
+9.2 Onboarding and offboarding
+
+ID         Requirement                                         Priority
+
+FR-CL-01   Admins shall maintain onboarding and offboarding    Must
+           templates; each item has an owner type (HR,
+           manager, employee) and a due offset in days from
+           the start or exit date
+
+FR-CL-02   A checklist from the template shall attach when an  Must
+           employee is added (optional) or when offboarding
+           is started; each item gets a named owner and due
+           date
+
+FR-CL-03 Item owners and HR shall tick items done; the         Must
+                 system records who and when
+
+9.3 Notifications
+
+The system sends each notification in the app and by email to the work address. Admins
+can switch each event on or off.
+
+ID        Event                                  Recipients
+          Leave request submitted or moved to    The next approver
+FR-NT-    the next step
+01        Leave approved, rejected or cancelled  The requester, and the manager when
+                                                 a later approver decides
+FR-NT-    Approval waiting 2 working days        The approver, then admins
+02
+
+FR-NT-
+03
+
+                                                                         Page 18 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID        Event                                  Recipients
+          Team leave limit exceeded              Manager, team lead and first approver
+FR-NT-
+04        Attendance correction submitted or     Manager, then the employee
+          decided                                The employee
+FR-NT-
+05        No check-in by start time + 1 hour
+
+FR-NT-    Missing check-out at the cut-off       The employee
+06
+          Worked day with no work log            The employee, then the manager
+FR-NT-
+07        Probation, contract or internship      Manager and HR
+          ending in 14 days                      HR
+FR-NT-
+08        Document expiring in 30 days
+
+FR-NT-    Checklist item due in 2 days or overdue The item owner
+09
+          Payslip ready                          The employee
+FR-NT-
+10        Monthly attendance report emailed      The employee
+
+FR-NT-
+11
+
+FR-NT-
+12
+
+FR-NT-
+13
+
+Each notification shall be sent once per event; repeats are suppressed.
+
+9.4 Monthly attendance report email
+
+ID        Requirement                                          Priority
+                                                               Must
+FR-MR-01  On the 1st of each month the system shall email
+          every employee who worked any part of the
+          previous month their attendance report
+
+                                                                                 Page 19 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID        Requirement                                         Priority
+                                                              Must
+FR-MR-02  The report shall show work pattern, working days,
+          days worked, late arrivals, half days, absences,    Must
+          missing check-outs, leave taken by category and     Must
+          dates, hours worked, expected hours, hours          Must
+          logged, worked days with no log, and remaining
+          leave balances
+
+FR-MR-03 Hourly employees' reports shall leave out working
+                  days, late, absent and leave lines
+
+FR-MR-04 Admins shall switch the automatic email off or on
+                  and resend any month on demand
+
+FR-MR-05  Every email shall be kept in an outbox visible to
+          admins; employees see their own under My
+          monthly reports
+
+10. Admin dashboard, reports and audit log
+
+10.1 Admin dashboard
+
+ID        Requirement                                         Priority
+                                                              Must
+FR-DB-01  The dashboard shall show today's cards:
+          headcount by location and type, checked in vs       Must
+          expected, on leave, late, pending approvals (and
+          how many waited 2+ working days), and contracts,
+          probation and internships ending in 30 days
+
+FR-DB-02  A work-hours table shall show, per employee, for a
+          chosen day, week or month: work pattern,
+          expected hours, worked hours with a progress bar,
+          logged hours, gap (worked - expected), days
+          present, leave days, absences, late arrivals and
+          days with no work log
+
+                                                                        Page 20 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID        Requirement                                                   Priority
+                                                                        Must
+FR-DB-03  The user shall move to the previous or next day,
+          week or month, filter by location and team, and               Must
+          sort by name, hours worked, gap, absences, leave
+          or missing logs                                               Must
+                                                                        Must
+FR-DB-04  Totals for the period shall show worked vs
+          expected hours, logged share, leave days,
+          absences, late arrivals, missing logs and missing
+          check-outs
+
+FR-DB-05 Clicking a name shall open that person's
+                  attendance; the table exports to CSV
+
+FR-DB-06 Every figure shall cover only the people in the
+                  user's report scope
+
+10.2 Reports
+
+All reports filter by date range or month, location, department, team and person, and
+export to CSV for Excel.
+
+ID        Report                                 Content
+
+FR-RP-01 Monthly attendance                      One row per person, one column per day with
+                 register                        status codes, totals per status
+
+FR-RP-    Late and absence summary Working days, late, absent, missing check-out,
+02                                                   half days and late % per person
+
+FR-RP-    Leave balances                         Quota, carried, adjusted, taken, pending and
+03                                               remaining per person and category
+
+FR-RP-    Leave requests log                     Every request with approvers, decisions and
+04                                               decision times
+
+FR-RP-    Headcount                              Month-end headcount, joiners and leavers for
+05                                               the last 6 months
+
+FR-RP-    Employee master list                   All employment fields
+06
+
+                                                                                               Page 21 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID        Report                                 Content
+          Payroll                                The payroll run for a month (section 8)
+FR-RP-
+07
+
+10.3 Audit log
+
+ID        Requirement                                        Priority
+                                                             Must
+FR-AU-01  The system shall log, with time, actor, record,
+          before and after values and IP address: sign-ins,  Must
+          role and permission changes, employment edits,
+          salary changes, payroll adjustments, finalise and
+          reopen, balance changes, attendance edits and
+          corrections, leave decisions, document opens and
+          deletions, setting changes and exports
+
+FR-AU-02 The audit log shall be read-only for everyone and
+                  searchable by person, action or record
+
+11. Business rules
+
+These rules hold whatever roles a user has. Defaults are admin settings.
+
+ID      Rule                                                Default
+                                                            Fixed
+BR-01 Nobody approves their own leave or corrects or        Fixed
+            edits their own attendance                      Fixed
+                                                            Grace 15 minutes
+BR- A reporting line can never form a loop                  4 hours
+02
+
+BR-03 The last Super Admin cannot lose the role or be
+            deactivated
+
+BR- Late = check-in after office start + grace
+04
+
+BR-05 Half day = worked less than the half-day
+            threshold on a working day without leave
+
+                                                                                          Page 22 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID     Rule                                                Default
+
+BR-06 Absent = working day, past, with no check-in and     Fixed
+            no approved full-day leave
+
+BR-07 Missing check-out = checked in, no check-out by      Cut-off 23:59
+            the cut-off (or 06:00 next day for yesterday)
+
+BR-08 A check-out before 06:00 counts for the previous Fixed
+            day
+
+BR-09 Check-out needs a work log entry for the day         Block, 0% minimum
+
+BR-10 Work logs can be added up to N days back             7 days
+
+BR-11 Leave days exclude weekly days off and the           Fixed
+            location's holidays; a half day is 0.5
+
+BR-12 Approval steps skip the requester, repeats and       Fixed
+            inactive people
+
+BR-13 Team leave limit per day                             1 person, alert only
+
+BR-14 Approval reminder after N working days idle          2 working days
+
+BR-15 Per-day rate for monthly pay                         Salary ÷ working days in
+                                                           month
+
+BR-16 Absences use leave balance before salary             Casual, then Annual
+            deduction
+
+BR-17 Unpaid leave is always deducted                      Fixed
+
+BR-18 Payroll can be finalised only after the month ends; Fixed
+            months finalise in order
+
+BR-19 Hourly shifts without check-out are not paid until Fixed
+            corrected
+
+BR- Contract, probation and internship reminders           14 days before
+20
+
+BR-21 Document expiry reminders                            30 days before
+
+BR-22  Resigned or Terminated needs a complete             Fixed
+       offboarding checklist, unless an admin overrides
+       with a reason
+
+                                                                                     Page 23 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID  Rule                                            Default
+                                                    On
+BR-23 Monthly attendance report emailed on the 1st  Fixed for v1
+
+BR-24 No money penalty for lateness
+
+12. Data requirements                            Key fields
+
+12.1 Entities                                    id, employee_id, google_sub, email,
+                                                 last_login_at, is_active
+  Entity
+  users                                          id, code, full_name, preferred_name, photo,
+  employees                                      work_email, job_title, department_id,
+                                                 team_id, location_id, employment_type,
+  employee_personal                              start_date, probation_end, contract_end,
+                                                 pay_currency, status, exit_date, exit_reason
+  reporting_lines
+  departments, teams                             employee_id, phone, personal_email, address,
+  locations                                      date_of_birth, emergency_name,
+  roles, permissions, role_permissions,          emergency_relation, emergency_phone
+  user_roles
+                                                 employee_id, manager_id, effective_from,
+                                                 effective_to
+
+                                                 id, name; teams also department_id, lead_id,
+                                                 max_on_leave, clash_action
+
+                                                 id, name, country, time_zone,
+                                                 holiday_calendar_id, default_currency
+
+                                                 role name and description; feature and
+                                                 action; scope (own, team, all); user-to-role
+                                                 links
+
+                                                                  Page 24 of 35
+Qii HRMS v1 Software Requirements Specification  Key fields
+
+    Entity                                       id, scope (location, team, employee),
+    work_schedules                               scope_id, mode (fixed, hourly), working_days,
+                                                 start_time, end_time, grace_minutes,
+    attendance                                   half_day_hours, checkout_cutoff,
+                                                 weekly_hours
+    attendance_corrections
+    tasks                                        id, employee_id, work_date, check_in_at,
+    work_logs                                    check_out_at, latitude, longitude,
+    leave_categories                             location_label, ip, device, note, original_in,
+                                                 original_out, corrected
+    approval_steps
+    leave_requests                               id, attendance_date, employee_id,
+                                                 requested_in, requested_out, reason, status,
+    leave_approvals                              decided_by, decided_at
+    leave_balance_entries
+                                                 id, title, client, assignee_ids, created_by,
+                                                 due_date, status, external_ref (for the
+                                                 project module)
+
+                                                 id, employee_id, work_date, task_id, minutes,
+                                                 note, created_at
+
+                                                 id, name, quota_days, period_start,
+                                                 period_end, paid, half_day, attachment_rule,
+                                                 notice_days, max_per_request, prorate,
+                                                 carry_mode, carry_cap, carry_expiry,
+                                                 negative_cap, applies_to
+
+                                                 leave_category_id, step_order,
+                                                 approver_type, approver_ref
+
+                                                 id, employee_id, category_id, start_date,
+                                                 end_date, half_day_part, days, reason,
+                                                 attachment, status, current_step,
+                                                 team_limit_exceeded
+
+                                                 request_id, flow (request or cancellation),
+                                                 step_order, approver_id, decision, comment,
+                                                 decided_by, decided_at, on_behalf
+
+                                                 employee_id, category_id, kind (opening,
+                                                 adjustment, carry, payroll), days, reason,
+                                                 payroll_month, by, at
+
+                                                                                                                                                              Page 25 of 35
+Qii HRMS v1 Software Requirements Specification
+
+Entity                                           Key fields
+delegations
+holidays                                         from_id, to_id, start_date, end_date
+salaries
+payroll_runs                                     id, calendar_id, name, start_date, end_date,
+payroll_lines                                    type, optional
+
+employee_documents                               employee_id, pay_type, amount, currency,
+checklist_templates, checklists,                 effective_from, reason, set_by
+checklist_items
+notifications                                    month, status (draft, final), finalised_by,
+email_outbox                                     finalised_at
+audit_log
+settings                                         month, employee_id, snapshot of all
+                                                 calculated values, adjustment_amount,
+                                                 adjustment_note, net_pay
+
+                                                 id, employee_id, type, file_ref, uploaded_by,
+                                                 uploaded_at, expires_on
+
+                                                 template items; per-employee items with
+                                                 owner, due, done_by, done_at
+
+                                                 id, recipient_id, type, text, link, created_at,
+                                                 read_at, dedupe_key
+
+                                                 id, recipient_id, to_address, month, subject,
+                                                 payload, sent_at, sent_by, delivery_status
+
+                                                 id, at, actor_id, action, entity, entity_id,
+                                                 before, after, ip
+
+                                                 work log rule, payroll rules, monthly email
+                                                 switch, notification switches
+
+12.2 Data rules
+
+ID     Requirement
+
+DR-01  Dates are stored as calendar dates; times are
+       stored in UTC and shown in the employee's
+       location time zone
+
+DR-02 Money is stored as decimal with 2 places in the
+             employee's currency; no currency conversion in v1
+
+                                                                Page 26 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID        Requirement
+
+DR-03 A finalised payroll line stores a snapshot, so later
+             salary or attendance changes do not alter it
+
+DR-04     Records are never hard-deleted except documents
+          and log entries an authorised user deletes;
+          employees who leave are kept with their history
+
+DR-05     Attendance, leave, payroll and audit data shall be
+          retained for at least 7 years, or as Qii's legal advice
+          requires
+
+DR-06     Go-live import: employees, managers, schedules,
+          holidays, leave categories, opening leave balances
+          and salaries, entered by admin or loaded from a
+          CSV template
+
+13. External interfaces
+
+13.1 User interface
+
+ID        Requirement
+
+IR-UI-01  One web app for all roles; navigation shows only
+          what the user's roles allow, grouped as Me, Team,
+          HR and Settings
+
+IR-UI-02  Check-in and check-out, work log entry, leave
+          request and approvals must be fully usable on a
+          375 px wide phone screen
+
+IR-UI-03  Screens follow the clickable prototype (version 2):
+          Home, My attendance, My work log, My leave, My
+          monthly reports, My profile, Approvals, Team
+          attendance, Team work logs, Tasks, Leave calendar,
+          Directory and org chart, Admin dashboard,
+          Employees and employee detail, Payroll,
+          Onboarding and offboarding, Reports, and the
+          Settings pages
+
+                                                                   Page 27 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID  Requirement
+
+IR-UI-04 Every form validates on submit and states what is
+                wrong and how to fix it
+
+IR-UI-05 Dates show as "Mon 12 Oct 2026"; hours as "7h
+                45m"; money with the currency code
+
+13.2 Other interfaces
+
+ID  Interface                                    Requirement
+
+IR-01 Google sign-in (OAuth 2.0 / OpenID         Restricted to the qiicreative.com.au
+           Connect)                              domain; the system stores the Google
+                                                 subject ID and email only
+IR- Email service
+02                                               Sends notification and monthly report
+                                                 emails from a Qii address; records delivery
+IR- File storage                                 status and retries failures 3 times
+03
+                                                 Stores employee documents and leave
+IR- Browser location                             attachments privately; files are served only
+04                                               through permission-checked, short-lived
+                                                 links. Maximum 10 MB per file; PDF, JPG,
+IR- CSV export                                   PNG, DOCX
+05
+                                                 Asked on check-in; refusal never blocks the
+IR- Project-management module (later             check-in
+
+06  release)                                     UTF-8 CSV for every report, the dashboard
+                                                 table and payroll
+
+                                                 Shares employees, teams, roles and tasks;
+                                                 work logs attach to project tasks through
+                                                 the task reference
+
+                                                            Page 28 of 35
+Qii HRMS v1 Software Requirements Specification
+
+14. Non-functional requirements
+
+ID  Area                                         Requirement
+
+NFR-01 Security                                  All traffic over HTTPS (TLS 1.2+); data encrypted at
+                                                 rest
+NFR-02 Security
+                                                 Every API request checks the user's role, action
+NFR-03 Security                                  and data scope on the server, not only in the
+NFR-04 Security                                  interface
+
+NFR-05 Privacy                                   Salary, payroll, ID copies and contracts are visible
+NFR-06 Privacy                                   only to roles granted them; downloads are logged
+NFR-07 Performance
+                                                 Protection against the OWASP Top 10, including
+NFR-08 Performance                               CSRF, injection and broken access control;
+NFR-09 Availability                              penetration test before go-live
+
+NFR-10 Backup                                    Location is captured only at check-in and check-
+NFR-11 Scalability                               out, never tracked in between
+NFR-12 Auditability
+                                                 Personal data can be exported for an employee on
+                                                 request
+
+                                                 Pages load in under 2 seconds and check-in
+                                                 completes in under 1 second for 95% of requests,
+                                                 with 50 employees and 3 years of data
+
+                                                 A monthly payroll run for 100 employees calculates
+                                                 in under 10 seconds
+
+                                                 99.5% monthly uptime during 07:00­23:00 in each
+                                                 location's time zone; planned maintenance
+                                                 announced 48 hours ahead
+
+                                                 Daily backups kept 30 days; recovery point under
+                                                 24 hours, recovery time under 8 hours
+
+                                                 Supports at least 200 employees and 5 locations
+                                                 without redesign
+
+                                                 Audit log entries cannot be changed or deleted
+                                                 through the application
+
+                                                                                                       Page 29 of 35
+Qii HRMS v1 Software Requirements Specification
+
+ID         Area                                  Requirement
+
+NFR-13 Accuracy                                  Payroll and leave calculations are covered by
+                                                 automated tests using the worked examples in this
+                                                 SRS
+
+NFR-14 Usability                                 A new employee can check in, log work and
+                                                 request leave without training
+
+NFR-15 Accessibility                             Meets WCAG 2.1 AA for contrast, keyboard use
+                                                 and form labels
+
+NFR-16 Localisation                              English interface; each location's time zone,
+                                                 weekend and currency are respected
+
+NFR-17 Maintainability Policy values live in admin settings; changing a rule
+                                        needs no code change
+
+15. Acceptance and traceability
+
+15.1 Traceability to Qii's requests
+
+Qii request                                                   Date  Requirements
+                                                                    FR-LV-01 to FR-LV-07
+Leave set up by admin, e.g. Casual Leave 12
+                                                                    FR-SCH-01, FR-SCH-02, FR-ATT-01 to
+10 days for a year                                            Oct   FR-ATT-08
+                                                                    FR-EMP-01 to FR-EMP-12, FR-ORG-04 to
+Everyone checks in through the system; 12                           FR-ORG-07
+                                                                    FR-ACC-01 to FR-ACC-06
+office time and days set by admin                             Oct
+                                                                    FR-AUTH-01 to FR-AUTH-07
+HR or Admin enters staff and sets the                         12
+                                                                    FR-ATT-01, FR-ATT-02
+hierarchy                                                     Oct
+
+Role-based access to every page and                           12
+
+feature                                                       Oct
+
+Google sign-in for all staff                                  12
+
+                                                              Oct
+
+Check in from anywhere                                        12
+
+                                                              Oct
+
+                                                                                                    Page 30 of 35
+Qii HRMS v1 Software Requirements Specification
+
+Qii request                                      Date  Requirements
+                                                       FR-LV-12, FR-LV-13
+Leave approved by manager, then Fayaz, 12
+                                                       FR-HRS-01 to FR-HRS-05
+configurable                                     Oct
+                                                       FR-TSK-01 to FR-TSK-04, FR-WL-01 to
+Work hours from punch in and punch               19    FR-WL-08
+                                                       FR-SAL-01 to FR-SAL-03, FR-PAY-01 to
+out                                              Oct   FR-PAY-16
+
+Mandatory work log against assigned              19    FR-SCH-03, FR-SCH-04, FR-PAY-07
+
+tasks, visible to manager and admin              Oct   FR-ORG-03, FR-LV-14, FR-NT-04
+
+Salary entered by management; auto               19    FR-MR-01 to FR-MR-05
+
+salary from leave and work days;                 Oct   FR-DB-01 to FR-DB-06
+
+deduction when absences exceed leave
+
+balance
+
+5-day, 6-day and hourly employees                19
+
+                                                 Oct
+
+Alert the manager when a second team 19
+
+member asks for leave the same day               Oct
+
+Monthly attendance report emailed to 19
+
+all employees                                    Oct
+
+Admin dashboard of daily, weekly and 19
+monthly hours and leave per employee Oct
+
+15.2 Acceptance tests
+
+Qii signs off v1 when each test passes on the staging system with Qii's real setup.
+
+    AT-01 Only @qiicreative.com.au accounts with an Active record can sign in; a person
+    with no role sees Access pending
+    AT-02 Each page and action is hidden or allowed exactly as the permission matrix sets
+    it, for Own, Team and All scope
+    AT-03 A manager change that creates a loop is refused; a dated change keeps history
+    AT-04 Check-in from a phone in another city records time, location and IP
+    AT-05 Daily statuses are correct for a test month for a 5-day, a 6-day and an hourly
+    employee
+    AT-06 Worked hours per day, week and month match check-in and check-out
+
+                                                       Page 31 of 35
+Qii HRMS v1 Software Requirements Specification
+
+AT-07 Check-out is refused until the day has a work log, and the rule can be switched to
+flag-only
+AT-08 Work log entries are possible only against tasks assigned to that person
+AT-09 Admin creates Casual Leave, 10 days, 1 Jan to 31 Dec, for Bangladesh staff
+AT-10 A request goes to the manager, then Fayaz; Fayaz's own request goes to Asman
+AT-11 Leave day counts exclude weekly days off and holidays; half days count 0.5
+AT-12 Overlapping, over-balance, short-notice and missing-attachment requests are
+refused
+AT-13 A second request from the same team on the same day alerts the manager; Block
+mode refuses it
+AT-14 Payroll for a test month matches a hand calculation, including the worked
+example in 8.2
+AT-15 Finalising payroll reduces leave balances for covered absences; reopening
+restores them
+AT-16 Every employee receives the monthly report email on the 1st
+AT-17 The admin dashboard shows hours, leave and absences per employee for a day, a
+week and a month, and exports
+AT-18 Every change listed in FR-AU-01 appears in the audit log with before and after
+values
+AT-19 Check-in, work log, leave request and approval work on a phone
+AT-20 Probation and contract reminders arrive 14 days before
+
+16. Open questions and out of scope
+
+16.1 Questions for Qii
+
+The system works with the defaults shown; Qii's answers only change settings.
+
+# Question                                           Default in this SRS
+
+Q1 Is the per-day rate salary ÷ working days in the  Working days
+         month, or salary ÷ 30?
+
+Q2 Which leave balances may cover an absence, and in Casual, then Annual; never Sick
+         what order?
+
+Q3 Is overtime paid, or are extra hours only reported? Reported only
+
+                                                                               Page 32 of 35
+Qii HRMS v1 Software Requirements Specification
+
+# Question                                                                       Default in this SRS
+
+Q4 Should late arrivals ever reduce pay?                                         No
+
+Q5 Do hourly staff's hours need manager approval                                 No
+
+   before payroll?
+
+Q6 Must payroll withhold tax or provident fund?                                  No
+
+Q7 Which leave categories, quotas and holidays apply Admin enters at go-live
+         for 2026 and 2027, per country?
+
+Q8 What is the go-live date, and which month is the                              To be agreed
+         first payroll run?
+
+Q9 Which email address should the system send                                    hr@qiicreative.com.au
+         from?
+
+16.2 Out of scope for v1
+
+    Hiring and recruitment pipeline (later phase)
+    KPI scoring, bonus and Spark Awards (project-management release)
+    Tax, provident fund, statutory deductions, bank payment files and overtime pay
+    Client portal and native mobile apps
+    Currency conversion between BDT and AUD
+
+Appendix A. Daily status codes
+
+Code Status                                      When
+
+P  Present                                       Checked in by start + grace, worked at least the
+                                                 half-day threshold
+
+L  Late                                          Checked in after start + grace
+
+HD Half day                                      Worked less than the half-day threshold, no leave
+
+M  Missing check-out Checked in, no check-out by the cut-off
+
+A  Absent                                        Past working day, no check-in, no approved leave
+
+NC Not checked in                                Today, after start + grace, no check-in yet
+
+                                                                                                        Page 33 of 35
+Qii HRMS v1 Software Requirements Specification
+
+Code Status                                      When
+OL On leave                                      Approved leave covers the day or half of it
+HO Holiday                                       Non-optional holiday on the location's calendar
+WO Weekly off                                    Not a working day in the person's schedule
+
+Hourly employees: P (worked), M (missing check-out) or no code (no shift).
+
+Appendix B. Default permission matrix
+
+Own = own records; Team = direct and indirect reports; All = everyone; Yes = feature
+without scope. Admin and Super Admin hold every permission at All.
+
+Feature                                          HR                   Manager            Employee
+Directory                                                                                View all
+Profile: personal                                View all             View all           View, edit own
+Profile: employment                                                                      View own
+Documents                                        View, edit all       View team          --
+
+Org hierarchy                                    View, create, edit all View team        View
+Leave categories                                                                         --
+                                                 View, create, delete --
+Leave requests                                   all                                     View, create own
+
+Leave balances                                   View                 View               View own
+Attendance records                                                                       View own
+Attendance settings                              View, create, edit, --                  --
+Holiday calendars                                delete                                  View
+
+Onboarding and                                   View all, create own View, approve      --
+offboarding                                                                       team
+
+                                                 View, edit all       View team
+
+                                                 View, edit, export all View team
+
+                                                 View, edit           --
+
+                                                 View, create, edit,  View
+                                                 delete
+
+                                                 View, create, edit all View, edit team
+
+                                                                                                  Page 34 of 35
+Qii HRMS v1 Software Requirements Specification
+
+Feature                                          HR                Manager             Employee
+Tasks                                            View all          View, create, edit  View own
+                                                                   team
+Work logs                                        View all          View team           View, create, edit
+                                                                                       own
+Salary and payslips                              --                --                  View own
+Payroll runs                                     --                --                  --
+Monthly report emails                            View, send all    --                  View own
+Reports and dashboard                            View, export all  View team           --
+Roles and permissions                            --                --                  --
+Audit log                                        --                --                  --
+
+                                                                                       Page 35 of 35
+

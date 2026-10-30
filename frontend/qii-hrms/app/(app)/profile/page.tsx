@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { PersonalContactForm } from "@/components/employees/PersonalContactForm";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ErrorNote } from "@/components/ui/QueryState";
@@ -21,6 +23,7 @@ function KV({ label, children }: { label: string; children: React.ReactNode }) {
 
 export default function ProfilePage() {
   const { me, can, signOut } = useAuth();
+  const [editingContact, setEditingContact] = useState(false);
 
   // Richer record (team, location, manager…) — needs employees:view, which falls back to /me data.
   const self = useQuery({
@@ -30,6 +33,12 @@ export default function ProfilePage() {
     retry: false,
   });
   const e = self.data;
+  const cf = (e as { customFields?: Record<string, unknown> } | undefined)?.customFields;
+  const pickCf = (k: string) => {
+    const d = e ? (e as Record<string, unknown>)[k] : undefined;
+    if (d != null && String(d).trim()) return String(d);
+    return cf?.[k] == null ? "—" : String(cf[k]);
+  };
 
   const permissionCount = me.permissions.length;
 
@@ -85,13 +94,31 @@ export default function ProfilePage() {
 
       <div className="grid g2">
         <section className="card stack">
-          <h2>Contact</h2>
-          <div className="kv">
-            <KV label="Work email">{str(e?.email ?? me.email)}</KV>
-            <KV label="Phone">{str(e?.phone ?? me.phoneNumber)}</KV>
-            <KV label="Preferred name">{str(e?.preferredName)}</KV>
-            <KV label="Personal email">{str(e?.personalEmail)}</KV>
+          <div className="card-head">
+            <h2>Contact</h2>
+            {!editingContact ? (
+              <button type="button" className="btn" onClick={() => setEditingContact(true)}>
+                Edit my contact
+              </button>
+            ) : null}
           </div>
+          {editingContact ? (
+            <PersonalContactForm
+              employee={e}
+              onSaved={() => setEditingContact(false)}
+              onCancel={() => setEditingContact(false)}
+            />
+          ) : (
+            <div className="kv">
+              <KV label="Work email">{str(e?.email ?? me.email)}</KV>
+              <KV label="Phone">{str(e?.phone ?? me.phoneNumber)}</KV>
+              <KV label="Preferred name">{str(e?.preferredName)}</KV>
+              <KV label="Personal email">{str(e?.personalEmail)}</KV>
+              <KV label="Address">{pickCf("address")}</KV>
+              <KV label="Emergency contact">{pickCf("emergencyName")}</KV>
+              <KV label="Emergency phone">{pickCf("emergencyPhone")}</KV>
+            </div>
+          )}
         </section>
 
         <section className="card stack">

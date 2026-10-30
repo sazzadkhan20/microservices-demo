@@ -22,6 +22,13 @@ import java.time.ZoneOffset;
 public class QiiBusinessSeeder {
 
     private static final Logger log = LoggerFactory.getLogger(QiiBusinessSeeder.class);
+    public static final String PACK = "qii-creative";
+
+    private final BusinessPackApplier packApplier;
+
+    public QiiBusinessSeeder(BusinessPackApplier packApplier) {
+        this.packApplier = packApplier;
+    }
 
     public void seedQiiCreative(String hrmsJdbcUrl, String payrollJdbcUrl,
                                 PlatformProperties.DbTarget hrms, PlatformProperties.DbTarget payroll) {
@@ -50,9 +57,10 @@ public class QiiBusinessSeeder {
                 seedSchedules(st);
                 seedTasks(st);
                 seedLeave(st);
+                // Policy surface from classpath pack (settings, leave_policy, field defs)
+                packApplier.applyPolicySurface(conn, PACK);
                 seedHolidays(st);
                 seedAttendanceAndLogs(st);
-                seedSettings(st);
             }
             conn.commit();
             PracticeBusinessSeeder.logSeededUsers(conn, "Qii Creative");
@@ -83,94 +91,277 @@ public class QiiBusinessSeeder {
     }
 
     private static void seedRbac(Statement st) throws Exception {
+        // Policy flags are config — another business can mark any role protected/wildcard without code changes.
         st.executeUpdate("""
-                INSERT INTO app_role (code, name, description, system_role, active) VALUES
-                  ('SUPERADMIN', 'Super Admin', 'Full platform access', TRUE, TRUE),
-                  ('ADMIN', 'Admin', 'Company admin', TRUE, TRUE),
-                  ('HR', 'HR', 'Human resources', TRUE, TRUE),
-                  ('MANAGER', 'Manager', 'Team manager', TRUE, TRUE),
-                  ('EMPLOYEE', 'Employee', 'Standard employee', TRUE, TRUE)
+                INSERT INTO app_role (
+                  code, name, description, system_role, active,
+                  protect_from_offboard, immutable_permissions, grants_wildcard, min_holders, assignable_by
+                ) VALUES
+                  ('SUPERADMIN', 'Super Admin', 'Full platform access', TRUE, TRUE,
+                   TRUE, TRUE, TRUE, 1, 'SUPERADMIN'),
+                  ('ADMIN', 'Admin', 'Company admin', TRUE, TRUE,
+                   FALSE, FALSE, FALSE, 0, 'SUPERADMIN'),
+                  ('HR', 'HR', 'Human resources', TRUE, TRUE,
+                   FALSE, FALSE, FALSE, 0, 'SUPERADMIN,ADMIN'),
+                  ('MANAGER', 'Manager', 'Team manager', TRUE, TRUE,
+                   FALSE, FALSE, FALSE, 0, 'SUPERADMIN,ADMIN,HR'),
+                  ('EMPLOYEE', 'Employee', 'Standard employee', TRUE, TRUE,
+                   FALSE, FALSE, FALSE, 0, 'SUPERADMIN,ADMIN,HR')
                 """);
 
-        st.executeUpdate("""
-                INSERT INTO app_permission (feature, action, description) VALUES
-                  ('employees', 'view', 'View employees'),
-                  ('employees', 'create', 'Create employees'),
-                  ('employees', 'edit', 'Edit employees'),
-                  ('attendance', 'view', 'View attendance'),
-                  ('attendance', 'checkin', 'Self check-in/out'),
-                  ('attendance', 'correct', 'Correct attendance'),
-                  ('leave', 'view', 'View leave'),
-                  ('leave', 'request', 'Request leave'),
-                  ('leave', 'approve', 'Approve leave'),
-                  ('leave', 'manage', 'Manage leave balances'),
-                  ('roles', 'view', 'View roles'),
-                  ('roles', 'manage', 'Manage roles'),
-                  ('payroll', 'view', 'View payroll'),
-                  ('payroll', 'run', 'Run payroll'),
-                  ('reports', 'view', 'View reports'),
-                  ('reports', 'export', 'Export reports'),
-                  ('notifications', 'view', 'View notifications'),
-                  ('settings', 'manage', 'Manage settings'),
-                  ('org', 'view', 'View org'),
-                  ('org', 'manage', 'Manage org')
-                """);
+        seedPermissionCatalog(st);
+        seedRbacLinksOnly(st);
+    }
 
-        // SUPERADMIN + ADMIN → all ALL
+    /** Prototype matrix catalog + legacy coarse API keys (matrix_visible=false). */
+    private static void seedPermissionCatalog(Statement st) throws Exception {
+        ensurePermissionCatalog(st);
+    }
+
+    private static void ensurePermissionCatalog(Statement st) throws Exception {
+        st.executeUpdate("""
+                INSERT INTO app_permission
+                  (feature, action, description, scoped, label, sort_order, matrix_visible)
+                SELECT v.feature, v.action, v.description, v.scoped, v.label, v.sort_order, v.matrix_visible
+                FROM (VALUES
+                  ('employees','view','View employees', TRUE, 'employees', 900, FALSE),
+                  ('employees','create','Create employees', TRUE, 'employees', 900, FALSE),
+                  ('employees','edit','Edit employees', TRUE, 'employees', 900, FALSE),
+                  ('attendance','checkin','Self check-in/out', TRUE, 'attendance', 900, FALSE),
+                  ('attendance','correct','Correct attendance', TRUE, 'attendance', 900, FALSE),
+                  ('leave','view','View leave', TRUE, 'leave', 900, FALSE),
+                  ('leave','request','Request leave', TRUE, 'leave', 900, FALSE),
+                  ('leave','approve','Approve leave', TRUE, 'leave', 900, FALSE),
+                  ('leave','manage','Manage leave balances', TRUE, 'leave', 900, FALSE),
+                  ('roles','assign','Assign roles to people', FALSE, 'roles', 900, FALSE),
+                  ('roles','manage','Manage role permission matrix', FALSE, 'roles', 900, FALSE),
+                  ('payroll','run','Run payroll', FALSE, 'payroll', 900, FALSE),
+                  ('notifications','view','View notifications', TRUE, 'notifications', 900, FALSE),
+                  ('settings','manage','Manage settings', FALSE, 'settings', 900, FALSE),
+                  ('org','view','View org', FALSE, 'org', 900, FALSE),
+                  ('org','manage','Manage org', FALSE, 'org', 900, FALSE),
+                  ('directory','view','View employee directory', TRUE, 'Employee directory', 10, TRUE),
+                  ('profile_personal','view','View personal profile', TRUE, 'Employee profile: personal', 20, TRUE),
+                  ('profile_personal','edit','Edit personal profile', TRUE, 'Employee profile: personal', 20, TRUE),
+                  ('profile_employment','view','View employment profile', TRUE, 'Employee profile: employment', 30, TRUE),
+                  ('profile_employment','create','Create employment records', TRUE, 'Employee profile: employment', 30, TRUE),
+                  ('profile_employment','edit','Edit employment profile', TRUE, 'Employee profile: employment', 30, TRUE),
+                  ('documents','view','View employee documents', TRUE, 'Employee documents', 40, TRUE),
+                  ('documents','create','Upload employee documents', TRUE, 'Employee documents', 40, TRUE),
+                  ('documents','delete','Delete employee documents', TRUE, 'Employee documents', 40, TRUE),
+                  ('hierarchy','view','View org hierarchy', FALSE, 'Org hierarchy', 50, TRUE),
+                  ('hierarchy','edit','Edit org hierarchy', FALSE, 'Org hierarchy', 50, TRUE),
+                  ('leave_setup','view','View leave categories', FALSE, 'Leave categories and quotas', 60, TRUE),
+                  ('leave_setup','create','Create leave categories', FALSE, 'Leave categories and quotas', 60, TRUE),
+                  ('leave_setup','edit','Edit leave categories', FALSE, 'Leave categories and quotas', 60, TRUE),
+                  ('leave_setup','delete','Delete leave categories', FALSE, 'Leave categories and quotas', 60, TRUE),
+                  ('leave_requests','view','View leave requests', TRUE, 'Leave requests', 70, TRUE),
+                  ('leave_requests','create','Create leave requests', TRUE, 'Leave requests', 70, TRUE),
+                  ('leave_requests','approve','Approve leave requests', TRUE, 'Leave requests', 70, TRUE),
+                  ('leave_balances','view','View leave balances', TRUE, 'Leave balances', 80, TRUE),
+                  ('leave_balances','edit','Edit leave balances', TRUE, 'Leave balances', 80, TRUE),
+                  ('attendance','view','View attendance records', TRUE, 'Attendance records', 90, TRUE),
+                  ('attendance','edit','Edit attendance / corrections', TRUE, 'Attendance records', 90, TRUE),
+                  ('attendance','export','Export attendance', TRUE, 'Attendance records', 90, TRUE),
+                  ('attendance_settings','view','View attendance settings', FALSE, 'Attendance settings', 100, TRUE),
+                  ('attendance_settings','edit','Edit attendance settings', FALSE, 'Attendance settings', 100, TRUE),
+                  ('holidays','view','View holiday calendars', FALSE, 'Holiday calendars', 110, TRUE),
+                  ('holidays','create','Create holidays', FALSE, 'Holiday calendars', 110, TRUE),
+                  ('holidays','edit','Edit holidays', FALSE, 'Holiday calendars', 110, TRUE),
+                  ('holidays','delete','Delete holidays', FALSE, 'Holiday calendars', 110, TRUE),
+                  ('checklists','view','View onboarding/offboarding', TRUE, 'Onboarding and offboarding', 120, TRUE),
+                  ('checklists','create','Create checklists', TRUE, 'Onboarding and offboarding', 120, TRUE),
+                  ('checklists','edit','Edit checklists', TRUE, 'Onboarding and offboarding', 120, TRUE),
+                  ('tasks','view','View tasks', TRUE, 'Tasks (until the project module)', 130, TRUE),
+                  ('tasks','create','Create tasks', TRUE, 'Tasks (until the project module)', 130, TRUE),
+                  ('tasks','edit','Edit tasks', TRUE, 'Tasks (until the project module)', 130, TRUE),
+                  ('worklogs','view','View work logs', TRUE, 'Work logs', 140, TRUE),
+                  ('worklogs','create','Create work logs', TRUE, 'Work logs', 140, TRUE),
+                  ('worklogs','edit','Edit work logs', TRUE, 'Work logs', 140, TRUE),
+                  ('salary','view','View salary and payslips', TRUE, 'Salary details and payslips', 150, TRUE),
+                  ('salary','edit','Edit salary', TRUE, 'Salary details and payslips', 150, TRUE),
+                  ('payroll','view','View payroll runs', FALSE, 'Payroll runs', 160, TRUE),
+                  ('payroll','create','Create payroll runs', FALSE, 'Payroll runs', 160, TRUE),
+                  ('payroll','approve','Approve payroll runs', FALSE, 'Payroll runs', 160, TRUE),
+                  ('payroll','export','Export payroll', FALSE, 'Payroll runs', 160, TRUE),
+                  ('emails','view','View monthly report emails', TRUE, 'Monthly report emails', 170, TRUE),
+                  ('emails','create','Send monthly report emails', TRUE, 'Monthly report emails', 170, TRUE),
+                  ('roles','view','View roles', FALSE, 'Roles and permissions', 180, TRUE),
+                  ('roles','create','Create roles', FALSE, 'Roles and permissions', 180, TRUE),
+                  ('roles','edit','Edit roles / assign people', FALSE, 'Roles and permissions', 180, TRUE),
+                  ('roles','delete','Delete roles', FALSE, 'Roles and permissions', 180, TRUE),
+                  ('reports','view','View reports', TRUE, 'Reports and HR dashboard', 190, TRUE),
+                  ('reports','export','Export reports', TRUE, 'Reports and HR dashboard', 190, TRUE),
+                  ('audit','view','View audit log', FALSE, 'Audit log', 200, TRUE)
+                ) AS v(feature, action, description, scoped, label, sort_order, matrix_visible)
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM app_permission p
+                  WHERE p.feature = v.feature AND p.action = v.action
+                )
+                """);
+    }
+
+    /**
+     * Re-applies the system-role permission matrix for an existing tenant DB
+     * without wiping employees. Idempotent for SUPERADMIN/ADMIN/HR/MANAGER/EMPLOYEE.
+     */
+    public void reseedRbacMatrix(String hrmsJdbcUrl, PlatformProperties.DbTarget hrms) {
+        try (Connection c = DriverManager.getConnection(hrmsJdbcUrl, hrms.getUsername(), hrms.getPassword());
+             Statement st = c.createStatement()) {
+            st.executeUpdate("""
+                    DELETE FROM app_role_permission
+                    WHERE role_id IN (SELECT id FROM app_role WHERE code IN
+                      ('SUPERADMIN','ADMIN','HR','MANAGER','EMPLOYEE'))
+                    """);
+            // Ensure full catalog exists (prototype + legacy); safe if already seeded.
+            ensurePermissionCatalog(st);
+            // Config-driven who-may-assign-whom (other packs can set different gates).
+            st.executeUpdate("""
+                    UPDATE app_role SET assignable_by = 'SUPERADMIN'
+                    WHERE UPPER(code) = 'SUPERADMIN' AND (assignable_by IS NULL OR assignable_by = '')
+                    """);
+            st.executeUpdate("""
+                    UPDATE app_role SET assignable_by = 'SUPERADMIN'
+                    WHERE UPPER(code) = 'ADMIN' AND (assignable_by IS NULL OR assignable_by = '')
+                    """);
+            st.executeUpdate("""
+                    UPDATE app_role SET assignable_by = 'SUPERADMIN,ADMIN'
+                    WHERE UPPER(code) = 'HR' AND (assignable_by IS NULL OR assignable_by = '')
+                    """);
+            st.executeUpdate("""
+                    UPDATE app_role SET assignable_by = 'SUPERADMIN,ADMIN,HR'
+                    WHERE UPPER(code) IN ('MANAGER','EMPLOYEE') AND (assignable_by IS NULL OR assignable_by = '')
+                    """);
+            seedRbacLinksOnly(st);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to reseed RBAC matrix: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Role↔permission links ≈ prototype Appendix B.
+     * Unscoped features use ALL (= Yes in UI). Scoped use OWN/TEAM/ALL.
+     */
+    private static void seedRbacLinksOnly(Statement st) throws Exception {
+        // SUPERADMIN → every permission ALL
         st.executeUpdate("""
                 INSERT INTO app_role_permission (role_id, permission_id, data_scope)
                 SELECT r.id, p.id, 'ALL'
                 FROM app_role r CROSS JOIN app_permission p
-                WHERE r.code IN ('SUPERADMIN', 'ADMIN')
+                WHERE r.code = 'SUPERADMIN'
                 """);
-
-        // HR
+        // ADMIN → everything except roles matrix mutate (create/delete/manage); keeps roles:edit (=assign)
         st.executeUpdate("""
                 INSERT INTO app_role_permission (role_id, permission_id, data_scope)
-                SELECT r.id, p.id,
-                  CASE WHEN p.feature IN ('payroll','settings','roles') THEN 'ALL' ELSE 'ALL' END
+                SELECT r.id, p.id, 'ALL'
+                FROM app_role r CROSS JOIN app_permission p
+                WHERE r.code = 'ADMIN'
+                  AND NOT (p.feature = 'roles' AND p.action IN ('manage','create','delete'))
+                """);
+        // HR ≈ prototype HR grants (+ coarse API mirrors)
+        st.executeUpdate("""
+                INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+                SELECT r.id, p.id, 'ALL'
                 FROM app_role r CROSS JOIN app_permission p
                 WHERE r.code = 'HR'
-                  AND NOT (p.feature = 'roles' AND p.action = 'manage')
-                  AND p.feature NOT IN ('settings')
+                  AND (
+                    (p.feature = 'directory' AND p.action = 'view')
+                    OR (p.feature = 'profile_personal' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'profile_employment' AND p.action IN ('view','create','edit'))
+                    OR (p.feature = 'documents' AND p.action IN ('view','create','delete'))
+                    OR (p.feature = 'hierarchy' AND p.action = 'view')
+                    OR (p.feature = 'leave_setup' AND p.action IN ('view','create','edit','delete'))
+                    OR (p.feature = 'leave_requests' AND p.action IN ('view','create','approve'))
+                    OR (p.feature = 'leave_balances' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'attendance' AND p.action IN ('view','edit','export','checkin','correct'))
+                    OR (p.feature = 'attendance_settings' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'holidays' AND p.action IN ('view','create','edit','delete'))
+                    OR (p.feature = 'checklists' AND p.action IN ('view','create','edit'))
+                    OR (p.feature = 'tasks' AND p.action = 'view')
+                    OR (p.feature = 'worklogs' AND p.action = 'view')
+                    OR (p.feature = 'emails' AND p.action IN ('view','create'))
+                    OR (p.feature = 'reports' AND p.action IN ('view','export'))
+                    OR (p.feature = 'roles' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'employees' AND p.action IN ('view','create','edit'))
+                    OR (p.feature = 'salary' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'leave' AND p.action IN ('view','request','approve','manage'))
+                    OR (p.feature = 'notifications' AND p.action = 'view')
+                    OR (p.feature = 'org' AND p.action = 'view')
+                  )
                 """);
-
-        // MANAGER
+        // Fix leave_requests.create to OWN for HR (prototype)
+        st.executeUpdate("""
+                UPDATE app_role_permission rp SET data_scope = 'OWN'
+                FROM app_role r, app_permission p
+                WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                  AND r.code = 'HR' AND p.feature = 'leave_requests' AND p.action = 'create'
+                """);
+        // MANAGER ≈ prototype manager
         st.executeUpdate("""
                 INSERT INTO app_role_permission (role_id, permission_id, data_scope)
                 SELECT r.id, p.id,
                   CASE
-                    WHEN p.feature IN ('employees','attendance','leave') AND p.action IN ('view','approve','correct') THEN 'TEAM'
-                    WHEN p.feature = 'leave' AND p.action = 'request' THEN 'OWN'
-                    WHEN p.feature = 'attendance' AND p.action = 'checkin' THEN 'OWN'
-                    WHEN p.feature IN ('notifications','reports','org') AND p.action = 'view' THEN 'TEAM'
-                    ELSE 'OWN'
+                    WHEN p.feature IN ('leave_requests') AND p.action = 'create' THEN 'OWN'
+                    WHEN p.feature IN ('worklogs') AND p.action IN ('create','edit') THEN 'OWN'
+                    WHEN p.action = 'checkin' OR (p.feature = 'leave' AND p.action = 'request') THEN 'OWN'
+                    WHEN p.feature IN ('notifications','emails') AND p.action = 'view' THEN 'OWN'
+                    WHEN NOT p.scoped THEN 'ALL'
+                    ELSE 'TEAM'
                   END
                 FROM app_role r CROSS JOIN app_permission p
                 WHERE r.code = 'MANAGER'
                   AND (
-                    (p.feature = 'employees' AND p.action = 'view')
-                    OR (p.feature = 'attendance' AND p.action IN ('view','checkin','correct'))
+                    (p.feature = 'directory' AND p.action = 'view')
+                    OR (p.feature = 'profile_personal' AND p.action = 'view')
+                    OR (p.feature = 'profile_employment' AND p.action = 'view')
+                    OR (p.feature = 'hierarchy' AND p.action = 'view')
+                    OR (p.feature = 'leave_requests' AND p.action IN ('view','approve'))
+                    OR (p.feature = 'leave_balances' AND p.action = 'view')
+                    OR (p.feature = 'attendance' AND p.action IN ('view','edit','checkin','correct'))
+                    OR (p.feature = 'checklists' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'reports' AND p.action = 'view')
+                    OR (p.feature = 'holidays' AND p.action = 'view')
+                    OR (p.feature = 'tasks' AND p.action IN ('view','create','edit'))
+                    OR (p.feature = 'worklogs' AND p.action = 'view')
+                    OR (p.feature = 'employees' AND p.action = 'view')
                     OR (p.feature = 'leave' AND p.action IN ('view','request','approve'))
                     OR (p.feature = 'notifications' AND p.action = 'view')
-                    OR (p.feature = 'reports' AND p.action = 'view')
                     OR (p.feature = 'org' AND p.action = 'view')
                   )
                 """);
-
-        // EMPLOYEE
+        // EMPLOYEE ≈ prototype employee
         st.executeUpdate("""
                 INSERT INTO app_role_permission (role_id, permission_id, data_scope)
-                SELECT r.id, p.id, 'OWN'
+                SELECT r.id, p.id,
+                  CASE WHEN NOT p.scoped THEN 'ALL' ELSE 'OWN' END
                 FROM app_role r CROSS JOIN app_permission p
                 WHERE r.code = 'EMPLOYEE'
                   AND (
-                    (p.feature = 'attendance' AND p.action IN ('view','checkin'))
+                    (p.feature = 'directory' AND p.action = 'view')
+                    OR (p.feature = 'profile_personal' AND p.action IN ('view','edit'))
+                    OR (p.feature = 'profile_employment' AND p.action = 'view')
+                    OR (p.feature = 'hierarchy' AND p.action = 'view')
+                    OR (p.feature = 'leave_requests' AND p.action IN ('view','create'))
+                    OR (p.feature = 'leave_balances' AND p.action = 'view')
+                    OR (p.feature = 'attendance' AND p.action IN ('view','checkin'))
+                    OR (p.feature = 'holidays' AND p.action = 'view')
+                    OR (p.feature = 'tasks' AND p.action = 'view')
+                    OR (p.feature = 'worklogs' AND p.action IN ('view','create','edit'))
+                    OR (p.feature = 'salary' AND p.action = 'view')
+                    OR (p.feature = 'emails' AND p.action = 'view')
+                    OR (p.feature = 'employees' AND p.action = 'view')
                     OR (p.feature = 'leave' AND p.action IN ('view','request'))
                     OR (p.feature = 'notifications' AND p.action = 'view')
-                    OR (p.feature = 'employees' AND p.action = 'view')
                     OR (p.feature = 'payroll' AND p.action = 'view')
+                    OR (p.feature = 'reports' AND p.action = 'view')
                   )
+                """);
+        // directory.view for employee is ALL in prototype
+        st.executeUpdate("""
+                UPDATE app_role_permission rp SET data_scope = 'ALL'
+                FROM app_role r, app_permission p
+                WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                  AND r.code = 'EMPLOYEE' AND p.feature = 'directory' AND p.action = 'view'
                 """);
     }
 
@@ -390,38 +581,22 @@ public class QiiBusinessSeeder {
     }
 
     private static void seedSchedules(Statement st) throws Exception {
-        // BD Sun–Thu 10:00–18:00 grace 15
+        // BD Sun–Thu 10:00–18:00 grace 15; AU Mon–Fri; hourly override for Owen (QII-0025)
         st.executeUpdate("""
                 INSERT INTO work_schedule
-                  (scope_type, scope_id, mode, working_days, start_time, end_time, grace_minutes, half_day_hours, checkout_cutoff)
+                  (scope_type, scope_id, mode, working_days, start_time, end_time, grace_minutes, half_day_hours, checkout_cutoff, weekly_hours)
                 VALUES
                   ('LOCATION', (SELECT id FROM location WHERE code='BD-DHK'), 'FIXED',
-                   '["SUN","MON","TUE","WED","THU"]'::jsonb, '10:00', '18:00', 15, 4, '23:59'),
+                   '["SUN","MON","TUE","WED","THU"]'::jsonb, '10:00', '18:00', 15, 4, '23:59', NULL),
                   ('LOCATION', (SELECT id FROM location WHERE code='AU-SYD'), 'FIXED',
-                   '["MON","TUE","WED","THU","FRI"]'::jsonb, '09:00', '17:00', 15, 4, '23:59')
+                   '["MON","TUE","WED","THU","FRI"]'::jsonb, '09:00', '17:00', 15, 4, '23:59', NULL),
+                  ('EMPLOYEE', (SELECT id FROM employee WHERE employee_code='QII-0025'), 'HOURLY',
+                   '[]'::jsonb, NULL, NULL, 0, NULL, NULL, 40)
                 """);
     }
 
     private static void seedLeave(Statement st) throws Exception {
-        st.executeUpdate("""
-                INSERT INTO leave_policy (
-                  annual_days, work_week_days, working_days,
-                  union_notice_days, non_union_notice_days,
-                  require_coverage_check, approval_chain,
-                  notice_mode, default_notice_days, coverage_mode,
-                  location_field, shift_field, require_relief_on_coverage_fail,
-                  default_leave_type_code, updated_at
-                ) VALUES (
-                  14, 5,
-                  '["SUN","MON","TUE","WED","THU"]'::jsonb,
-                  0, 0, FALSE,
-                  '[{"step":1,"role":"MANAGER"},{"step":2,"role":"HR"}]'::jsonb,
-                  'NONE', 0, 'NONE',
-                  NULL, NULL, FALSE,
-                  'CASUAL', NOW()
-                )
-                """);
-
+        // leave_policy comes from business-packs/qii-creative/pack.json via BusinessPackApplier
         st.executeUpdate("""
                 INSERT INTO leave_type
                   (code, name, paid, requires_balance, allow_when_zero_balance,
@@ -581,37 +756,6 @@ public class QiiBusinessSeeder {
                        3.00, 'APPROVED', 'Short break', FALSE, 14, 7, TRUE, FALSE,
                        '{}'::jsonb, 2, NOW(), NOW()
                 FROM employee e WHERE e.employee_code = 'QII-0022'
-                """);
-    }
-
-    private static void seedSettings(Statement st) throws Exception {
-        st.executeUpdate("""
-                INSERT INTO tenant_settings (settings, updated_at)
-                VALUES (
-                  '{
-                    "businessPack":"qii_creative",
-                    "employeeCodePattern":"^QII-\\\\d{4}$",
-                    "defaultTimeZone":"Asia/Dhaka",
-                    "workLogRule":"BLOCK",
-                    "workLogMinPercent":80,
-                    "workLogEditDaysBack":7,
-                    "teamLeaveMaxOnLeave":1,
-                    "teamLeaveClashAction":"ALERT",
-                    "payrollAbsenceCoverOrder":["CASUAL","ANNUAL"],
-                    "notificationsPollSeconds":30,
-                    "monthlyReportDay":1
-                  }'::jsonb,
-                  NOW()
-                )
-                """);
-
-        st.executeUpdate("""
-                INSERT INTO tenant_field_definition
-                  (field_name, storage_type, jsonb_path, extension_table, extension_column,
-                   filterable, indexed_flag, required_flag, unique_active, validation_regex)
-                VALUES
-                  ('gender', 'JSONB', 'custom_fields.gender', NULL, NULL, TRUE, FALSE, FALSE, FALSE, NULL),
-                  ('country', 'JSONB', 'custom_fields.country', NULL, NULL, TRUE, FALSE, FALSE, FALSE, NULL)
                 """);
     }
 

@@ -12,6 +12,13 @@ public record LeaveApplyRequest(
         @NotNull LocalDate endDate,
         String reason,
         Long reliefEmployeeId,
-        Boolean halfDay
+        /** Backward-compat: true → FIRST_HALF. */
+        Boolean halfDay,
+        /** FULL | FIRST_HALF | SECOND_HALF — wins over halfDay when present. */
+        String halfDayPart,
+        /** Path/key to uploaded attachment stored externally. */
+        String attachmentRef,
+        /** When true, runs all validations and returns a preview without saving. */
+        Boolean previewOnly
 ) {
 }

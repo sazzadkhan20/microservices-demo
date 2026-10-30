@@ -98,6 +98,21 @@ public class LeaveApplication {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    @Column(name = "half_day_part", length = 16)
+    private String halfDayPart = "FULL";
+
+    @Column(name = "attachment_ref", length = 512)
+    private String attachmentRef;
+
+    @Column(name = "team_clash_alert", nullable = false)
+    private boolean teamClashAlert = false;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "warnings", columnDefinition = "jsonb")
+    private Map<String, Object> warnings = new HashMap<>();
+
+    public static final String STATUS_PENDING_CANCEL = "PENDING_CANCEL";
+
     public Long getId() {
         return id;
     }
@@ -277,4 +292,16 @@ public class LeaveApplication {
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;
     }
+
+    public String getHalfDayPart() { return halfDayPart; }
+    public void setHalfDayPart(String halfDayPart) { this.halfDayPart = halfDayPart == null ? "FULL" : halfDayPart; }
+
+    public String getAttachmentRef() { return attachmentRef; }
+    public void setAttachmentRef(String attachmentRef) { this.attachmentRef = attachmentRef; }
+
+    public boolean isTeamClashAlert() { return teamClashAlert; }
+    public void setTeamClashAlert(boolean teamClashAlert) { this.teamClashAlert = teamClashAlert; }
+
+    public Map<String, Object> getWarnings() { return warnings; }
+    public void setWarnings(Map<String, Object> warnings) { this.warnings = warnings == null ? new HashMap<>() : warnings; }
 }

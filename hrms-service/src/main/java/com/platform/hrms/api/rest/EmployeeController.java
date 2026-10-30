@@ -38,7 +38,7 @@ public class EmployeeController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(feature = "employees", action = "create")
-    @Operation(summary = "Create employee (auto QII-#### if code omitted; team sets department)")
+    @Operation(summary = "Create employee (code + default role from tenant pack settings; team sets department)")
     public EmployeeResponse create(@Valid @RequestBody EmployeeRequest request) {
         return employeeService.create(request);
     }
@@ -50,9 +50,16 @@ public class EmployeeController {
         return employeeService.update(id, request);
     }
 
+    @GetMapping("/create-options")
+    @RequiresPermission(feature = "employees", action = "create")
+    @Operation(summary = "Create-form meta: employeeCodeMode, defaults, email/pattern rules")
+    public Map<String, Object> createOptions() {
+        return employeeService.createOptions();
+    }
+
     @GetMapping("/next-code")
     @RequiresPermission(feature = "employees", action = "create")
-    @Operation(summary = "Preview next employee code")
+    @Operation(summary = "Preview next employee code (when mode is AUTO/OPTIONAL)")
     public Map<String, String> nextCode() {
         return Map.of("employeeCode", employeeService.nextEmployeeCode());
     }
@@ -72,8 +79,8 @@ public class EmployeeController {
     }
 
     @PostMapping("/{id}/roles")
-    @RequiresPermission(feature = "employees", action = "edit")
-    @Operation(summary = "Replace employee role assignments")
+    @RequiresPermission(feature = "roles", action = "assign")
+    @Operation(summary = "Replace employee role assignments (roles:assign; honour assignable_by / min_holders)")
     public Map<String, Object> assignRoles(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         @SuppressWarnings("unchecked")
         List<String> codes = body.get("roleCodes") instanceof List<?> list
@@ -83,12 +90,31 @@ public class EmployeeController {
         return Map.of("employeeId", id, "roleCodes", assigned);
     }
 
+    @GetMapping("/{id}/employment-history")
+    @RequiresPermission(feature = "employees", action = "view")
+    @Operation(summary = "Employment field change history (FR-EMP-07)")
+    public List<Map<String, Object>> employmentHistory(@PathVariable Long id) {
+        return employeeService.employmentHistory(id);
+    }
+
     @PatchMapping("/{id}/status")
     @RequiresPermission(feature = "employees", action = "edit")
-    @Operation(summary = "Change employee employment status")
+    @Operation(summary = "Change employee employment status (offboarding fields for Resigned/Terminated)")
     public EmployeeResponse patchStatus(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         Object status = body.get("status");
-        return employeeService.updateStatus(id, status == null ? null : String.valueOf(status));
+        java.time.LocalDate exitDate = null;
+        if (body.get("exitDate") != null && !String.valueOf(body.get("exitDate")).isBlank()) {
+            exitDate = java.time.LocalDate.parse(String.valueOf(body.get("exitDate")).trim());
+        }
+        String exitReason = body.get("exitReason") == null ? null : String.valueOf(body.get("exitReason"));
+        String override = body.get("offboardOverrideReason") == null
+                ? null : String.valueOf(body.get("offboardOverrideReason"));
+        Long reassign = null;
+        if (body.get("reassignReportsTo") != null && !String.valueOf(body.get("reassignReportsTo")).isBlank()) {
+            reassign = Long.valueOf(String.valueOf(body.get("reassignReportsTo")));
+        }
+        return employeeService.updateStatus(
+                id, status == null ? null : String.valueOf(status), exitDate, exitReason, override, reassign);
     }
 
     @GetMapping

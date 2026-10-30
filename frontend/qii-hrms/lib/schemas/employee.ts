@@ -41,6 +41,19 @@ export const employeeSchema = z
 
 export type Employee = z.infer<typeof employeeSchema>;
 
-export const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "CASUAL", "INTERN"] as const;
-export const WORK_PATTERNS = ["FIXED", "SHIFT", "FLEXIBLE"] as const;
+export const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "CONTRACTOR", "CASUAL", "INTERN"] as const;
+/** FR-EMP-12 — config-aligned patterns (legacy FIXED/SHIFT/FLEXIBLE still accepted by API). */
+export const WORK_PATTERNS = ["LOCATION_DEFAULT", "DAYS_5", "DAYS_6", "HOURLY"] as const;
 export const EMPLOYEE_STATUSES = ["Active", "On leave", "Inactive", "Resigned", "Terminated"] as const;
+export const DOC_TYPES = ["Contract", "NDA", "Agreement", "ID copy", "Certificate", "Other"] as const;
+export const WORK_EMAIL_DOMAIN = "qiicreative.com.au";
+/** Seed / legacy aliases accepted by tenant employeeRules.workEmailDomainAliases. */
+export const WORK_EMAIL_DOMAIN_ALIASES = ["qiicreative.local"] as const;
+export const CONTRACT_TYPES_NEED_END = new Set(["CONTRACT", "CONTRACTOR", "INTERN"]);
+export const OFFBOARD_STATUSES = new Set(["Resigned", "Terminated"]);
+
+export function isAllowedWorkEmail(email: string): boolean {
+  const lower = email.trim().toLowerCase();
+  if (lower.endsWith(`@${WORK_EMAIL_DOMAIN}`)) return true;
+  return WORK_EMAIL_DOMAIN_ALIASES.some((d) => lower.endsWith(`@${d}`));
+}

@@ -55,11 +55,27 @@ public class AttendanceController {
 
     @PostMapping({"/check-out", "/checkout"})
     @RequiresPermission(feature = "attendance", action = "checkin")
-    @Operation(summary = "Check out (before 06:00 may attribute to yesterday)")
+    @Operation(summary = "Check out (before 06:00 may attribute to yesterday; FR-ATT-03)")
     public Map<String, Object> checkOut(HttpServletRequest request,
                                         @RequestBody(required = false) AttendanceActionRequest body) {
         String note = body == null ? null : body.note();
-        return attendanceService.checkOut(request, note);
+        String loc = body == null ? null : body.locationLabel();
+        Double lat = body == null ? null : body.latitude();
+        Double lng = body == null ? null : body.longitude();
+        String tz = body == null ? null : body.timeZone();
+        String deviceType = body == null ? null : body.deviceType();
+        return attendanceService.checkOut(request, note, loc, lat, lng, tz, deviceType);
+    }
+
+    @GetMapping("/hours-summary")
+    @RequiresPermission(feature = "attendance", action = "view")
+    @Operation(summary = "Worked / expected / logged hours for today, week, month (FR-HRS-04)")
+    public Map<String, Object> hoursSummary(
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        LocalDate f = from == null || from.isBlank() ? null : LocalDate.parse(from);
+        LocalDate t = to == null || to.isBlank() ? null : LocalDate.parse(to);
+        return attendanceService.hoursSummary(f, t);
     }
 
     @GetMapping({"", "/my"})
@@ -85,9 +101,17 @@ public class AttendanceController {
         return attendanceService.historyForEmployee(id, PageQuery.fromParams(params));
     }
 
+    @PostMapping("/close-missing")
+    @RequiresPermission(feature = "attendance_settings", action = "edit")
+    @Operation(summary = "Mark open check-ins past schedule checkoutCutoff as Missing (FR-SCH-02)")
+    public Map<String, Object> closeMissing(@RequestParam(required = false) String date) {
+        LocalDate d = date == null || date.isBlank() ? null : LocalDate.parse(date);
+        return attendanceService.closeMissingCheckouts(d);
+    }
+
     @PostMapping("/correct")
     @RequiresPermission(feature = "attendance", action = "correct")
-    @Operation(summary = "HR attendance correction")
+    @Operation(summary = "HR edit another person's attendance with a reason (FR-ATT-08) — self-edit forbidden")
     public Map<String, Object> correct(@RequestBody Map<String, Object> body) {
         Long employeeId = body.get("employeeId") == null ? null : Long.valueOf(String.valueOf(body.get("employeeId")));
         LocalDate workDate = LocalDate.parse(String.valueOf(body.get("workDate")));
@@ -95,7 +119,8 @@ public class AttendanceController {
         Instant checkOut = body.get("checkOutAt") == null ? null : Instant.parse(String.valueOf(body.get("checkOutAt")));
         String statusCode = body.get("statusCode") == null ? null : String.valueOf(body.get("statusCode"));
         String statusLabel = body.get("statusLabel") == null ? null : String.valueOf(body.get("statusLabel"));
-        String note = body.get("note") == null ? null : String.valueOf(body.get("note"));
+        Object reasonRaw = body.get("reason") != null ? body.get("reason") : body.get("note");
+        String note = reasonRaw == null ? null : String.valueOf(reasonRaw);
         return attendanceService.correct(employeeId, workDate, checkIn, checkOut, statusCode, statusLabel, note);
     }
 }

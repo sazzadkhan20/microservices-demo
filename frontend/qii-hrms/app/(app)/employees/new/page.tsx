@@ -11,7 +11,7 @@ export default function NewEmployeePage() {
     <div className="stack">
       <PageHeader
         title="Add employee"
-        subtitle="Create the person, place them in the org, and optionally assign roles and the onboarding checklist."
+        subtitle="Full employment profile. Employee ID is generated from the business pack; new people get the Employee role by default."
         actions={
           <Link href="/employees" className="btn">
             ← All employees

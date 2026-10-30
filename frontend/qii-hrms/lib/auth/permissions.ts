@@ -5,8 +5,24 @@
 
 export const FEATURES = [
   "attendance",
+  "attendance_settings",
   "leave",
+  "leave_setup",
+  "leave_requests",
+  "leave_balances",
   "employees",
+  "directory",
+  "profile_personal",
+  "profile_employment",
+  "documents",
+  "hierarchy",
+  "holidays",
+  "checklists",
+  "tasks",
+  "worklogs",
+  "salary",
+  "emails",
+  "audit",
   "org",
   "roles",
   "settings",
@@ -23,10 +39,12 @@ export const ACTIONS = [
   "delete",
   "approve",
   "manage",
+  "assign",
   "checkin",
   "correct",
   "request",
   "export",
+  "run",
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 

@@ -29,6 +29,16 @@ public class AttendanceCorrection {
     @Column(name = "requested_check_out")
     private Instant requestedCheckOut;
 
+    /** FR-ATT-07 — original punches kept when a correction is requested. */
+    @Column(name = "original_check_in")
+    private Instant originalCheckIn;
+
+    @Column(name = "original_check_out")
+    private Instant originalCheckOut;
+
+    @Column(name = "original_status_code", length = 8)
+    private String originalStatusCode;
+
     @Column(name = "reason", nullable = false, length = 512)
     private String reason;
 
@@ -60,6 +70,15 @@ public class AttendanceCorrection {
 
     public Instant getRequestedCheckOut() { return requestedCheckOut; }
     public void setRequestedCheckOut(Instant requestedCheckOut) { this.requestedCheckOut = requestedCheckOut; }
+
+    public Instant getOriginalCheckIn() { return originalCheckIn; }
+    public void setOriginalCheckIn(Instant originalCheckIn) { this.originalCheckIn = originalCheckIn; }
+
+    public Instant getOriginalCheckOut() { return originalCheckOut; }
+    public void setOriginalCheckOut(Instant originalCheckOut) { this.originalCheckOut = originalCheckOut; }
+
+    public String getOriginalStatusCode() { return originalStatusCode; }
+    public void setOriginalStatusCode(String originalStatusCode) { this.originalStatusCode = originalStatusCode; }
 
     public String getReason() { return reason; }
     public void setReason(String reason) { this.reason = reason; }

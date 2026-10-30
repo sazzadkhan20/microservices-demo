@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 @RestController
 @RequestMapping("/api/leave-applications")
@@ -103,5 +104,22 @@ public class LeaveApplicationController {
     public LeaveApplicationResponse reject(@PathVariable Long id,
                                            @Valid @RequestBody(required = false) LeaveDecisionRequest request) {
         return leaveApplicationService.reject(id, request);
+    }
+
+    @PostMapping("/preview")
+    @RequiresPermission(feature = "leave", action = "request")
+    @Operation(summary = "FR-LV-09 — preview leave application",
+            description = "Runs all validations without saving. Returns workingDaysCounted, balanceAfter, "
+                    + "approvers preview, warnings.")
+    public Map<String, Object> preview(@Valid @RequestBody LeaveApplyRequest request) {
+        return leaveApplicationService.preview(request);
+    }
+
+    @PostMapping("/{id}/cancel")
+    @RequiresPermission(feature = "leave", action = "request")
+    @Operation(summary = "FR-LV-18 — request cancellation of an APPROVED leave",
+            description = "Starts a cancel approval chain; on final approve balance is restored.")
+    public LeaveApplicationResponse cancel(@PathVariable Long id) {
+        return leaveApplicationService.requestCancelApproved(id);
     }
 }

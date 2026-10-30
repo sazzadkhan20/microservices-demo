@@ -2,9 +2,13 @@ package com.platform.hrms.api.rest;
 
 import com.platform.common.security.AuthContext;
 import com.platform.hrms.application.AuditService;
+import com.platform.hrms.application.RbacService;
+import com.platform.hrms.domain.Employee;
 import com.platform.hrms.domain.rbac.AppPermission;
 import com.platform.hrms.domain.rbac.AppRole;
 import com.platform.hrms.domain.rbac.AppRolePermission;
+import com.platform.hrms.domain.rbac.AppUserRole;
+import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
 import com.platform.hrms.infrastructure.persistence.rbac.AppPermissionRepository;
 import com.platform.hrms.infrastructure.persistence.rbac.AppRolePermissionRepository;
 import com.platform.hrms.infrastructure.persistence.rbac.AppRoleRepository;
@@ -29,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -38,12 +43,15 @@ import java.util.stream.Collectors;
 @Tag(name = "Roles", description = "Tenant RBAC roles and permission matrix")
 public class RolesController {
 
-    private static final Set<String> SCOPES = Set.of("ALL", "TEAM", "OWN");
+    /** OWN/TEAM/ALL for scoped features; YES is accepted for unscoped (stored as ALL). */
+    private static final Set<String> SCOPES = Set.of("ALL", "TEAM", "OWN", "YES");
 
     private final AppRoleRepository roleRepository;
     private final AppRolePermissionRepository rolePermissionRepository;
     private final AppPermissionRepository permissionRepository;
     private final AppUserRoleRepository userRoleRepository;
+    private final EmployeeRepository employeeRepository;
+    private final RbacService rbacService;
     private final AuditService auditService;
 
     public RolesController(
@@ -51,11 +59,15 @@ public class RolesController {
             AppRolePermissionRepository rolePermissionRepository,
             AppPermissionRepository permissionRepository,
             AppUserRoleRepository userRoleRepository,
+            EmployeeRepository employeeRepository,
+            RbacService rbacService,
             AuditService auditService) {
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.permissionRepository = permissionRepository;
         this.userRoleRepository = userRoleRepository;
+        this.employeeRepository = employeeRepository;
+        this.rbacService = rbacService;
         this.auditService = auditService;
     }
 
@@ -69,6 +81,49 @@ public class RolesController {
             out.add(toView(role, perms));
         }
         return out;
+    }
+
+    @GetMapping("/catalog")
+    @RequiresPermission(feature = "roles", action = "view")
+    @Operation(summary = "Full Roles matrix catalog (prototype feature rows + scoped flag)")
+    public Map<String, Object> catalog() {
+        List<AppPermission> visible = permissionRepository.findAll().stream()
+                .filter(AppPermission::isMatrixVisible)
+                .sorted(java.util.Comparator
+                        .comparingInt(AppPermission::getSortOrder)
+                        .thenComparing(AppPermission::getFeature)
+                        .thenComparing(AppPermission::getAction))
+                .toList();
+        LinkedHashMap<String, Map<String, Object>> byFeature = new LinkedHashMap<>();
+        for (AppPermission p : visible) {
+            Map<String, Object> f = byFeature.computeIfAbsent(p.getFeature(), k -> {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("key", p.getFeature());
+                row.put("name", p.getLabel() != null && !p.getLabel().isBlank() ? p.getLabel() : p.getFeature());
+                row.put("scoped", p.isScoped());
+                row.put("actions", new ArrayList<String>());
+                return row;
+            });
+            @SuppressWarnings("unchecked")
+            List<String> actions = (List<String>) f.get("actions");
+            if (!actions.contains(p.getAction())) {
+                actions.add(p.getAction());
+            }
+            // If any action is unscoped, feature is unscoped (prototype: whole row uses Yes).
+            if (!p.isScoped()) {
+                f.put("scoped", false);
+            }
+        }
+        List<String> actionOrder = List.of("view", "create", "edit", "delete", "approve", "export", "assign", "manage", "run");
+        List<String> allActions = visible.stream().map(AppPermission::getAction).distinct()
+                .sorted(java.util.Comparator.comparingInt(a -> {
+                    int i = actionOrder.indexOf(a);
+                    return i < 0 ? 100 + a.hashCode() : i;
+                }))
+                .toList();
+        return Map.of(
+                "actions", allActions,
+                "features", new ArrayList<>(byFeature.values()));
     }
 
     @PostMapping
@@ -162,7 +217,18 @@ public class RolesController {
     public Map<String, Object> replacePermissions(@PathVariable Long id,
                                                   @RequestBody List<Map<String, Object>> matrix) {
         AppRole role = requireRole(id);
-        Map<Long, AppRolePermission> next = new LinkedHashMap<>();
+        if (role.isImmutablePermissions()) {
+            throw new IllegalStateException(
+                    "Not allowed: role " + role.getCode()
+                            + " has immutable_permissions=true (config) — matrix cannot be changed");
+        }
+        Map<Long, AppPermission> allPerms = permissionsById();
+        Set<Long> matrixPermIds = allPerms.values().stream()
+                .filter(AppPermission::isMatrixVisible)
+                .map(AppPermission::getId)
+                .collect(Collectors.toSet());
+
+        Map<Long, AppRolePermission> nextMatrix = new LinkedHashMap<>();
         for (Map<String, Object> entry : matrix) {
             String feature = requireText(entry, "feature");
             String action = requireText(entry, "action");
@@ -171,22 +237,86 @@ public class RolesController {
             if (!SCOPES.contains(scope)) {
                 throw new IllegalArgumentException("scope must be one of " + SCOPES + " for " + feature + ":" + action);
             }
+            // Prototype "Yes" for unscoped features → ALL.
+            if ("YES".equals(scope)) {
+                scope = "ALL";
+            }
             AppPermission perm = permissionRepository.findByFeatureAndAction(feature, action)
                     .orElseThrow(() -> new IllegalArgumentException(
                             "Unknown permission: " + feature + ":" + action));
+            if (!perm.isMatrixVisible()) {
+                continue; // ignore legacy API-only keys from clients
+            }
+            if (!perm.isScoped() && !"ALL".equals(scope)) {
+                scope = "ALL";
+            }
             AppRolePermission link = new AppRolePermission();
             link.setRoleId(role.getId());
             link.setPermissionId(perm.getId());
             link.setDataScope(scope);
-            next.put(perm.getId(), link);
+            nextMatrix.put(perm.getId(), link);
         }
-        int before = rolePermissionRepository.findByRoleIdIn(List.of(role.getId())).size();
-        rolePermissionRepository.deleteByRoleId(role.getId());
+
+        List<AppRolePermission> existing = rolePermissionRepository.findByRoleIdIn(List.of(role.getId()));
+        int before = existing.size();
+        // Replace only matrix-visible links; keep legacy coarse API grants intact.
+        for (AppRolePermission link : existing) {
+            if (matrixPermIds.contains(link.getPermissionId())) {
+                rolePermissionRepository.delete(link);
+            }
+        }
         rolePermissionRepository.flush();
-        rolePermissionRepository.saveAll(next.values());
+        rolePermissionRepository.saveAll(nextMatrix.values());
+        // Mirror coarse API keys from the saved matrix so interceptors keep working.
+        rbacService.syncLegacyApiGrants(role.getId());
         auditService.record(AuthContext.getEmployeeId(), "UPDATE", "AppRolePermission",
-                String.valueOf(role.getId()), Map.of("count", before), Map.of("count", next.size()));
+                String.valueOf(role.getId()), Map.of("count", before),
+                Map.of("matrixCount", nextMatrix.size()));
         return toView(role, permissionsById());
+    }
+
+    @GetMapping("/{id}/holders")
+    @RequiresPermission(feature = "roles", action = "view")
+    @Operation(summary = "List employees who currently hold this role")
+    public List<Map<String, Object>> holders(@PathVariable Long id) {
+        requireRole(id);
+        return userRoleRepository.findByRoleId(id).stream()
+                .map(AppUserRole::getEmployeeId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .map(empId -> employeeRepository.findById(empId).orElse(null))
+                .filter(Objects::nonNull)
+                .map(RolesController::holderView)
+                .toList();
+    }
+
+    @PostMapping("/{id}/assign")
+    @Transactional
+    @RequiresPermission(feature = "roles", action = "assign")
+    @Operation(summary = "Assign this role to one employee (body: employeeId)")
+    public Map<String, Object> assignToEmployee(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        AppRole role = requireRole(id);
+        Long employeeId = requireEmployeeId(body);
+        if (!employeeRepository.existsById(employeeId)) {
+            throw new IllegalArgumentException("Employee not found: " + employeeId);
+        }
+        List<String> codes = rbacService.addRole(employeeId, role.getCode());
+        auditService.record(AuthContext.getEmployeeId(), "ASSIGN", "AppUserRole",
+                String.valueOf(employeeId), null, Map.of("roleCode", role.getCode(), "roleCodes", codes));
+        return Map.of("employeeId", employeeId, "roleCode", role.getCode(), "roleCodes", codes);
+    }
+
+    @PostMapping("/{id}/unassign")
+    @Transactional
+    @RequiresPermission(feature = "roles", action = "assign")
+    @Operation(summary = "Remove this role from one employee (body: employeeId)")
+    public Map<String, Object> unassignFromEmployee(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        AppRole role = requireRole(id);
+        Long employeeId = requireEmployeeId(body);
+        List<String> codes = rbacService.removeRole(employeeId, role.getCode());
+        auditService.record(AuthContext.getEmployeeId(), "UNASSIGN", "AppUserRole",
+                String.valueOf(employeeId), Map.of("roleCode", role.getCode()), Map.of("roleCodes", codes));
+        return Map.of("employeeId", employeeId, "roleCode", role.getCode(), "roleCodes", codes);
     }
 
     @DeleteMapping("/{id}")
@@ -232,19 +362,53 @@ public class RolesController {
         row.put("description", role.getDescription());
         row.put("systemRole", role.isSystemRole());
         row.put("active", role.isActive());
+        row.put("protectFromOffboard", role.isProtectFromOffboard());
+        row.put("immutablePermissions", role.isImmutablePermissions());
+        row.put("grantsWildcard", role.isGrantsWildcard());
+        row.put("minHolders", role.getMinHolders());
+        row.put("assignableBy", role.getAssignableBy());
+        long holders = userRoleRepository.findByRoleId(role.getId()).stream()
+                .map(AppUserRole::getEmployeeId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .count();
+        row.put("holderCount", holders);
         List<Map<String, Object>> rp = new ArrayList<>();
         for (AppRolePermission link : rolePermissionRepository.findByRoleIdIn(List.of(role.getId()))) {
             AppPermission p = perms.get(link.getPermissionId());
-            if (p == null) continue;
+            if (p == null || !p.isMatrixVisible()) continue;
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("feature", p.getFeature());
             m.put("action", p.getAction());
             m.put("scope", link.getDataScope());
+            m.put("scoped", p.isScoped());
+            m.put("label", p.getLabel());
             m.put("key", p.key());
             rp.add(m);
         }
         row.put("permissions", rp);
         return row;
+    }
+
+    private static Map<String, Object> holderView(Employee e) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", e.getId());
+        m.put("employeeCode", e.getEmployeeCode());
+        m.put("fullName", e.getFullName());
+        m.put("status", e.getStatus());
+        return m;
+    }
+
+    private static Long requireEmployeeId(Map<String, Object> body) {
+        Object raw = body.get("employeeId");
+        if (raw == null || String.valueOf(raw).isBlank()) {
+            throw new IllegalArgumentException("employeeId is required");
+        }
+        try {
+            return Long.valueOf(String.valueOf(raw).trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("employeeId must be a number");
+        }
     }
 
     private static String requireText(Map<String, Object> body, String key) {

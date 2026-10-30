@@ -102,6 +102,9 @@ export default function ApprovalsPage() {
             <h2>Leave waiting for you</h2>
             <span className="pill acc">{leaveRows.length}</span>
           </div>
+          <p className="small muted" style={{ margin: 0 }}>
+            Only requests at your step in the approval chain (reporting manager first, then HR when configured).
+          </p>
           <ErrorNote error={pending.error} />
           <div className="tbl-wrap">
             <table>
@@ -143,6 +146,21 @@ export default function ApprovalsPage() {
                             <StatusPill status={r.status} />
                             {r.coverageOk === false ? <span className="pill warn">Coverage clash</span> : null}
                             {r.needsRelief ? <span className="pill info">Needs relief</span> : null}
+                            {r.teamClashAlert ? (
+                              <span className="pill warn" title="Team leave limit may be exceeded">
+                                ⚑ Team leave limit
+                              </span>
+                            ) : null}
+                            {Array.isArray(r.warnings) && r.warnings.length > 0 ? (
+                              <span
+                                className="pill warn"
+                                title={(r.warnings as string[]).join(" · ")}
+                              >
+                                ⚠ {(r.warnings as string[]).length === 1
+                                  ? (r.warnings as string[])[0]
+                                  : `${(r.warnings as string[]).length} warnings`}
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                         <td>

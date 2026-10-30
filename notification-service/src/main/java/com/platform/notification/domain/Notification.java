@@ -53,6 +53,10 @@ public class Notification {
     @Column(name = "dedupe_key", length = 255)
     private String dedupeKey;
 
+    /** In-app path for click-through, e.g. /leave or /approvals. */
+    @Column(name = "link_url", length = 512)
+    private String linkUrl;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -88,6 +92,9 @@ public class Notification {
 
     public String getDedupeKey() { return dedupeKey; }
     public void setDedupeKey(String dedupeKey) { this.dedupeKey = dedupeKey; }
+
+    public String getLinkUrl() { return linkUrl; }
+    public void setLinkUrl(String linkUrl) { this.linkUrl = linkUrl; }
 
     public Instant getCreatedAt() { return createdAt; }
 }

@@ -52,4 +52,24 @@ public interface LeaveApplicationRepository extends JpaRepository<LeaveApplicati
                                                        @Param("startDate") LocalDate startDate,
                                                        @Param("endDate") LocalDate endDate,
                                                        @Param("excludeEmployeeId") Long excludeEmployeeId);
+
+    @Query("""
+            select a from LeaveApplication a
+             where a.employeeId = :employeeId
+               and a.status in ('PENDING_APPROVAL', 'APPROVED', 'PENDING_RELIEF', 'SUBMITTED')
+               and a.startDate <= :endDate
+               and a.endDate >= :startDate
+               and (:excludeAppId is null or a.id <> :excludeAppId)
+            """)
+    List<LeaveApplication> findOverlappingForEmployee(@Param("employeeId") Long employeeId,
+                                                      @Param("startDate") LocalDate startDate,
+                                                      @Param("endDate") LocalDate endDate,
+                                                      @Param("excludeAppId") Long excludeAppId);
+
+    @Query("""
+            select a from LeaveApplication a
+             where a.status = 'PENDING_APPROVAL'
+               and a.updatedAt < :cutoff
+            """)
+    List<LeaveApplication> findPendingApprovalOlderThan(@Param("cutoff") java.time.Instant cutoff);
 }

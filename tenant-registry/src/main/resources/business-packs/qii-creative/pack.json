@@ -1,0 +1,150 @@
+{
+  "id": "qii_creative",
+  "displayName": "Qii Creative",
+  "settings": {
+    "businessPack": "qii_creative",
+    "employeeCodePattern": "^QII-\\d{4}$",
+    "employeeCodePrefix": "QII-",
+    "employeeCodeDigits": 4,
+    "employeeCodeMode": "AUTO",
+    "defaultCreateRoleCodes": ["EMPLOYEE"],
+    "defaultTimeZone": "Asia/Dhaka",
+    "workLogRule": "BLOCK",
+    "workLogMinPercent": 80,
+    "workLogPercentOf": "WORKED",
+    "workLogEditDaysBack": 7,
+    "workLogRules": {
+      "editDaysBack": 7,
+      "stepMinutes": 15,
+      "minMinutes": 15,
+      "maxMinutesPerDay": 960,
+      "overPunchGraceMinutes": 60,
+      "missingNotifyDays": 3
+    },
+    "taskRules": {
+      "createScope": "TEAM",
+      "statuses": ["OPEN", "IN_PROGRESS", "DONE"],
+      "openStatuses": ["OPEN", "IN_PROGRESS"]
+    },
+    "attendanceRules": {
+      "lateNightCheckoutMinutes": 360,
+      "zeroHoursWhenOpenMissing": true,
+      "holidayStatusCode": "HO",
+      "hourlyWorkedCode": "W",
+      "hourlyNoShiftCode": "NS",
+      "onLeaveCode": "OL"
+    },
+    "teamLeaveMaxOnLeave": 1,
+    "teamLeaveClashAction": "ALERT",
+    "payrollAbsenceCoverOrder": ["CASUAL", "ANNUAL"],
+    "notificationsPollSeconds": 30,
+    "monthlyReportDay": 1,
+    "approvalAuthority": {
+      "overrideRoleCodes": ["SUPERADMIN", "ADMIN"],
+      "overridePermissions": [],
+      "roleDefaults": {
+        "MANAGER": { "resolver": "REPORTING_MANAGER", "allowOverride": true },
+        "STORE_MANAGER": { "resolver": "REPORTING_MANAGER_AND_DESIGNATION", "allowOverride": true },
+        "HR": { "resolver": "DESIGNATION_OR_RBAC", "roleCodes": ["HR"], "allowOverride": false },
+        "ADMIN": { "resolver": "RBAC_ROLE", "roleCodes": ["ADMIN", "SUPERADMIN"], "allowOverride": true },
+        "SUPER_ADMIN": { "resolver": "RBAC_ROLE", "roleCodes": ["SUPERADMIN"], "allowOverride": true },
+        "*": { "resolver": "DESIGNATION_OR_RBAC", "allowOverride": false }
+      }
+    },
+    "reportingLine": {
+      "requireEffectiveDate": true,
+      "allowPastEffectiveDate": false,
+      "allowFutureEffectiveDate": true,
+      "maxPastDays": 0,
+      "maxFutureDays": 3650
+    },
+    "scheduleRules": {
+      "modes": ["FIXED", "HOURLY"],
+      "scopes": ["LOCATION", "TEAM", "EMPLOYEE"],
+      "resolveOrder": ["EMPLOYEE", "TEAM", "LOCATION"],
+      "defaultGraceMinutes": 15,
+      "defaultHalfDayHours": 4,
+      "defaultCheckoutCutoff": "23:59",
+      "requireUniqueScope": true,
+      "patternTemplates": {
+        "DAYS_5": {
+          "mode": "FIXED",
+          "workingDays": ["SUN", "MON", "TUE", "WED", "THU"],
+          "inheritLocationHours": true
+        },
+        "DAYS_6": {
+          "mode": "FIXED",
+          "workingDays": ["SUN", "MON", "TUE", "WED", "THU", "FRI"],
+          "inheritLocationHours": true
+        },
+        "HOURLY": {
+          "mode": "HOURLY",
+          "weeklyHours": 40
+        }
+      }
+    },
+    "employeeRules": {
+      "workEmailDomain": "qiicreative.com.au",
+      "workEmailDomainAliases": ["qiicreative.local"],
+      "employmentStatuses": ["Active", "On leave", "Inactive", "Resigned", "Terminated"],
+      "offboardingStatuses": ["Resigned", "Terminated"],
+      "inactiveStatuses": ["Inactive", "Resigned", "Terminated"],
+      "contractTypesRequiringEnd": ["CONTRACT", "CONTRACTOR", "INTERN"],
+      "workPatterns": ["LOCATION_DEFAULT", "DAYS_5", "DAYS_6", "HOURLY"],
+      "documentTypes": ["Contract", "NDA", "Agreement", "ID copy", "Certificate", "Other"],
+      "selfEditableFields": ["phone", "personalEmail", "address", "emergencyName", "emergencyRelationship", "emergencyPhone"],
+      "employmentHistoryFields": [
+        "fullName", "email", "preferredName", "jobTitle", "departmentId", "designationId",
+        "managerId", "teamId", "locationId", "employmentType", "startDate", "probationEnd",
+        "contractEnd", "payCurrency", "workPattern", "baseSalary", "hourlyRate", "status",
+        "phone", "personalEmail", "address", "emergencyName", "emergencyRelationship",
+        "emergencyPhone", "exitDate", "exitReason"
+      ],
+      "requiredForActive": ["fullName", "email", "departmentId", "locationId", "startDate", "managerId"],
+      "requireManagerOnCreate": true,
+      "requireOffboardingChecklist": true,
+      "requireExitDate": true,
+      "requireExitReason": true,
+      "requireReportReassignment": true
+    }
+  },
+  "leavePolicy": {
+    "annualDays": 14,
+    "workWeekDays": 5,
+    "workingDays": ["SUN", "MON", "TUE", "WED", "THU"],
+    "unionNoticeDays": 0,
+    "nonUnionNoticeDays": 0,
+    "requireCoverageCheck": false,
+    "approvalChain": [
+      { "step": 1, "role": "MANAGER", "resolver": "REPORTING_MANAGER", "allowOverride": true },
+      { "step": 2, "role": "HR", "resolver": "DESIGNATION_OR_RBAC", "allowOverride": false }
+    ],
+    "noticeMode": "NONE",
+    "defaultNoticeDays": 0,
+    "coverageMode": "NONE",
+    "locationField": null,
+    "shiftField": null,
+    "requireReliefOnCoverageFail": false,
+    "defaultLeaveTypeCode": "CASUAL"
+  },
+  "fieldDefinitions": [
+    {
+      "fieldName": "gender",
+      "storageType": "JSONB",
+      "jsonbPath": "custom_fields.gender",
+      "filterable": true,
+      "indexedFlag": false,
+      "requiredFlag": false,
+      "uniqueActive": false
+    },
+    {
+      "fieldName": "country",
+      "storageType": "JSONB",
+      "jsonbPath": "custom_fields.country",
+      "filterable": true,
+      "indexedFlag": false,
+      "requiredFlag": false,
+      "uniqueActive": false
+    }
+  ]
+}

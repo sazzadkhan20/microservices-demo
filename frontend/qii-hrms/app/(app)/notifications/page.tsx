@@ -1,6 +1,7 @@
 "use client";
 
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorNote, Loading } from "@/components/ui/QueryState";
@@ -8,7 +9,12 @@ import { Tabs } from "@/components/ui/Tabs";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import { fmtDateTime, humanize } from "@/lib/format";
-import { notificationSchema, springPageSchema, type NotificationRow } from "@/lib/schemas/hrms";
+import {
+  notificationSchema,
+  resolveNotificationHref,
+  springPageSchema,
+  type NotificationRow,
+} from "@/lib/schemas/hrms";
 
 const PAGE_SIZE = 20;
 const pageSchema = springPageSchema(notificationSchema);
@@ -16,6 +22,7 @@ const pageSchema = springPageSchema(notificationSchema);
 export default function NotificationsPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const router = useRouter();
   const [page, setPage] = useState(0); // notification-service pages are 0-based
   const [filter, setFilter] = useState("all");
 
@@ -35,7 +42,7 @@ export default function NotificationsPage() {
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["notifications"] });
     void qc.invalidateQueries({ queryKey: ["notifications-unread"] });
-    void qc.invalidateQueries({ queryKey: ["notif-home"] });
+    void qc.invalidateQueries({ queryKey: ["notifications", "home"] });
   };
 
   const markOne = useMutation({
@@ -54,6 +61,18 @@ export default function NotificationsPage() {
     onError: (e) => toast.error(e),
   });
 
+  const openNotification = async (n: NotificationRow) => {
+    const href = resolveNotificationHref(n);
+    if (!n.readFlag) {
+      try {
+        await markOne.mutateAsync(n.id);
+      } catch {
+        // still navigate if mark-read fails
+      }
+    }
+    if (href) router.push(href);
+  };
+
   const rows: NotificationRow[] = list.data?.content ?? [];
   const unreadOnPage = rows.filter((n) => !n.readFlag);
   const shown = filter === "unread" ? unreadOnPage : rows;
@@ -64,7 +83,7 @@ export default function NotificationsPage() {
     <div className="stack">
       <PageHeader
         title="Notifications"
-        subtitle="Approvals, leave decisions and system messages."
+        subtitle="Approvals, leave decisions and system messages. Click a notification to open the related page."
         actions={
           <>
             <button type="button" className="btn" onClick={() => refresh()}>
@@ -101,39 +120,56 @@ export default function NotificationsPage() {
       ) : null}
 
       <div className="stack">
-        {shown.map((n) => (
-          <div
-            key={n.id}
-            className="card"
-            style={{
-              padding: 14,
-              borderLeft: n.readFlag ? undefined : "3px solid var(--accent)",
-              opacity: n.readFlag ? 0.8 : 1,
-            }}
-          >
-            <div className="row between" style={{ alignItems: "flex-start" }}>
-              <div className="stack" style={{ gap: 4, flex: 1, minWidth: 220 }}>
-                <div className="row">
-                  <b>{n.title || "Notification"}</b>
-                  {n.category ? <span className="pill info">{humanize(n.category)}</span> : null}
-                  {!n.readFlag ? <span className="pill acc">New</span> : null}
+        {shown.map((n) => {
+          const href = resolveNotificationHref(n);
+          return (
+            <div
+              key={n.id}
+              className="card"
+              role={href ? "link" : undefined}
+              tabIndex={href ? 0 : undefined}
+              onClick={() => void openNotification(n)}
+              onKeyDown={(e) => {
+                if ((e.key === "Enter" || e.key === " ") && href) {
+                  e.preventDefault();
+                  void openNotification(n);
+                }
+              }}
+              style={{
+                padding: 14,
+                borderLeft: n.readFlag ? undefined : "3px solid var(--accent)",
+                opacity: n.readFlag ? 0.8 : 1,
+                cursor: href ? "pointer" : "default",
+              }}
+            >
+              <div className="row between" style={{ alignItems: "flex-start" }}>
+                <div className="stack" style={{ gap: 4, flex: 1, minWidth: 220 }}>
+                  <div className="row">
+                    <b>{n.title || "Notification"}</b>
+                    {n.category ? <span className="pill info">{humanize(n.category)}</span> : null}
+                    {!n.readFlag ? <span className="pill acc">New</span> : null}
+                    {href ? <span className="muted small">Open →</span> : null}
+                  </div>
+                  {n.body ? <p className="muted">{n.body}</p> : null}
+                  <span className="muted small">{fmtDateTime(n.createdAt)}</span>
                 </div>
-                {n.body ? <p className="muted">{n.body}</p> : null}
-                <span className="muted small">{fmtDateTime(n.createdAt)}</span>
+                {!n.readFlag ? (
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={markOne.isPending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      markOne.mutate(n.id);
+                    }}
+                  >
+                    Mark read
+                  </button>
+                ) : null}
               </div>
-              {!n.readFlag ? (
-                <button
-                  type="button"
-                  className="btn sm"
-                  disabled={markOne.isPending}
-                  onClick={() => markOne.mutate(n.id)}
-                >
-                  Mark read
-                </button>
-              ) : null}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {totalPages > 1 ? (

@@ -91,7 +91,8 @@ public class NotificationController {
                 req.title(),
                 req.body(),
                 req.category(),
-                req.dedupeKey()
+                req.dedupeKey(),
+                req.linkUrl()
         );
         return ResponseEntity.status(HttpStatus.CREATED).body(service.create(tenantId, bound));
     }

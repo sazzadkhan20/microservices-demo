@@ -29,6 +29,10 @@ public class WorkTask {
     @Column(name = "external_ref", length = 64)
     private String externalRef;
 
+    /** LOW | MEDIUM | HIGH — separate from externalRef (project-module id, FR-TSK-04). */
+    @Column(name = "priority", length = 16)
+    private String priority;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -51,6 +55,9 @@ public class WorkTask {
 
     public String getExternalRef() { return externalRef; }
     public void setExternalRef(String externalRef) { this.externalRef = externalRef; }
+
+    public String getPriority() { return priority; }
+    public void setPriority(String priority) { this.priority = priority; }
 
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }

@@ -24,11 +24,13 @@ export default function AuditPage() {
   const { can } = useAuth();
   const dir = useDirectory(can("employees", "view"));
   const [actor, setActor] = useState("");
+  const [action, setAction] = useState("");
   const [entity, setEntity] = useState("");
   const [open, setOpen] = useState<AuditRow | null>(null);
 
   const filters: Record<string, string> = {};
   if (actor) filters.actorEmployeeId = actor;
+  if (action.trim()) filters.action = action.trim().toUpperCase();
   if (entity.trim()) filters.entity = `*${entity.trim()}*`; // backend filter syntax: *text* = contains
 
   const columns: Column<AuditRow>[] = [
@@ -83,6 +85,14 @@ export default function AuditPage() {
                 ))}
               </select>
             ) : null}
+            <input
+              type="search"
+              aria-label="Action"
+              placeholder="Action, e.g. CREATE"
+              value={action}
+              onChange={(e) => setAction(e.target.value)}
+              style={{ width: 160 }}
+            />
             <input
               type="search"
               aria-label="Record type"

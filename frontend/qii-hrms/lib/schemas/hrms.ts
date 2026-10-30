@@ -108,7 +108,7 @@ export const correctionSchema = z
   .passthrough();
 export type Correction = z.infer<typeof correctionSchema>;
 
-/** NotificationResponse */
+/** NotificationResponse — linkUrl is an in-app path for click-through. */
 export const notificationSchema = z
   .object({
     id,
@@ -116,10 +116,41 @@ export const notificationSchema = z
     body: maybe(z.string()),
     category: maybe(z.string()),
     readFlag: z.boolean().optional(),
+    linkUrl: maybe(z.string()),
     createdAt: z.any().optional(),
   })
   .passthrough();
 export type NotificationRow = z.infer<typeof notificationSchema>;
+
+/** Safe in-app path only (no protocol / host). Falls back by category. */
+export function resolveNotificationHref(n: {
+  linkUrl?: string | null;
+  category?: string | null;
+}): string | null {
+  const raw = (n.linkUrl ?? "").trim();
+  if (raw.startsWith("/") && !raw.startsWith("//") && !raw.includes("://")) {
+    return raw.split("#")[0].split("?")[0] || null;
+  }
+  const cat = (n.category ?? "").trim().toUpperCase();
+  switch (cat) {
+    case "LEAVE":
+      return "/leave";
+    case "WORKLOG":
+      return "/work-log";
+    case "PAYROLL":
+      return "/payroll";
+    case "ATTENDANCE":
+      return "/attendance";
+    case "APPROVAL":
+    case "APPROVALS":
+      return "/approvals";
+    case "CHECKLIST":
+    case "CHECKLISTS":
+      return "/checklists";
+    default:
+      return null;
+  }
+}
 
 /** Spring Data `Page` envelope returned by notification-service (0-based). */
 export const springPageSchema = <T extends z.ZodType>(item: T) =>

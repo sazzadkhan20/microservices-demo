@@ -1,0 +1,24 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-014-attendance-correction-originals
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - columnExists:
+                tableName: attendance_correction
+                columnName: original_check_in
+      changes:
+        - addColumn:
+            tableName: attendance_correction
+            columns:
+              - column:
+                  name: original_check_in
+                  type: TIMESTAMP WITH TIME ZONE
+                  remarks: "Punch times before correction — kept for audit (FR-ATT-07)"
+              - column:
+                  name: original_check_out
+                  type: TIMESTAMP WITH TIME ZONE
+              - column:
+                  name: original_status_code
+                  type: VARCHAR(8)

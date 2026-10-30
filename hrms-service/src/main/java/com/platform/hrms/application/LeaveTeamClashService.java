@@ -18,6 +18,8 @@ import java.util.Locale;
 @Service
 public class LeaveTeamClashService {
 
+    public record ClashResult(boolean blocked, boolean alert, String message) {}
+
     private final TeamRepository teamRepository;
     private final EmployeeRepository employeeRepository;
     private final LeaveApplicationRepository applicationRepository;
@@ -31,31 +33,43 @@ public class LeaveTeamClashService {
         this.applicationRepository = applicationRepository;
     }
 
-    public void enforce(Employee employee, LocalDate start, LocalDate end) {
+    /**
+     * Returns a ClashResult (blocked/alert/none). Callers decide what to do.
+     */
+    public ClashResult check(Employee employee, LocalDate start, LocalDate end) {
         if (employee.getTeamId() == null) {
-            return;
+            return new ClashResult(false, false, null);
         }
         Team team = teamRepository.findById(employee.getTeamId()).orElse(null);
         if (team == null || team.getMaxOnLeave() <= 0) {
-            return;
+            return new ClashResult(false, false, null);
         }
         List<Long> teammateIds = employeeRepository.findByTeamIdAndActiveTrue(team.getId()).stream()
                 .map(Employee::getId)
                 .toList();
         if (teammateIds.isEmpty()) {
-            return;
+            return new ClashResult(false, false, null);
         }
         List<LeaveApplication> overlapping = applicationRepository.findOverlappingForEmployees(
                 teammateIds, start, end, employee.getId());
         long distinctOnLeave = overlapping.stream().map(LeaveApplication::getEmployeeId).distinct().count();
         if (distinctOnLeave < team.getMaxOnLeave()) {
-            return;
+            return new ClashResult(false, false, null);
         }
         String action = team.getClashAction() == null ? "ALERT" : team.getClashAction().trim().toUpperCase(Locale.ROOT);
+        String msg = "Team clash: max_on_leave=" + team.getMaxOnLeave()
+                + " already reached for team " + team.getCode();
         if ("BLOCK".equals(action)) {
-            throw new IllegalStateException(
-                    "Team clash: max_on_leave=" + team.getMaxOnLeave()
-                            + " already reached for team " + team.getCode());
+            return new ClashResult(true, false, msg);
+        }
+        return new ClashResult(false, true, msg);
+    }
+
+    /** Legacy method kept for any callers — throws on BLOCK, returns normally on ALERT. */
+    public void enforce(Employee employee, LocalDate start, LocalDate end) {
+        ClashResult result = check(employee, start, end);
+        if (result.blocked()) {
+            throw new IllegalStateException(result.message());
         }
     }
 }

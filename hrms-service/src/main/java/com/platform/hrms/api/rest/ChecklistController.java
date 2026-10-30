@@ -3,7 +3,9 @@ package com.platform.hrms.api.rest;
 import com.platform.common.security.AuthContext;
 import com.platform.hrms.application.AuditService;
 import com.platform.hrms.application.RbacService;
+import com.platform.hrms.domain.Employee;
 import com.platform.hrms.domain.TenantSettings;
+import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
 import com.platform.hrms.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.hrms.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -31,6 +34,7 @@ import java.util.Map;
  * Onboarding/offboarding checklists — templates from tenant_settings.checklists,
  * with built-in defaults when unset (prototype parity).
  * Writes persist the whole checklists array back into tenant_settings.settings.
+ * FR-CL-02/03 enhancements: ownerType, dueOffsetDays, completedBy, completedAt, assign.
  */
 @RestController
 @RequestMapping("/api/checklists")
@@ -40,19 +44,22 @@ public class ChecklistController {
     private static final String SETTINGS_KEY = "checklists";
 
     private final TenantSettingsRepository settingsRepository;
+    private final EmployeeRepository employeeRepository;
     private final RbacService rbacService;
     private final AuditService auditService;
 
     public ChecklistController(TenantSettingsRepository settingsRepository,
+                               EmployeeRepository employeeRepository,
                                RbacService rbacService,
                                AuditService auditService) {
         this.settingsRepository = settingsRepository;
+        this.employeeRepository = employeeRepository;
         this.rbacService = rbacService;
         this.auditService = auditService;
     }
 
     @GetMapping
-    @RequiresPermission(feature = "org", action = "view")
+    @RequiresPermission(feature = "checklists", action = "view")
     @Operation(summary = "List onboarding/offboarding checklists")
     public List<Map<String, Object>> list() {
         return loadChecklists(settingsRepository.findAll().stream().findFirst().orElse(null));
@@ -61,9 +68,10 @@ public class ChecklistController {
     @PostMapping("/templates")
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
-    @RequiresPermission(feature = "org", action = "manage")
+    @RequiresPermission(feature = "checklists", action = "create")
     @Operation(summary = "Create checklist template",
-            description = "Body: name, type (ONBOARDING|OFFBOARDING|custom), items[] of {title, required} or plain strings")
+            description = "Body: name, type (ONBOARDING|OFFBOARDING|custom), "
+                    + "items[] of {title, required, ownerType (HR|MANAGER|EMPLOYEE), dueOffsetDays}")
     public Map<String, Object> createTemplate(@RequestBody Map<String, Object> body) {
         Object nameObj = body.get("name");
         if (nameObj == null || String.valueOf(nameObj).isBlank()) {
@@ -80,9 +88,16 @@ public class ChecklistController {
                 if (title == null || String.valueOf(title).isBlank()) {
                     throw new IllegalArgumentException("each item requires a title");
                 }
-                items.add(item(String.valueOf(title).trim(), Boolean.parseBoolean(String.valueOf(m.get("required"))), false));
+                boolean required = Boolean.parseBoolean(String.valueOf(m.get("required")));
+                String ownerType = m.get("ownerType") != null
+                        ? String.valueOf(m.get("ownerType")).toUpperCase(Locale.ROOT) : null;
+                Integer dueOffsetDays = null;
+                if (m.get("dueOffsetDays") instanceof Number n) {
+                    dueOffsetDays = n.intValue();
+                }
+                items.add(templateItem(String.valueOf(title).trim(), required, ownerType, dueOffsetDays));
             } else if (it != null && !String.valueOf(it).isBlank()) {
-                items.add(item(String.valueOf(it).trim(), false, false));
+                items.add(templateItem(String.valueOf(it).trim(), false, null, null));
             } else {
                 throw new IllegalArgumentException("each item requires a title");
             }
@@ -97,19 +112,22 @@ public class ChecklistController {
         all.add(created);
         persist(row, all);
         auditService.record(AuthContext.getEmployeeId(), "CREATE", "Checklist",
-                String.valueOf(created.get("id")), null, Map.of("name", created.get("name"), "type", type));
+                String.valueOf(created.get("id")), null,
+                Map.of("name", created.get("name"), "type", type));
         return created;
     }
 
     @PutMapping("/{checklistId}/items/{itemIndex}")
     @Transactional
-    @Operation(summary = "Tick / untick a checklist item (body {completed:boolean}); org:view or org:manage")
+    @Operation(summary = "FR-CL-03 Tick/untick a checklist item; sets completedBy/completedAt when ticked, clears when unticked")
     public Map<String, Object> tickItem(@PathVariable String checklistId,
                                         @PathVariable int itemIndex,
                                         @RequestBody Map<String, Object> body) {
         Long actor = AuthContext.requireEmployeeId();
-        if (!rbacService.hasPermission(actor, "org", "view") && !rbacService.hasPermission(actor, "org", "manage")) {
-            throw new IllegalStateException("Forbidden: requires org:view or org:manage");
+        if (!rbacService.hasPermission(actor, "checklists", "edit")
+                && !rbacService.hasPermission(actor, "checklists", "create")
+                && !rbacService.hasPermission(actor, "checklists", "view")) {
+            throw new IllegalStateException("Forbidden: requires checklists:view/edit");
         }
         if (!(body.get("completed") instanceof Boolean completed)) {
             throw new IllegalArgumentException("completed (boolean) is required");
@@ -127,6 +145,15 @@ public class ChecklistController {
         Map<String, Object> item = items.get(itemIndex);
         Object before = item.get("completed");
         item.put("completed", completed);
+        if (completed) {
+            // FR-CL-03: record who completed and when
+            item.put("completedBy", actor);
+            item.put("completedAt", Instant.now().toString());
+        } else {
+            // FR-CL-03: clear completion metadata when unticked
+            item.remove("completedBy");
+            item.remove("completedAt");
+        }
         target.put("items", items);
         recount(target);
         persist(row, all);
@@ -136,7 +163,102 @@ public class ChecklistController {
         return target;
     }
 
+    /**
+     * FR-CL-02 — Instantiate a checklist from a template and link it to an employee.
+     * Body: {employeeId, type: ONBOARDING|OFFBOARDING, templateId?, startOrExitDate?}
+     * Each item receives ownerEmployeeId derived from ownerType and dueDate = baseDate + dueOffsetDays.
+     */
+    @PostMapping("/assign")
+    @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
+    @RequiresPermission(feature = "checklists", action = "create")
+    @Operation(summary = "FR-CL-02 Assign/instantiate a checklist for an employee from a matching template")
+    public Map<String, Object> assign(@RequestBody Map<String, Object> body) {
+        Long actor = AuthContext.requireEmployeeId();
+
+        Object empObj = body.get("employeeId");
+        if (empObj == null) throw new IllegalArgumentException("employeeId is required");
+        Long employeeId = Long.valueOf(String.valueOf(empObj));
+
+        Employee employee = employeeRepository.findById(employeeId)
+                .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + employeeId));
+
+        Object typeObj = body.get("type");
+        String type = typeObj == null || String.valueOf(typeObj).isBlank()
+                ? "ONBOARDING" : String.valueOf(typeObj).trim().toUpperCase(Locale.ROOT);
+
+        Object dateObj = body.get("startOrExitDate");
+        LocalDate baseDate = dateObj != null && !String.valueOf(dateObj).isBlank()
+                ? LocalDate.parse(String.valueOf(dateObj)) : LocalDate.now();
+
+        TenantSettings row = settingsRow();
+        List<Map<String, Object>> allChecklists = loadChecklists(row);
+
+        // Find template: by templateId if given, else first matching type
+        Map<String, Object> template = null;
+        Object templateIdObj = body.get("templateId");
+        if (templateIdObj != null && !String.valueOf(templateIdObj).isBlank()) {
+            String tid = String.valueOf(templateIdObj);
+            template = allChecklists.stream()
+                    .filter(c -> tid.equals(String.valueOf(c.get("id"))) && c.get("employeeId") == null)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Template not found: " + tid));
+        } else {
+            String finalType = type;
+            template = allChecklists.stream()
+                    .filter(c -> finalType.equalsIgnoreCase(String.valueOf(c.get("type")))
+                            && c.get("employeeId") == null)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("No template found for type: " + type));
+        }
+
+        List<Map<String, Object>> srcItems = itemsOf(template);
+        List<Map<String, Object>> assignedItems = new ArrayList<>();
+        for (Map<String, Object> src : srcItems) {
+            Map<String, Object> it = new LinkedHashMap<>(src);
+            it.put("completed", false);
+            it.remove("completedBy");
+            it.remove("completedAt");
+
+            // Resolve ownerEmployeeId from ownerType
+            String ownerType = src.get("ownerType") != null
+                    ? String.valueOf(src.get("ownerType")).toUpperCase(Locale.ROOT) : null;
+            Long ownerEmployeeId = resolveOwner(ownerType, actor, employee);
+            if (ownerEmployeeId != null) {
+                it.put("ownerEmployeeId", ownerEmployeeId);
+            }
+
+            // Resolve dueDate = baseDate + dueOffsetDays
+            if (src.get("dueOffsetDays") instanceof Number n) {
+                it.put("dueDate", baseDate.plusDays(n.longValue()).toString());
+            }
+            assignedItems.add(it);
+        }
+
+        String newId = nextId(allChecklists);
+        Map<String, Object> assigned = checklist(newId,
+                String.valueOf(template.get("name")), type, "OPEN", assignedItems);
+        assigned.put("employeeId", employeeId);
+        assigned.put("baseDate", baseDate.toString());
+        allChecklists.add(assigned);
+        persist(row, allChecklists);
+
+        auditService.record(actor, "CREATE", "Checklist", newId,
+                null, Map.of("employeeId", employeeId, "type", type, "templateId", template.get("id")));
+        return assigned;
+    }
+
     // ---- persistence helpers -------------------------------------------------
+
+    private Long resolveOwner(String ownerType, Long actor, Employee employee) {
+        if (ownerType == null) return null;
+        return switch (ownerType) {
+            case "HR" -> actor;
+            case "MANAGER" -> employee.getManagerId();
+            case "EMPLOYEE" -> employee.getId();
+            default -> null;
+        };
+    }
 
     private TenantSettings settingsRow() {
         return settingsRepository.findAll().stream().findFirst().orElseGet(() -> {
@@ -211,18 +333,18 @@ public class ChecklistController {
         return List.of(
                 checklist("1", "New Hire Onboarding", "ONBOARDING", "OPEN",
                         List.of(
-                                item("Laptop / workstation ready", true, false),
-                                item("Email & SSO account created", true, false),
-                                item("HRMS profile + role assigned", true, false),
-                                item("Team introduction scheduled", false, false),
-                                item("Policy acknowledgment signed", true, false)
+                                templateItem("Laptop / workstation ready", true, "HR", 0),
+                                templateItem("Email & SSO account created", true, "HR", 1),
+                                templateItem("HRMS profile + role assigned", true, "HR", 2),
+                                templateItem("Team introduction scheduled", false, "MANAGER", 3),
+                                templateItem("Policy acknowledgment signed", true, "EMPLOYEE", 7)
                         )),
                 checklist("2", "Employee Offboarding", "OFFBOARDING", "OPEN",
                         List.of(
-                                item("Asset return checklist", true, false),
-                                item("Access revoked (email/SSO/VPN)", true, false),
-                                item("Final payroll / leave settlement", true, false),
-                                item("Exit interview completed", false, false)
+                                templateItem("Asset return checklist", true, "EMPLOYEE", 0),
+                                templateItem("Access revoked (email/SSO/VPN)", true, "HR", 1),
+                                templateItem("Final payroll / leave settlement", true, "HR", 3),
+                                templateItem("Exit interview completed", false, "MANAGER", -7)
                         ))
         );
     }
@@ -240,11 +362,15 @@ public class ChecklistController {
         return m;
     }
 
-    private static Map<String, Object> item(String title, boolean required, boolean completed) {
+    /** Template item — includes ownerType and dueOffsetDays; no completedBy/At. */
+    private static Map<String, Object> templateItem(String title, boolean required,
+                                                     String ownerType, Integer dueOffsetDays) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("title", title);
         m.put("required", required);
-        m.put("completed", completed);
+        m.put("completed", false);
+        if (ownerType != null) m.put("ownerType", ownerType);
+        if (dueOffsetDays != null) m.put("dueOffsetDays", dueOffsetDays);
         return m;
     }
 }

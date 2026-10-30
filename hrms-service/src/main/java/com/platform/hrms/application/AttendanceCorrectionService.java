@@ -3,6 +3,7 @@ package com.platform.hrms.application;
 import com.platform.common.security.AuthContext;
 import com.platform.hrms.domain.AttendanceCorrection;
 import com.platform.hrms.infrastructure.persistence.AttendanceCorrectionRepository;
+import com.platform.hrms.infrastructure.persistence.AttendanceRecordRepository;
 import com.platform.hrms.infrastructure.persistence.EmployeeRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,16 +22,19 @@ import java.util.Map;
 public class AttendanceCorrectionService {
 
     private final AttendanceCorrectionRepository repository;
+    private final AttendanceRecordRepository attendanceRecordRepository;
     private final EmployeeRepository employeeRepository;
     private final AttendanceService attendanceService;
     private final AuditService auditService;
 
     public AttendanceCorrectionService(
             AttendanceCorrectionRepository repository,
+            AttendanceRecordRepository attendanceRecordRepository,
             EmployeeRepository employeeRepository,
             AttendanceService attendanceService,
             AuditService auditService) {
         this.repository = repository;
+        this.attendanceRecordRepository = attendanceRecordRepository;
         this.employeeRepository = employeeRepository;
         this.attendanceService = attendanceService;
         this.auditService = auditService;
@@ -49,7 +53,7 @@ public class AttendanceCorrectionService {
             throw new IllegalArgumentException("requestedCheckIn or requestedCheckOut is required");
         }
         if (checkIn != null && checkOut != null && !checkOut.isAfter(checkIn)) {
-            throw new IllegalArgumentException("requestedCheckOut must be after requestedCheckIn");
+            throw new IllegalArgumentException("requestedCheckOut must be after requestedCheckIn (overnight OK)");
         }
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("reason is required");
@@ -65,6 +69,12 @@ public class AttendanceCorrectionService {
         c.setWorkDate(workDate);
         c.setRequestedCheckIn(checkIn);
         c.setRequestedCheckOut(checkOut);
+        // FR-ATT-07 — keep the original punches on the correction row (record is overwritten on approve).
+        attendanceRecordRepository.findByEmployeeIdAndWorkDate(actorId, workDate).ifPresent(rec -> {
+            c.setOriginalCheckIn(rec.getCheckInAt());
+            c.setOriginalCheckOut(rec.getCheckOutAt());
+            c.setOriginalStatusCode(rec.getStatusCode());
+        });
         c.setReason(trim(reason.trim(), 512));
         c.setStatus(AttendanceCorrection.STATUS_PENDING);
         c.setCreatedAt(now);
@@ -147,6 +157,9 @@ public class AttendanceCorrectionService {
         m.put("workDate", c.getWorkDate().toString());
         m.put("requestedCheckIn", c.getRequestedCheckIn() == null ? null : c.getRequestedCheckIn().toString());
         m.put("requestedCheckOut", c.getRequestedCheckOut() == null ? null : c.getRequestedCheckOut().toString());
+        m.put("originalCheckIn", c.getOriginalCheckIn() == null ? null : c.getOriginalCheckIn().toString());
+        m.put("originalCheckOut", c.getOriginalCheckOut() == null ? null : c.getOriginalCheckOut().toString());
+        m.put("originalStatusCode", c.getOriginalStatusCode());
         m.put("reason", c.getReason());
         m.put("status", c.getStatus());
         m.put("reviewerId", c.getReviewerId());

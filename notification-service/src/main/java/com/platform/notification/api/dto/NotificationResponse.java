@@ -14,5 +14,6 @@ public record NotificationResponse(
         String category,
         boolean readFlag,
         String dedupeKey,
+        String linkUrl,
         Instant createdAt
 ) {}

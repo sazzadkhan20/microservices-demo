@@ -61,7 +61,7 @@ function Events() {
   const toast = useToast();
   const bag = useQuery({
     queryKey: ["settings-notifications"],
-    queryFn: ({ signal }) => apiFetch(api.hrms("settings/notifications"), { schema: bagSchema, signal }),
+    queryFn: ({ signal }) => apiFetch(api.hrms("notification-settings"), { schema: bagSchema, signal }),
   });
   const [draft, setDraft] = useState<Record<string, boolean>>({});
 
@@ -74,7 +74,7 @@ function Events() {
       // The endpoint replaces the whole bag, so send every known event plus any unknown keys already stored.
       const next: Record<string, unknown> = { ...stored };
       for (const e of EVENTS) next[e.key] = isOn(e.key, e.def);
-      return apiFetch(api.hrms("settings/notifications"), { method: "PUT", body: next });
+      return apiFetch(api.hrms("notification-settings"), { method: "PUT", body: next });
     },
     onSuccess: () => {
       toast.show("Notification settings saved");

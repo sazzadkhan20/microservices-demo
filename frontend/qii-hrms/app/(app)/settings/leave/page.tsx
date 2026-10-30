@@ -27,6 +27,8 @@ const TABS = [
 ];
 
 const ATTACH = ["NEVER", "ALWAYS", "AFTER_DAYS"];
+const CARRY_MODES = ["NONE", "ALL", "CAP"] as const;
+type CarryMode = (typeof CARRY_MODES)[number];
 
 function chainRoles(v: unknown): string {
   try {
@@ -57,6 +59,13 @@ const catSchema = z.object({
   paid: z.boolean(),
   halfDayAllowed: z.boolean(),
   active: z.boolean(),
+  // period & carry
+  periodStart: z.string().optional(),
+  periodEnd: z.string().optional(),
+  carryMode: z.enum(["NONE", "ALL", "CAP"]).default("NONE"),
+  carryCapDays: z.coerce.number().min(0).default(0),
+  carryExpiryDate: z.string().optional(),
+  proRata: z.boolean().default(false),
 });
 
 export default function LeaveSetupPage() {
@@ -92,11 +101,19 @@ function Categories() {
     paid: true,
     halfDayAllowed: true,
     active: true,
+    // period & carry
+    periodStart: "",
+    periodEnd: "",
+    carryMode: "NONE" as CarryMode,
+    carryCapDays: "0",
+    carryExpiryDate: "",
+    proRata: false,
   };
   const [editing, setEditing] = useState<Rec | "new" | null>(null);
   const [form, setForm] = useState(blank);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
+  const [renewTargetId, setRenewTargetId] = useState<string | number | null>(null);
 
   function openFor(r: Rec | "new") {
     setErr("");
@@ -117,6 +134,12 @@ function Categories() {
             paid: Boolean(r.paid),
             halfDayAllowed: Boolean(r.halfDayAllowed),
             active: r.active !== false,
+            periodStart: str(r.periodStart, ""),
+            periodEnd: str(r.periodEnd, ""),
+            carryMode: (str(r.carryMode, "NONE") as CarryMode) || "NONE",
+            carryCapDays: String(r.carryCapDays ?? 0),
+            carryExpiryDate: str(r.carryExpiryDate, ""),
+            proRata: Boolean(r.proRata),
           },
     );
     setEditing(r);
@@ -128,11 +151,38 @@ function Categories() {
         ? apiFetch(api.hrms(`leave-categories/${editing.id}`), { method: "PUT", body })
         : apiFetch(api.hrms("leave-categories"), { method: "POST", body }),
     onSuccess: () => {
-      toast.show(editing === "new" ? "Category created" : "Category saved");
+      toast.show(editing === "new" ? "Category created — available as a leave type to request" : "Category saved");
       setEditing(null);
       void qc.invalidateQueries({ queryKey: ["leave-categories"] });
+      // Apply forms use leave-types (kept in sync with categories on the server).
+      void qc.invalidateQueries({ queryKey: ["leave-types"] });
+      void qc.invalidateQueries({ queryKey: ["lookup", "leave-types"] });
     },
     onError: (e: Error) => setErr(e.message),
+  });
+
+  const renew = useMutation({
+    mutationFn: (id: string | number) => {
+      const nextYear = new Date().getFullYear() + 1;
+      return apiFetch(api.hrms(`leave-categories/${id}/renew`), {
+        method: "POST",
+        body: {
+          periodStart: `${nextYear}-01-01`,
+          periodEnd: `${nextYear}-12-31`,
+        },
+      });
+    },
+    onSuccess: () => {
+      toast.show("Category renewed for next year — new leave type is available to request");
+      setRenewTargetId(null);
+      void qc.invalidateQueries({ queryKey: ["leave-categories"] });
+      void qc.invalidateQueries({ queryKey: ["leave-types"] });
+      void qc.invalidateQueries({ queryKey: ["lookup", "leave-types"] });
+    },
+    onError: (e: Error) => {
+      toast.error(e);
+      setRenewTargetId(null);
+    },
   });
 
   function submit(e: FormEvent) {
@@ -163,6 +213,12 @@ function Categories() {
       paid: v.paid,
       halfDayAllowed: v.halfDayAllowed,
       active: v.active,
+      periodStart: v.periodStart || undefined,
+      periodEnd: v.periodEnd || undefined,
+      carryMode: v.carryMode,
+      carryCapDays: v.carryMode === "CAP" ? v.carryCapDays : undefined,
+      carryExpiryDate: v.carryExpiryDate || undefined,
+      proRata: v.proRata,
     });
   }
 
@@ -192,8 +248,36 @@ function Categories() {
           { key: "paid", header: "Paid", render: (r) => <span className={`pill ${r.paid ? "good" : "warn"}`}>{r.paid ? "Paid" : "Unpaid"}</span> },
           { key: "approvalChain", header: "Approval chain", render: (r) => chainRoles(r.approvalChain) || "Auto" },
           { key: "active", header: "State", render: (r) => <span className={`pill ${r.active ? "good" : ""}`}>{r.active ? "Active" : "Inactive"}</span> },
+          {
+            key: "renew_action",
+            header: "",
+            render: (r) =>
+              canManage ? (
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={renew.isPending}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenewTargetId(r.id as string | number);
+                  }}
+                >
+                  Renew
+                </button>
+              ) : null,
+          },
         ]}
       />
+      <ConfirmModal
+        open={renewTargetId !== null}
+        title="Renew leave category?"
+        confirmLabel="Renew"
+        busy={renew.isPending}
+        onCancel={() => setRenewTargetId(null)}
+        onConfirm={() => renewTargetId !== null && renew.mutate(renewTargetId)}
+      >
+        This will set the period to next calendar year ({new Date().getFullYear() + 1}) for this category.
+      </ConfirmModal>
       <Modal open={!!editing} onClose={() => setEditing(null)} wide title={editing === "new" ? "New leave category" : "Edit leave category"}>
         <form className="stack" onSubmit={submit} noValidate>
           <div className="form-grid">
@@ -228,12 +312,49 @@ function Categories() {
             <FormField label="Approval chain" full hint="Roles in order, comma-separated. Example: MANAGER, HR. Empty = auto-approved.">
               <input type="text" value={form.approvalChain} onChange={(e) => setForm({ ...form, approvalChain: e.target.value })} />
             </FormField>
+            <FormField label="Period start" hint="Leave accrual period start date">
+              <input type="date" value={form.periodStart} onChange={(e) => setForm({ ...form, periodStart: e.target.value })} />
+            </FormField>
+            <FormField label="Period end" hint="Leave accrual period end date">
+              <input type="date" value={form.periodEnd} onChange={(e) => setForm({ ...form, periodEnd: e.target.value })} />
+            </FormField>
+            <FormField label="Carry mode" hint="How unused days carry over">
+              <select
+                value={form.carryMode}
+                onChange={(e) => setForm({ ...form, carryMode: e.target.value as CarryMode })}
+              >
+                <option value="NONE">None — no carry-over</option>
+                <option value="ALL">All — carry all unused days</option>
+                <option value="CAP">Cap — carry up to a limit</option>
+              </select>
+            </FormField>
+            {form.carryMode === "CAP" ? (
+              <FormField label="Carry cap (days)" error={errors.carryCapDays}>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.5"
+                  value={form.carryCapDays}
+                  onChange={(e) => setForm({ ...form, carryCapDays: e.target.value })}
+                />
+              </FormField>
+            ) : null}
+            <FormField label="Carry expiry date" hint="Date by which carried days must be used">
+              <input
+                type="date"
+                value={form.carryExpiryDate}
+                onChange={(e) => setForm({ ...form, carryExpiryDate: e.target.value })}
+              />
+            </FormField>
             <div className="checks full">
               <label>
                 <input type="checkbox" checked={form.paid} onChange={(e) => setForm({ ...form, paid: e.target.checked })} /> Paid
               </label>
               <label>
                 <input type="checkbox" checked={form.halfDayAllowed} onChange={(e) => setForm({ ...form, halfDayAllowed: e.target.checked })} /> Half days allowed
+              </label>
+              <label>
+                <input type="checkbox" checked={form.proRata} onChange={(e) => setForm({ ...form, proRata: e.target.checked })} /> Pro-rata accrual
               </label>
               <label>
                 <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /> Active
@@ -614,7 +735,7 @@ function YearEnd() {
             </FormField>
           </div>
           {err ? <div className="notice bad">{err}</div> : null}
-          <div className="row">
+        <div className="row">
             <button type="submit" className="btn" disabled={!canManage || runPreview.isPending}>
               {runPreview.isPending ? "Previewing…" : "Preview"}
             </button>
@@ -626,7 +747,7 @@ function YearEnd() {
             >
               Confirm
             </button>
-          </div>
+        </div>
         </form>
       </section>
 
@@ -662,7 +783,7 @@ function YearEnd() {
                 )}
               </tbody>
             </table>
-          </div>
+      </div>
         </section>
       ) : null}
 

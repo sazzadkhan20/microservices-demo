@@ -4,7 +4,6 @@ import com.platform.common.security.AuthContext;
 import com.platform.hrms.api.dto.LeaveApplicationResponse;
 import com.platform.hrms.api.dto.LeaveDecisionRequest;
 import com.platform.hrms.application.LeaveApplicationService;
-import com.platform.hrms.infrastructure.persistence.LeaveApplicationRepository;
 import com.platform.hrms.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -15,7 +14,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
-import java.util.Locale;
 
 @RestController
 @RequestMapping("/api/approvals")
@@ -23,26 +21,18 @@ import java.util.Locale;
 public class ApprovalsController {
 
     private final LeaveApplicationService leaveApplicationService;
-    private final LeaveApplicationRepository applicationRepository;
 
-    public ApprovalsController(
-            LeaveApplicationService leaveApplicationService,
-            LeaveApplicationRepository applicationRepository) {
+    public ApprovalsController(LeaveApplicationService leaveApplicationService) {
         this.leaveApplicationService = leaveApplicationService;
-        this.applicationRepository = applicationRepository;
     }
 
     @GetMapping("/pending")
     @RequiresPermission(feature = "leave", action = "approve")
-    @Operation(summary = "List pending leave applications awaiting approval")
+    @Operation(summary = "Leave waiting on the current user for the active approval step",
+            description = "Filtered by leave:approve data scope AND step authority "
+                    + "(e.g. HR does not see items still waiting on the reporting manager).")
     public List<LeaveApplicationResponse> pending() {
-        return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
-                .filter(a -> {
-                    String s = a.getStatus() == null ? "" : a.getStatus().toUpperCase(Locale.ROOT);
-                    return s.contains("PENDING") || "SUBMITTED".equals(s) || "IN_REVIEW".equals(s);
-                })
-                .map(a -> leaveApplicationService.get(a.getId()))
-                .toList();
+        return leaveApplicationService.pendingForCaller();
     }
 
     @PostMapping("/{id}/{action}")

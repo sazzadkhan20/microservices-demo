@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -85,6 +86,16 @@ public class RegistryController {
             @PathVariable String tenantId) {
         platformAuth.requireAdmin(adminKey);
         return provisioningService.upgradePayrollSchema(tenantId);
+    }
+
+    @PostMapping("/tenants/{tenantId}/upgrade-rbac")
+    @Operation(summary = "Re-apply system role permission matrix without wiping data (X-Platform-Admin-Key)")
+    public Map<String, Object> upgradeRbac(
+            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey,
+            @PathVariable String tenantId,
+            @RequestParam(defaultValue = "qii_creative") String businessPack) {
+        platformAuth.requireAdmin(adminKey);
+        return provisioningService.upgradeRbacMatrix(tenantId, businessPack);
     }
 
     @PostMapping("/tenants/{tenantId}/upgrade-satellites")

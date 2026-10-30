@@ -1,31 +1,52 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState, type FormEvent } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/components/auth/AuthProvider";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { FormField } from "@/components/ui/FormField";
+import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ErrorNote } from "@/components/ui/QueryState";
 import { AttCode } from "@/components/ui/StatusPill";
 import { StatCard } from "@/components/ui/StatCard";
+import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import { useDepartments } from "@/lib/api/lookups";
+import { localRangeToIso } from "@/lib/attendance/punch";
 import { addDaysIso } from "@/lib/admin";
 import { fmtDate, fmtNumber, fmtTime, todayIso } from "@/lib/format";
 import { teamAttendanceListSchema, type TeamAttendanceRow } from "@/lib/schemas/admin";
 
 const GROUPS: { id: string; label: string; codes: string[] }[] = [
-  { id: "P", label: "Present", codes: ["P"] },
+  { id: "P", label: "Present", codes: ["P", "W"] },
   { id: "L", label: "Late", codes: ["L"] },
   { id: "HD", label: "Half day", codes: ["HD"] },
   { id: "A", label: "Absent", codes: ["A", "NC"] },
+  { id: "OL", label: "On leave", codes: ["OL"] },
 ];
 
 const codeOf = (r: TeamAttendanceRow) => String(r.statusCode ?? "").toUpperCase();
 
+type EditTarget = {
+  employeeId: string | number;
+  name: string;
+  workDate: string;
+  checkInLocal: string;
+  checkOutLocal: string;
+  reason: string;
+};
+
 export default function TeamAttendancePage() {
+  const { can, me } = useAuth();
+  const canEdit = can("attendance", "correct");
+  const qc = useQueryClient();
+  const toast = useToast();
   const [date, setDate] = useState(todayIso());
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
+  const [edit, setEdit] = useState<EditTarget | null>(null);
+  const [editErr, setEditErr] = useState("");
   const depts = useDepartments();
 
   const team = useQuery({
@@ -58,11 +79,64 @@ export default function TeamAttendancePage() {
 
   const isToday = date === todayIso();
 
+  const saveEdit = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch(api.hrms("attendance/correct"), { method: "POST", body }),
+    onSuccess: () => {
+      toast.show("Attendance updated");
+      setEdit(null);
+      setEditErr("");
+      void qc.invalidateQueries({ queryKey: ["team-attendance", date] });
+    },
+    onError: (e: Error) => setEditErr(e.message || "Save failed"),
+  });
+
+  function toLocalHm(iso: unknown, fallback: string) {
+    if (!iso) return fallback;
+    const d = new Date(String(iso));
+    if (Number.isNaN(d.getTime())) return fallback;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function openEdit(r: TeamAttendanceRow) {
+    if (String(r.employeeId) === String(me.employeeId)) {
+      toast.error(new Error("You cannot edit your own attendance"));
+      return;
+    }
+    setEdit({
+      employeeId: r.employeeId!,
+      name: String(r.employeeName ?? r.name ?? `#${r.employeeId}`),
+      workDate: date,
+      checkInLocal: toLocalHm(r.checkIn, "09:00"),
+      checkOutLocal: toLocalHm(r.checkOut, "18:00"),
+      reason: "",
+    });
+    setEditErr("");
+  }
+
+  function submitEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!edit) return;
+    if (edit.reason.trim().length < 3) {
+      setEditErr("Reason is required (min 3 characters)");
+      return;
+    }
+    const times = localRangeToIso(edit.workDate, edit.checkInLocal, edit.checkOutLocal);
+    saveEdit.mutate({
+      employeeId: Number(edit.employeeId),
+      workDate: edit.workDate,
+      checkInAt: times.requestedCheckIn,
+      checkOutAt: times.requestedCheckOut,
+      reason: edit.reason.trim(),
+    });
+  }
+
   return (
     <div className="stack">
       <PageHeader
         title="Team attendance"
-        subtitle="Who is in, late or absent on a day, for the people in your scope."
+        subtitle="Who is in, late or absent on a day — worked and logged hours for your scope."
         actions={
           <>
             <button type="button" className="btn" aria-label="Previous day" onClick={() => setDate(addDaysIso(date, -1))}>
@@ -123,14 +197,16 @@ export default function TeamAttendancePage() {
                 <th>Status</th>
                 <th>Check in</th>
                 <th>Check out</th>
-                <th className="n">Hours</th>
+                <th className="n">Worked</th>
+                <th className="n">Logged</th>
                 <th>Location</th>
+                {canEdit ? <th /> : null}
               </tr>
             </thead>
             <tbody>
               {shown.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="empty">
+                  <td colSpan={canEdit ? 9 : 8} className="empty">
                     {team.isLoading ? "Loading…" : "No one matches these filters"}
                   </td>
                 </tr>
@@ -149,7 +225,25 @@ export default function TeamAttendancePage() {
                     <td className="mono">{fmtTime(r.checkIn)}</td>
                     <td className="mono">{r.checkOut ? fmtTime(r.checkOut) : r.checkIn ? <span className="muted">Still in</span> : "—"}</td>
                     <td className="n">{r.totalHours != null && r.checkIn ? fmtNumber(r.totalHours) : "—"}</td>
+                    <td className="n">
+                      {(r as TeamAttendanceRow & { loggedHours?: number }).loggedHours != null
+                        ? fmtNumber((r as TeamAttendanceRow & { loggedHours?: number }).loggedHours)
+                        : (r as { loggedMinutes?: number }).loggedMinutes != null
+                          ? fmtNumber(Number((r as { loggedMinutes?: number }).loggedMinutes) / 60)
+                          : "—"}
+                    </td>
                     <td className="small muted">{r.locationLabel ?? "—"}</td>
+                    {canEdit ? (
+                      <td>
+                        {String(r.employeeId) !== String(me.employeeId) ? (
+                          <button type="button" className="btn sm" onClick={() => openEdit(r)}>
+                            Edit
+                          </button>
+                        ) : (
+                          <span className="muted small">Self</span>
+                        )}
+                      </td>
+                    ) : null}
                   </tr>
                 ))
               )}
@@ -157,6 +251,54 @@ export default function TeamAttendancePage() {
           </table>
         </div>
       )}
+
+      <Modal
+        open={!!edit}
+        onClose={() => setEdit(null)}
+        title={edit ? `Edit attendance — ${edit.name}` : ""}
+        subtitle="HR edit with a reason. Original times stay on correction requests; this overwrites the day record."
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setEdit(null)}>
+              Cancel
+            </button>
+            <button type="button" className="btn primary" disabled={saveEdit.isPending} onClick={submitEdit}>
+              {saveEdit.isPending ? "Saving…" : "Save"}
+            </button>
+          </>
+        }
+      >
+        {edit ? (
+          <form className="stack" onSubmit={submitEdit}>
+            <FormField label="Date">
+              <input type="date" value={edit.workDate} readOnly />
+            </FormField>
+            <div className="row">
+              <FormField label="Check in">
+                <input
+                  type="time"
+                  value={edit.checkInLocal}
+                  onChange={(e) => setEdit({ ...edit, checkInLocal: e.target.value })}
+                />
+              </FormField>
+              <FormField label="Check out" hint="Overnight OK if earlier than check-in">
+                <input
+                  type="time"
+                  value={edit.checkOutLocal}
+                  onChange={(e) => setEdit({ ...edit, checkOutLocal: e.target.value })}
+                />
+              </FormField>
+            </div>
+            <FormField label="Reason" required error={editErr || undefined}>
+              <textarea
+                value={edit.reason}
+                onChange={(e) => setEdit({ ...edit, reason: e.target.value })}
+                placeholder="Why this change?"
+              />
+            </FormField>
+          </form>
+        ) : null}
+      </Modal>
     </div>
   );
 }

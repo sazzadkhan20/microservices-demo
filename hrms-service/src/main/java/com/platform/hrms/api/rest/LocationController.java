@@ -54,8 +54,8 @@ public class LocationController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @RequiresPermission(feature = "org", action = "manage")
-    @Operation(summary = "Create location (code, name, country, timeZone, defaultCurrency)")
+    @RequiresPermission(feature = "hierarchy", action = "edit")
+    @Operation(summary = "Create location (org structure — hierarchy.edit)")
     public Location create(@RequestBody Map<String, Object> body) {
         String code = requireText(body, "code");
         if (locationRepository.findAll().stream().anyMatch(l -> code.equalsIgnoreCase(l.getCode()))) {
@@ -71,8 +71,8 @@ public class LocationController {
     }
 
     @PutMapping("/{id}")
-    @RequiresPermission(feature = "org", action = "manage")
-    @Operation(summary = "Update location")
+    @RequiresPermission(feature = "hierarchy", action = "edit")
+    @Operation(summary = "Update location (org structure — hierarchy.edit)")
     public Location update(@PathVariable Long id, @RequestBody Map<String, Object> body) {
         Location loc = locationRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Location not found: " + id));

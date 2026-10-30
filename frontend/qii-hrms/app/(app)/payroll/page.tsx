@@ -13,25 +13,22 @@ import { ErrorNote } from "@/components/ui/QueryState";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Tabs } from "@/components/ui/Tabs";
 import { useToast } from "@/components/ui/Toast";
-import { api, apiFetch } from "@/lib/api/client";
-import { byId, useEmployeesLookup, type Rec } from "@/lib/api/lookups";
+import { api, apiFetch, downloadFile } from "@/lib/api/client";
+import { byId, rowsOf, useEmployeesLookup, type Rec } from "@/lib/api/lookups";
 import { currentPeriod, fmtDateTime, fmtMoney, fmtNumber, str } from "@/lib/format";
 
 const rowSchema = z.object({ id: z.union([z.number(), z.string()]) }).passthrough();
 
-const TABS = [
-  { id: "payslips", label: "Payslips" },
-  { id: "rules", label: "Rules" },
-];
-
 const calcSchema = z.object({
   employeeId: z.string().min(1, "Choose an employee"),
   periodLabel: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use YYYY-MM"),
-  regularHours: z.coerce.number("Enter hours").min(0, "Must be ≥ 0").max(744, "Too many hours"),
-  overtimeHours: z.coerce.number("Enter hours").min(0, "Must be ≥ 0"),
-  weekendHours: z.coerce.number("Enter hours").min(0, "Must be ≥ 0"),
-  absenceDays: z.coerce.number("Enter days").min(0, "Must be ≥ 0"),
   useHrmsAttendance: z.boolean(),
+  absenceDays: z.coerce.number("Enter days").min(0, "Must be ≥ 0").optional(),
+  adjustmentAmount: z.string().optional(),
+  adjustmentNote: z.string().optional(),
+  regularHours: z.coerce.number("Enter hours").min(0, "Must be ≥ 0").max(744, "Too many hours").optional(),
+  overtimeHours: z.coerce.number("Enter hours").min(0, "Must be ≥ 0").optional(),
+  weekendHours: z.coerce.number("Enter hours").min(0, "Must be ≥ 0").optional(),
 });
 
 const rulesSchema = z.object({
@@ -43,23 +40,34 @@ export default function PayrollPage() {
   const { can } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
-  // Must match the backend: calculate / finalize / reopen require payroll:run.
   const canRun = can("payroll", "run");
+  const canViewPay = can("payroll", "view");
+
+  const tabs = useMemo(() => {
+    const t: { id: string; label: string }[] = [{ id: "payslips", label: "Payslips" }];
+    if (!canRun && canViewPay) t.push({ id: "mypay", label: "My pay" });
+    if (canRun) t.push({ id: "rules", label: "Rules" });
+    return t;
+  }, [canRun, canViewPay]);
 
   const [tab, setTab] = useState("payslips");
   const [period, setPeriod] = useState(currentPeriod());
   const [empFilter, setEmpFilter] = useState("");
   const [open, setOpen] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [detail, setDetail] = useState<Rec | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "finalize" | "reopen"; row: Rec } | null>(null);
+  const [runMonthConfirm, setRunMonthConfirm] = useState(false);
   const [form, setForm] = useState({
     employeeId: "",
     periodLabel: currentPeriod(),
+    useHrmsAttendance: true,
+    absenceDays: "0",
+    adjustmentAmount: "",
+    adjustmentNote: "",
     regularHours: "160",
     overtimeHours: "0",
     weekendHours: "0",
-    absenceDays: "0",
-    useHrmsAttendance: true,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
@@ -68,6 +76,37 @@ export default function PayrollPage() {
   const empName = useMemo(() => byId(employees.data, (e) => e.fullName || `#${e.id}`), [employees.data]);
 
   const refresh = () => void qc.invalidateQueries({ queryKey: ["payslips"] });
+
+  // Warnings for previous-month not finalized
+  const warnings = useQuery({
+    queryKey: ["payroll-warnings", period],
+    queryFn: ({ signal }) => apiFetch(api.payroll("warnings"), { query: { period }, signal }),
+    enabled: canRun && !!period,
+  });
+
+  // Payslip summary for currency totals
+  const payslipSummary = useQuery({
+    queryKey: ["payslips-summary", period, empFilter],
+    queryFn: ({ signal }) =>
+      apiFetch(api.payroll("payslips"), {
+        query: { size: "500", page: "1", ...(period ? { "filter.periodLabel": period } : {}), ...(empFilter ? { "filter.employeeId": empFilter } : {}) },
+        signal,
+      }),
+    enabled: tab === "payslips" && !!period,
+  });
+
+  const currencyTotals = useMemo(() => {
+    const rows = rowsOf<Rec>(payslipSummary.data);
+    if (rows.length === 0) return [] as [string, number][];
+    const map = new Map<string, number>();
+    for (const r of rows) {
+      const dj = (r.detailsJson ?? r.details) as Rec | undefined;
+      const currency = String(dj?.currency ?? "");
+      const net = Number(r.netAmount ?? dj?.net ?? 0);
+      map.set(currency, (map.get(currency) ?? 0) + net);
+    }
+    return [...map.entries()] as [string, number][];
+  }, [payslipSummary.data]);
 
   const calc = useMutation({
     mutationFn: (body: Record<string, unknown>) => apiFetch(api.payroll("calculate"), { method: "POST", body }),
@@ -79,8 +118,23 @@ export default function PayrollPage() {
     },
     onError: (e: Error) => setErr(e.message),
   });
+
+  const runMonth = useMutation({
+    mutationFn: (p: string) => apiFetch(api.payroll("calculate-month"), { method: "POST", query: { period: p } }),
+    onSuccess: () => {
+      toast.show("Month calculation queued for all employees");
+      setRunMonthConfirm(false);
+      refresh();
+    },
+    onError: (e: Error) => {
+      toast.error(e);
+      setRunMonthConfirm(false);
+    },
+  });
+
   const finalize = useMutation({
-    mutationFn: (id: string | number) => apiFetch(api.payroll(`payslips/${id}/finalize`), { method: "POST" }),
+    mutationFn: (id: string | number) =>
+      apiFetch(api.payroll(`payslips/${id}/finalize`), { method: "POST", body: { confirm: true } }),
     onSuccess: () => {
       toast.show("Payslip finalized");
       setConfirm(null);
@@ -89,6 +143,7 @@ export default function PayrollPage() {
     },
     onError: (e: Error) => toast.error(e),
   });
+
   const reopen = useMutation({
     mutationFn: (id: string | number) => apiFetch(api.payroll(`payslips/${id}/reopen`), { method: "POST" }),
     onSuccess: () => {
@@ -110,20 +165,46 @@ export default function PayrollPage() {
       return;
     }
     setErrors({});
+    const { employeeId, periodLabel, useHrmsAttendance, absenceDays, adjustmentAmount, adjustmentNote, regularHours, overtimeHours, weekendHours } =
+      parsed.data;
     const body: Record<string, unknown> = {
-      employeeId: Number(parsed.data.employeeId),
-      periodLabel: parsed.data.periodLabel,
-      useHrmsAttendance: parsed.data.useHrmsAttendance,
-      overtimeHours: parsed.data.overtimeHours,
-      weekendHours: parsed.data.weekendHours,
-      absenceDays: parsed.data.absenceDays,
+      employeeId: Number(employeeId),
+      periodLabel,
+      useHrmsAttendance,
     };
-    if (parsed.data.useHrmsAttendance) {
-      body.regularHours = 0;
-    } else {
-      body.regularHours = parsed.data.regularHours;
+    if ((absenceDays ?? 0) > 0) body.absenceDays = absenceDays;
+    const adjAmt = adjustmentAmount ? Number(adjustmentAmount) : 0;
+    if (!Number.isNaN(adjAmt) && adjAmt !== 0) {
+      body.adjustmentAmount = adjAmt;
+      if (adjustmentNote) body.adjustmentNote = adjustmentNote;
+    }
+    if (!useHrmsAttendance) {
+      body.regularHours = regularHours ?? 0;
+      body.overtimeHours = overtimeHours ?? 0;
+      body.weekendHours = weekendHours ?? 0;
+    } else if (showAdvanced) {
+      if ((overtimeHours ?? 0) > 0) body.overtimeHours = overtimeHours;
+      if ((weekendHours ?? 0) > 0) body.weekendHours = weekendHours;
     }
     calc.mutate(body);
+  }
+
+  function openCalc() {
+    setErr("");
+    setErrors({});
+    setShowAdvanced(false);
+    setForm((f) => ({
+      ...f,
+      periodLabel: period || currentPeriod(),
+      useHrmsAttendance: true,
+      absenceDays: "0",
+      adjustmentAmount: "",
+      adjustmentNote: "",
+      regularHours: "160",
+      overtimeHours: "0",
+      weekendHours: "0",
+    }));
+    setOpen(true);
   }
 
   const nameOf = (r: Rec) => {
@@ -132,45 +213,71 @@ export default function PayrollPage() {
   };
   const isFinal = (r: Rec) => /final/i.test(String(r.status));
 
-  const detailRules = (detail?.details as Rec | undefined)?.deductions;
+  // Detail drawer — payslip details JSON (FR-PAY-15)
+  const dj = (detail?.detailsJson ?? detail?.details) as Rec | undefined;
+  const djDeductions = dj?.deductions as Rec[] | undefined;
+  const djNotes = Array.isArray(dj?.notes) ? (dj.notes as unknown[]) : [];
+  const djConsumed = dj?.consumedByType && typeof dj.consumedByType === "object" ? (dj.consumedByType as Record<string, unknown>) : null;
+
+  const warningRows = useMemo(() => {
+    if (!warnings.data) return [] as string[];
+    if (Array.isArray(warnings.data)) {
+      return (warnings.data as Rec[]).map((w) => str(w.message ?? w.detail ?? w));
+    }
+    const wd = warnings.data as Rec;
+    if (wd.message) return [str(wd.message)];
+    return [] as string[];
+  }, [warnings.data]);
 
   return (
     <div className="stack">
       <PageHeader
         title="Payroll"
-        subtitle="Draft payslips are calculated from hours and the tenant payroll config; finalize to lock them."
+        subtitle="Draft payslips are calculated from schedule, attendance and leave; finalize after the month ends."
         actions={
           canRun && tab === "payslips" ? (
-            <button
-              type="button"
-              className="btn primary"
-              onClick={() => {
-                setErr("");
-                setErrors({});
-                setForm((f) => ({
-                  ...f,
-                  periodLabel: period || currentPeriod(),
-                  useHrmsAttendance: true,
-                  regularHours: "160",
-                  overtimeHours: "0",
-                  weekendHours: "0",
-                  absenceDays: "0",
-                }));
-                setOpen(true);
-              }}
-            >
-              + Calculate payslip
-            </button>
+            <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn"
+                disabled={!period}
+                onClick={() => {
+                  if (!period) return;
+                  downloadFile(api.payroll("export.csv"), { period }).catch((e: Error) => toast.error(e));
+                }}
+              >
+                Export CSV
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={!period || runMonth.isPending}
+                onClick={() => setRunMonthConfirm(true)}
+              >
+                {runMonth.isPending ? "Running…" : "Run month"}
+              </button>
+              <button type="button" className="btn primary" onClick={openCalc}>
+                + Calculate payslip
+              </button>
+            </div>
           ) : null
         }
       />
 
-      <Tabs tabs={TABS} value={tab} onChange={setTab} />
+      <Tabs tabs={tabs} value={tab} onChange={setTab} />
 
       {tab === "rules" ? <RulesPanel canRun={canRun} /> : null}
+      {tab === "mypay" ? <MyPayPanel /> : null}
 
       {tab === "payslips" ? (
         <div className="card stack">
+          {warningRows.length > 0 ? (
+            <div className="notice warn">
+              {warningRows.map((w, i) => (
+                <div key={i}>{w}</div>
+              ))}
+            </div>
+          ) : null}
           <div className="filters">
             <label className="field">
               <span>Period</span>
@@ -212,8 +319,20 @@ export default function PayrollPage() {
             columns={[
               { key: "employeeId", header: "Employee", render: (r) => <b>{nameOf(r)}</b> },
               { key: "periodLabel", header: "Period", className: "mono" },
-              { key: "hours", header: "Hours (reg / OT / wknd)", className: "n", render: (r) => `${fmtNumber(r.regularHours)} / ${fmtNumber(r.overtimeHours)} / ${fmtNumber(r.weekendHours)}` },
-              { key: "grossAmount", header: "Gross", className: "n", render: (r) => fmtMoney(r.grossAmount) },
+              {
+                key: "basePay",
+                header: "Base / Net",
+                className: "n",
+                render: (r) => {
+                  const d = (r.detailsJson ?? r.details) as Rec | undefined;
+                  return (
+                    <span>
+                      {fmtMoney(d?.basePay ?? r.grossAmount)}{" "}
+                      <span className="muted">/ {fmtMoney(d?.net ?? r.netAmount)}</span>
+                    </span>
+                  );
+                },
+              },
               { key: "deductionAmount", header: "Deductions", className: "n", render: (r) => fmtMoney(r.deductionAmount) },
               { key: "netAmount", header: "Net", className: "n", render: (r) => <b>{fmtMoney(r.netAmount)}</b> },
               { key: "status", header: "Status", render: (r) => <StatusPill status={r.status} /> },
@@ -247,9 +366,20 @@ export default function PayrollPage() {
               },
             ]}
           />
+          {currencyTotals.length > 1 ? (
+            <div className="row" style={{ gap: 16, justifyContent: "flex-end", borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+              <span className="small muted">Period totals (net):</span>
+              {currencyTotals.map(([cur, total]) => (
+                <span key={cur} className="num">
+                  <b>{fmtMoney(total, cur || undefined)}</b>
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
+      {/* Calculate payslip modal */}
       <Modal
         open={open}
         onClose={() => setOpen(false)}
@@ -271,6 +401,7 @@ export default function PayrollPage() {
             <FormField label="Period" required error={errors.periodLabel}>
               <input type="month" value={form.periodLabel} onChange={(e) => setForm({ ...form, periodLabel: e.target.value })} />
             </FormField>
+
             <div className="checks full">
               <label>
                 <input
@@ -278,34 +409,120 @@ export default function PayrollPage() {
                   checked={form.useHrmsAttendance}
                   onChange={(e) => setForm({ ...form, useHrmsAttendance: e.target.checked })}
                 />{" "}
-                Use HRMS attendance hours
+                Use HRMS attendance (schedule / clock-in data)
               </label>
             </div>
-            {!form.useHrmsAttendance ? (
+
+            {form.useHrmsAttendance ? (
               <>
-                <FormField label="Regular hours" error={errors.regularHours}>
-                  <input type="number" min={0} step="0.25" value={form.regularHours} onChange={(e) => setForm({ ...form, regularHours: e.target.value })} />
+                <FormField
+                  label="Absence days (override)"
+                  error={errors.absenceDays}
+                  hint="Leave blank or 0 to derive from HRMS attendance."
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.5"
+                    value={form.absenceDays}
+                    onChange={(e) => setForm({ ...form, absenceDays: e.target.value })}
+                  />
                 </FormField>
-                <FormField label="Overtime hours" error={errors.overtimeHours}>
-                  <input type="number" min={0} step="0.25" value={form.overtimeHours} onChange={(e) => setForm({ ...form, overtimeHours: e.target.value })} />
-                </FormField>
-                <FormField label="Weekend hours" error={errors.weekendHours}>
-                  <input type="number" min={0} step="0.25" value={form.weekendHours} onChange={(e) => setForm({ ...form, weekendHours: e.target.value })} />
-                </FormField>
-                <FormField label="Absence days" error={errors.absenceDays} hint="Covered via the configured leave cover order.">
-                  <input type="number" min={0} step="0.5" value={form.absenceDays} onChange={(e) => setForm({ ...form, absenceDays: e.target.value })} />
-                </FormField>
+
+                <div className="full">
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => setShowAdvanced((v) => !v)}
+                    style={{ marginBottom: 4 }}
+                  >
+                    {showAdvanced ? "Hide" : "Show"} advanced hour overrides
+                  </button>
+                  {showAdvanced ? (
+                    <div className="form-grid" style={{ marginTop: 8 }}>
+                      <FormField label="Overtime hours (override)" error={errors.overtimeHours} hint="0 = use attendance data.">
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.25"
+                          value={form.overtimeHours}
+                          onChange={(e) => setForm({ ...form, overtimeHours: e.target.value })}
+                        />
+                      </FormField>
+                      <FormField label="Weekend hours (override)" error={errors.weekendHours}>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.25"
+                          value={form.weekendHours}
+                          onChange={(e) => setForm({ ...form, weekendHours: e.target.value })}
+                        />
+                      </FormField>
+                    </div>
+                  ) : null}
+                </div>
               </>
             ) : (
               <>
-                <FormField label="Overtime hours (override)" error={errors.overtimeHours} hint="Optional — leave 0 to use attendance only for regular hours.">
-                  <input type="number" min={0} step="0.25" value={form.overtimeHours} onChange={(e) => setForm({ ...form, overtimeHours: e.target.value })} />
+                <FormField label="Regular hours" required error={errors.regularHours}>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.25"
+                    value={form.regularHours}
+                    onChange={(e) => setForm({ ...form, regularHours: e.target.value })}
+                  />
                 </FormField>
-                <FormField label="Weekend hours (override)" error={errors.weekendHours}>
-                  <input type="number" min={0} step="0.25" value={form.weekendHours} onChange={(e) => setForm({ ...form, weekendHours: e.target.value })} />
+                <FormField label="Overtime hours" error={errors.overtimeHours}>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.25"
+                    value={form.overtimeHours}
+                    onChange={(e) => setForm({ ...form, overtimeHours: e.target.value })}
+                  />
+                </FormField>
+                <FormField label="Weekend hours" error={errors.weekendHours}>
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.25"
+                    value={form.weekendHours}
+                    onChange={(e) => setForm({ ...form, weekendHours: e.target.value })}
+                  />
+                </FormField>
+                <FormField label="Absence days" error={errors.absenceDays} hint="Covered via the configured leave cover order.">
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.5"
+                    value={form.absenceDays}
+                    onChange={(e) => setForm({ ...form, absenceDays: e.target.value })}
+                  />
                 </FormField>
               </>
             )}
+
+            {/* Adjustment (FR-PAY-08) */}
+            <FormField label="Adjustment amount" error={errors.adjustmentAmount} hint="Positive = bonus, negative = deduction.">
+              <input
+                type="number"
+                step="0.01"
+                value={form.adjustmentAmount}
+                placeholder="0"
+                onChange={(e) => setForm({ ...form, adjustmentAmount: e.target.value })}
+              />
+            </FormField>
+            {form.adjustmentAmount && form.adjustmentAmount !== "0" ? (
+              <FormField label="Adjustment note" error={errors.adjustmentNote}>
+                <input
+                  type="text"
+                  value={form.adjustmentNote}
+                  placeholder="Reason for adjustment…"
+                  onChange={(e) => setForm({ ...form, adjustmentNote: e.target.value })}
+                />
+              </FormField>
+            ) : null}
           </div>
           {err ? <div className="notice bad">{err}</div> : null}
           <div className="modal-foot">
@@ -319,6 +536,7 @@ export default function PayrollPage() {
         </form>
       </Modal>
 
+      {/* Detail drawer (FR-PAY-15) */}
       <Modal
         open={!!detail}
         onClose={() => setDetail(null)}
@@ -331,7 +549,12 @@ export default function PayrollPage() {
                 Reopen
               </button>
             ) : (
-              <button type="button" className="btn primary" disabled={finalize.isPending} onClick={() => finalize.mutate(detail.id as number)}>
+              <button
+                type="button"
+                className="btn primary"
+                disabled={finalize.isPending}
+                onClick={() => setConfirm({ kind: "finalize", row: detail })}
+              >
                 Finalize
               </button>
             )
@@ -340,39 +563,114 @@ export default function PayrollPage() {
       >
         {detail ? (
           <div className="stack">
+            {/* Top stats */}
             <div className="grid g3">
               <div className="stat">
-                <span className="s">Gross</span>
-                <span className="v">{fmtMoney(detail.grossAmount)}</span>
+                <span className="s">Base pay</span>
+                <span className="v">{fmtMoney(dj?.basePay ?? detail.grossAmount, String(dj?.currency ?? ""))}</span>
               </div>
               <div className="stat">
-                <span className="s">Deductions</span>
-                <span className="v">{fmtMoney(detail.deductionAmount)}</span>
+                <span className="s">Deduction</span>
+                <span className="v">{fmtMoney(dj?.deduction ?? detail.deductionAmount)}</span>
               </div>
               <div className="stat">
-                <span className="s">Net</span>
-                <span className="v">{fmtMoney(detail.netAmount)}</span>
+                <span className="s">Net pay</span>
+                <span className="v">
+                  <b>{fmtMoney(dj?.net ?? detail.netAmount, String(dj?.currency ?? ""))}</b>
+                </span>
               </div>
             </div>
+
+            {/* KV breakdown */}
             <div className="kv">
-              <div>
-                <div className="label">Regular hours</div>
-                {fmtNumber(detail.regularHours)}
-              </div>
-              <div>
-                <div className="label">Overtime hours</div>
-                {fmtNumber(detail.overtimeHours)}
-              </div>
-              <div>
-                <div className="label">Weekend hours</div>
-                {fmtNumber(detail.weekendHours)}
-              </div>
+              {dj?.perDayRate !== undefined ? (
+                <div>
+                  <div className="label">Per-day rate</div>
+                  {fmtMoney(dj.perDayRate)}
+                </div>
+              ) : null}
+              {dj?.hoursWorked !== undefined ? (
+                <div>
+                  <div className="label">Hours worked</div>
+                  {fmtNumber(dj.hoursWorked)}
+                </div>
+              ) : null}
+              {(dj?.workingDays ?? detail.workingDays) !== undefined ? (
+                <div>
+                  <div className="label">Working days</div>
+                  {fmtNumber(dj?.workingDays ?? detail.workingDays)}
+                </div>
+              ) : null}
+              {dj?.daysEmployed !== undefined ? (
+                <div>
+                  <div className="label">Days employed</div>
+                  {fmtNumber(dj.daysEmployed)}
+                </div>
+              ) : null}
+              {(dj?.absentDays ?? detail.absentDays) !== undefined ? (
+                <div>
+                  <div className="label">Absent days</div>
+                  {fmtNumber(dj?.absentDays ?? detail.absentDays)}
+                </div>
+              ) : null}
+              {dj?.coveredDays !== undefined ? (
+                <div>
+                  <div className="label">Covered by leave</div>
+                  {fmtNumber(dj.coveredDays)}
+                </div>
+              ) : null}
+              {dj?.uncoveredDays !== undefined ? (
+                <div>
+                  <div className="label">Uncovered days</div>
+                  {fmtNumber(dj.uncoveredDays)}
+                </div>
+              ) : null}
+              {dj?.unpaidLeaveDays !== undefined ? (
+                <div>
+                  <div className="label">Unpaid leave days</div>
+                  {fmtNumber(dj.unpaidLeaveDays)}
+                </div>
+              ) : null}
+              {(dj?.adjustment !== undefined && dj.adjustment !== 0) ? (
+                <div>
+                  <div className="label">Adjustment</div>
+                  {fmtMoney(dj.adjustment)}
+                </div>
+              ) : null}
+              {dj?.payMode ? (
+                <div>
+                  <div className="label">Pay mode</div>
+                  {str(dj.payMode)}
+                </div>
+              ) : null}
+              {dj?.missingCheckoutCount !== undefined && Number(dj.missingCheckoutCount) > 0 ? (
+                <div>
+                  <div className="label">Missing checkouts</div>
+                  {fmtNumber(dj.missingCheckoutCount, 0)}
+                </div>
+              ) : null}
               <div>
                 <div className="label">Status</div>
                 <StatusPill status={detail.status} />
               </div>
             </div>
-            {Array.isArray(detailRules) && detailRules.length > 0 ? (
+
+            {/* Leave consumed by type */}
+            {djConsumed && Object.keys(djConsumed).length > 0 ? (
+              <div>
+                <div className="label" style={{ marginBottom: 6 }}>Leave cover used</div>
+                <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+                  {Object.entries(djConsumed).map(([k, v]) => (
+                    <span key={k} className="pill">
+                      {k}: {fmtNumber(v)}d
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Deductions breakdown */}
+            {Array.isArray(djDeductions) && djDeductions.length > 0 ? (
               <div className="tbl-wrap">
                 <table>
                   <thead>
@@ -382,7 +680,7 @@ export default function PayrollPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {(detailRules as Rec[]).map((d, i) => (
+                    {djDeductions.map((d, i) => (
                       <tr key={i}>
                         <td>{str(d.label ?? d.name ?? d.key ?? d.type)}</td>
                         <td className="n">{fmtMoney(d.amount ?? d.value)}</td>
@@ -394,10 +692,23 @@ export default function PayrollPage() {
             ) : (
               <p className="muted small">No deductions applied.</p>
             )}
+
+            {/* Notes */}
+            {djNotes.length > 0 ? (
+              <div>
+                <div className="label" style={{ marginBottom: 4 }}>Notes</div>
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {djNotes.map((n, i) => (
+                    <li key={i} className="small">{str(n)}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </Modal>
 
+      {/* Finalize / reopen confirm */}
       <ConfirmModal
         open={!!confirm}
         title={confirm?.kind === "reopen" ? "Reopen payslip?" : "Finalize payslip?"}
@@ -413,12 +724,86 @@ export default function PayrollPage() {
       >
         {confirm?.kind === "reopen"
           ? "Reopen this finalized payslip for recalculation?"
-          : `Finalize ${confirm ? nameOf(confirm.row) : ""} · ${confirm ? String(confirm.row.periodLabel ?? "") : ""}? This locks the payslip.`}
+          : `Finalize ${confirm ? nameOf(confirm.row) : ""} · ${confirm ? String(confirm.row.periodLabel ?? "") : ""}? Confirm the month has ended — leave balances will be adjusted to reflect the final deductions and this payslip will be locked.`}
+      </ConfirmModal>
+
+      {/* Run month confirm */}
+      <ConfirmModal
+        open={runMonthConfirm}
+        title="Run payroll for entire month?"
+        confirmLabel="Run month"
+        busy={runMonth.isPending}
+        onCancel={() => setRunMonthConfirm(false)}
+        onConfirm={() => {
+          if (period) runMonth.mutate(period);
+        }}
+      >
+        {`Calculate (or recalculate) draft payslips for all employees in ${period}. Existing drafts will be updated; finalized payslips are not affected.`}
       </ConfirmModal>
     </div>
   );
 }
 
+// ── My Pay panel (FR-SAL-03 self-view) ─────────────────────────────────────
+function MyPayPanel() {
+  const myCurrent = useQuery({
+    queryKey: ["payroll-me-current"],
+    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll("me/current"), { signal }),
+  });
+
+  const data = myCurrent.data;
+  const payslips = rowsOf<Rec>(data?.payslips);
+
+  return (
+    <section className="card stack">
+      <h2>My pay</h2>
+      <ErrorNote error={myCurrent.error} />
+      {myCurrent.isLoading ? <p className="muted">Loading…</p> : null}
+      {data ? (
+        <>
+          <div className="grid g3">
+            <div className="stat">
+              <span className="s">Current pay</span>
+              <span className="v">{fmtMoney(data.currentPay)}</span>
+            </div>
+            <div className="stat">
+              <span className="s">MTD estimate</span>
+              <span className="v">{fmtMoney(data.mtdEstimate)}</span>
+            </div>
+          </div>
+          {payslips.length > 0 ? (
+            <div className="tbl-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Period</th>
+                    <th className="n">Net</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payslips.map((p, i) => (
+                    <tr key={String(p.id ?? i)}>
+                      <td className="mono">{str(p.periodLabel)}</td>
+                      <td className="n">{fmtMoney(p.netAmount)}</td>
+                      <td>
+                        <StatusPill status={p.status} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="muted">No finalized payslips yet.</p>
+          )}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+// ── Rules panel ─────────────────────────────────────────────────────────────
 function RulesPanel({ canRun }: { canRun: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();

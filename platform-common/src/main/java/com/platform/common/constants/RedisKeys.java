@@ -23,6 +23,17 @@ public final class RedisKeys {
      */
     public static final String INVALIDATE_CHANNEL = "tenant-routing:invalidate";
 
+    /**
+     * Redis SET NX lock so only one registry replica runs fleet Liquibase at a time.
+     */
+    public static final String FLEET_SCHEMA_MIGRATE_LOCK = "platform:fleet-schema-migrate:lock";
+
+    /**
+     * Written when a fleet migrate finishes successfully (value = epoch millis).
+     * Follower replicas wait on this key instead of re-running Liquibase.
+     */
+    public static final String FLEET_SCHEMA_MIGRATE_DONE = "platform:fleet-schema-migrate:done";
+
     private RedisKeys() {
     }
 

@@ -40,6 +40,36 @@ public class ImpitBusinessSeeder {
         seedHrms(hrmsJdbcUrl, hrms.getUsername(), hrms.getPassword());
     }
 
+    /**
+     * Idempotent: ensure system roles + permission matrix + Impit employee role bindings
+     * without wiping org/leave data.
+     */
+    public void reseedRbacMatrix(String hrmsJdbcUrl, PlatformProperties.DbTarget hrms) {
+        try (Connection conn = DriverManager.getConnection(
+                hrmsJdbcUrl, hrms.getUsername(), hrms.getPassword());
+             Statement st = conn.createStatement()) {
+            PracticeBusinessSeeder.ensureRetailRbacRoles(st);
+            st.executeUpdate("""
+                    INSERT INTO app_user_role (employee_id, role_id)
+                    SELECT e.id, r.id FROM employee e
+                    JOIN app_role r ON r.code = CASE e.employee_code
+                      WHEN '1001' THEN 'HR'
+                      WHEN '1002' THEN 'SUPERADMIN'
+                      WHEN '1003' THEN 'MANAGER'
+                      WHEN '1004' THEN 'ADMIN'
+                      ELSE 'EMPLOYEE'
+                    END
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM app_user_role ur
+                      WHERE ur.employee_id = e.id AND ur.role_id = r.id
+                    )
+                    """);
+            log.info("Re-applied Impit RBAC matrix on {}", hrmsJdbcUrl);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to reseed Impit RBAC: " + e.getMessage(), e);
+        }
+    }
+
     private void seedHrms(String jdbcUrl, String user, String password) {
         try (Connection conn = DriverManager.getConnection(jdbcUrl, user, password)) {
             conn.setAutoCommit(false);
@@ -196,6 +226,24 @@ public class ImpitBusinessSeeder {
                           ('OTHER', 0.00)
                         ) AS t(code, bal)
                         WHERE e.employee_code IN ('2001','2002','2003','2004','1003','1004')
+                        """);
+
+                // Shared product RBAC matrix + pack-specific role bindings (config-driven).
+                PracticeBusinessSeeder.ensureRetailRbacRoles(st);
+                st.executeUpdate("""
+                        INSERT INTO app_user_role (employee_id, role_id)
+                        SELECT e.id, r.id FROM employee e
+                        JOIN app_role r ON r.code = CASE e.employee_code
+                          WHEN '1001' THEN 'HR'
+                          WHEN '1002' THEN 'SUPERADMIN'
+                          WHEN '1003' THEN 'MANAGER'
+                          WHEN '1004' THEN 'ADMIN'
+                          ELSE 'EMPLOYEE'
+                        END
+                        WHERE NOT EXISTS (
+                          SELECT 1 FROM app_user_role ur
+                          WHERE ur.employee_id = e.id AND ur.role_id = r.id
+                        )
                         """);
             }
             conn.commit();

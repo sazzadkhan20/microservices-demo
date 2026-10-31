@@ -11,6 +11,7 @@ public class PlatformProperties {
     private Jwt jwt = new Jwt();
     private Provision provision = new Provision();
     private Security security = new Security();
+    private Fleet fleet = new Fleet();
 
     public Jwt getJwt() {
         return jwt;
@@ -34,6 +35,51 @@ public class PlatformProperties {
 
     public void setSecurity(Security security) {
         this.security = security;
+    }
+
+    public Fleet getFleet() {
+        return fleet;
+    }
+
+    public void setFleet(Fleet fleet) {
+        this.fleet = fleet;
+    }
+
+    /**
+     * Fleet schema rollout — keep every tenant DB on the same shared product changelog.
+     * Large SaaS pattern: migrate all tenants on control-plane boot (then code serves traffic).
+     */
+    public static class Fleet {
+        /** When true, registry runs migrate-all on startup (idempotent Liquibase). */
+        private boolean autoMigrateOnStartup = true;
+        /** Redis lock TTL while a replica owns fleet migrate. */
+        private long lockTtlSeconds = 1800;
+        /** How long a non-leader replica waits for the leader's done signal. */
+        private long followerWaitSeconds = 1800;
+
+        public boolean isAutoMigrateOnStartup() {
+            return autoMigrateOnStartup;
+        }
+
+        public void setAutoMigrateOnStartup(boolean autoMigrateOnStartup) {
+            this.autoMigrateOnStartup = autoMigrateOnStartup;
+        }
+
+        public long getLockTtlSeconds() {
+            return lockTtlSeconds;
+        }
+
+        public void setLockTtlSeconds(long lockTtlSeconds) {
+            this.lockTtlSeconds = lockTtlSeconds;
+        }
+
+        public long getFollowerWaitSeconds() {
+            return followerWaitSeconds;
+        }
+
+        public void setFollowerWaitSeconds(long followerWaitSeconds) {
+            this.followerWaitSeconds = followerWaitSeconds;
+        }
     }
 
     public static class Security {

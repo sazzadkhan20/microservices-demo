@@ -175,7 +175,7 @@ public class PracticeBusinessSeeder {
     }
 
     /** Ensures SUPERADMIN/ADMIN/HR/MANAGER/EMPLOYEE exist with a usable permission matrix. */
-    static void ensureRetailRbacRoles(Statement st) throws Exception {
+    public static void ensureRetailRbacRoles(Statement st) throws Exception {
         st.executeUpdate("""
                 INSERT INTO app_role (code, name, description, system_role, active)
                 SELECT v.code, v.name, v.description, TRUE, TRUE

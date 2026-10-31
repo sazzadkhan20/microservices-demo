@@ -9,6 +9,8 @@ import com.platform.registry.api.dto.TenantRoutingView;
 import com.platform.registry.api.dto.TokenRequest;
 import com.platform.registry.api.dto.TokenResponse;
 import com.platform.registry.application.ProvisioningService;
+import com.platform.registry.config.PlatformProperties;
+import com.platform.registry.domain.TenantRoutingStatuses;
 import com.platform.registry.infrastructure.persistence.TenantRoutingRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -36,6 +38,7 @@ public class RegistryController {
     private final TenantRoutingRepository routingRepository;
     private final JwtSupport jwtSupport;
     private final PlatformAuthSupport platformAuth;
+    private final PlatformProperties platformProperties;
     private final long tokenTtlSeconds;
     private final org.springframework.web.client.RestClient hrmsClient;
 
@@ -44,6 +47,7 @@ public class RegistryController {
             TenantRoutingRepository routingRepository,
             JwtSupport jwtSupport,
             PlatformAuthSupport platformAuth,
+            PlatformProperties platformProperties,
             @org.springframework.beans.factory.annotation.Value("${platform.security.token-ttl-seconds:604800}") long tokenTtlSeconds,
             @org.springframework.beans.factory.annotation.Value("${HRMS_BASE_URL:http://127.0.0.1:8081}") String hrmsBaseUrl,
             @org.springframework.beans.factory.annotation.Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
@@ -53,6 +57,7 @@ public class RegistryController {
         this.routingRepository = routingRepository;
         this.jwtSupport = jwtSupport;
         this.platformAuth = platformAuth;
+        this.platformProperties = platformProperties;
         this.tokenTtlSeconds = tokenTtlSeconds > 0 ? tokenTtlSeconds : 604800L;
         this.hrmsClient = restClientBuilder
                 .baseUrl(hrmsBaseUrl == null ? "http://127.0.0.1:8081" : hrmsBaseUrl.replaceAll("/$", ""))
@@ -119,11 +124,15 @@ public class RegistryController {
     }
 
     @PostMapping("/tenants/migrate-all")
-    @Operation(summary = "Fleet-migrate every tenant DB (no reseed; requires X-Platform-Admin-Key)")
+    @Operation(summary = "Fleet-migrate tenant DBs to the shared product schema "
+            + "(no reseed; failed rows → SCHEMA_OUTDATED; requires X-Platform-Admin-Key). "
+            + "Optional ?service=hrms|payroll|file|notification|report migrates only that service's "
+            + "tenant DBs. Omitting service migrates all. Also runs automatically on registry startup.")
     public Map<String, Object> migrateAll(
-            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey) {
+            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey,
+            @RequestParam(required = false) String service) {
         platformAuth.requireAdmin(adminKey);
-        return provisioningService.migrateAllTenants();
+        return provisioningService.migrateAllTenants(service);
     }
 
     @GetMapping("/routing/{service}/{tenantId}")
@@ -158,11 +167,16 @@ public class RegistryController {
             @Valid @RequestBody TokenRequest request) {
         platformAuth.requireService(svcKey);
         String tenantId = TenantIds.normalize(request.tenantId());
-        // Require full core routing (reject half-provisioned tenants)
+        // Require full core routing ACTIVE (reject half-provisioned or SCHEMA_OUTDATED tenants)
         for (String svc : java.util.List.of("hrms", "payroll")) {
-            routingRepository.findByServiceNameAndTenantId(svc, tenantId)
+            var row = routingRepository.findByServiceNameAndTenantId(svc, tenantId)
                     .orElseThrow(() -> new IllegalArgumentException(
                             "Unknown or incompletely provisioned tenant: " + tenantId + " (missing " + svc + ")"));
+            if (!TenantRoutingStatuses.isActive(row.getStatus())) {
+                throw new IllegalStateException(
+                        "Tenant " + tenantId + " service " + svc + " is not ready (status="
+                                + row.getStatus() + "). Fleet schema migrate required.");
+            }
         }
         if (request.employeeId() == null) {
             throw new IllegalArgumentException("employeeId is required for account-picker sessions");
@@ -204,6 +218,9 @@ public class RegistryController {
         return Map.of(
                 "service", "tenant-registry",
                 "role", "control-plane",
+                "fleet", Map.of(
+                        "autoMigrateOnStartup", platformProperties.getFleet().isAutoMigrateOnStartup()
+                ),
                 "auth", Map.of(
                         "adminHeader", PlatformAuthSupport.ADMIN_HEADER,
                         "serviceHeader", PlatformAuthSupport.SERVICE_HEADER

@@ -34,4 +34,6 @@ databaseChangeLog:
       file: db/tenant-changelog/hrms/changes/016-leave-fr-gaps.yaml
   - include:
       file: db/tenant-changelog/hrms/changes/017-leave-type-code-len.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/018-permission-catalog-repair.yaml
 

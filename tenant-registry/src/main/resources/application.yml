@@ -38,6 +38,11 @@ platform:
     internal-key: ${PLATFORM_INTERNAL_KEY:local-internal-key-change-me}
     # Demo/account-picker sessions (SRS FR-AUTH-06 → 7 days)
     token-ttl-seconds: ${TOKEN_TTL_SECONDS:604800}
+  # Shared-product schema rollout for all tenants (new + old businesses)
+  fleet:
+    auto-migrate-on-startup: ${FLEET_AUTO_MIGRATE:true}
+    lock-ttl-seconds: ${FLEET_MIGRATE_LOCK_TTL_SECONDS:1800}
+    follower-wait-seconds: ${FLEET_MIGRATE_FOLLOWER_WAIT_SECONDS:1800}
   provision:
     hrms:
       admin-url: ${HRMS_PG_ADMIN_URL:jdbc:postgresql://127.0.0.1:5433/postgres}
@@ -93,6 +98,15 @@ management:
     web:
       exposure:
         include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
 
 logging:
   level:

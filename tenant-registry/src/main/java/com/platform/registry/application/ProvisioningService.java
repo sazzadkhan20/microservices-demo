@@ -6,6 +6,7 @@ import com.platform.registry.api.dto.ProvisionResponse;
 import com.platform.registry.api.dto.TenantRoutingView;
 import com.platform.registry.config.PlatformProperties;
 import com.platform.registry.domain.TenantRouting;
+import com.platform.registry.domain.TenantRoutingStatuses;
 import com.platform.registry.infrastructure.persistence.TenantRoutingRepository;
 import com.platform.registry.infrastructure.provision.ImpitBusinessSeeder;
 import com.platform.registry.infrastructure.provision.MinioBucketProvisioner;
@@ -146,6 +147,7 @@ public class ProvisioningService {
                 .orElseThrow(() -> new IllegalArgumentException("HRMS routing not found for " + normalized));
 
         provisioner.migrateExisting(hrms.getJdbcUrl(), properties.getProvision().getHrms());
+        markRouting(hrms, TenantRoutingStatuses.ACTIVE);
 
         String pack = businessPack;
         if (reseed) {
@@ -156,7 +158,6 @@ public class ProvisioningService {
             seedBusinessPack(pack, hrms.getJdbcUrl(), null);
         }
         ensureSatelliteServiceRouting(normalized);
-        cachePublisher.publishRouting(hrms);
         return Map.of(
                 "tenantId", normalized,
                 "jdbcUrl", hrms.getJdbcUrl(),
@@ -187,8 +188,36 @@ public class ProvisioningService {
                         "message", "System RBAC matrix re-applied (SUPERADMIN/ADMIN/HR/MANAGER/EMPLOYEE)."
                 );
             }
+            case "impit_limited", "impit" -> {
+                impitBusinessSeeder.reseedRbacMatrix(hrms.getJdbcUrl(), properties.getProvision().getHrms());
+                cachePublisher.publishRouting(hrms);
+                yield Map.of(
+                        "tenantId", normalized,
+                        "businessPack", pack,
+                        "message", "Impit RBAC matrix re-applied (HR/SUPERADMIN/MANAGER/ADMIN/EMPLOYEE bindings)."
+                );
+            }
+            case "techshop_retail", "techshop", "retail" -> {
+                // Same shared system roles/matrix; bindings are pack-specific via full reseed if needed.
+                try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                        hrms.getJdbcUrl(),
+                        properties.getProvision().getHrms().getUsername(),
+                        properties.getProvision().getHrms().getPassword());
+                     java.sql.Statement st = conn.createStatement()) {
+                    PracticeBusinessSeeder.ensureRetailRbacRoles(st);
+                } catch (Exception e) {
+                    throw new IllegalStateException("TechShop RBAC repair failed: " + e.getMessage(), e);
+                }
+                cachePublisher.publishRouting(hrms);
+                yield Map.of(
+                        "tenantId", normalized,
+                        "businessPack", pack,
+                        "message", "TechShop system RBAC roles/permissions ensured (shared product matrix)."
+                );
+            }
             default -> throw new IllegalArgumentException(
-                    "RBAC matrix upgrade supported for qii_creative (got businessPack=" + pack + ")");
+                    "RBAC matrix upgrade supported for qii_creative, impit_limited, techshop_retail (got businessPack="
+                            + pack + ")");
         };
     }
 
@@ -198,7 +227,7 @@ public class ProvisioningService {
         TenantRouting payroll = repository.findByServiceNameAndTenantId(SERVICE_PAYROLL, normalized)
                 .orElseThrow(() -> new IllegalArgumentException("Payroll routing not found for " + normalized));
         provisioner.migrateExisting(payroll.getJdbcUrl(), properties.getProvision().getPayroll());
-        cachePublisher.publishRouting(payroll);
+        markRouting(payroll, TenantRoutingStatuses.ACTIVE);
         return Map.of(
                 "tenantId", normalized,
                 "jdbcUrl", payroll.getJdbcUrl(),
@@ -221,17 +250,59 @@ public class ProvisioningService {
     }
 
     /**
-     * Fleet migrate: apply Liquibase (no reseed) for every known tenant routing row.
-     * Isolates failures per tenant/service so one bad DB does not stop the fleet.
+     * Fleet migrate every service for every tenant (startup default).
      */
-    @Transactional
     public Map<String, Object> migrateAllTenants() {
+        return migrateAllTenants(null);
+    }
+
+    /**
+     * Fleet migrate: apply shared Liquibase changelogs to tenant DBs (no reseed).
+     *
+     * @param serviceFilter when non-blank (e.g. {@code hrms}), only that service's
+     *                      tenant DBs are migrated — other services are untouched.
+     *                      When blank/null, all services migrate (startup / full fleet).
+     */
+    public Map<String, Object> migrateAllTenants(String serviceFilter) {
+        String filter = (serviceFilter == null || serviceFilter.isBlank())
+                ? null
+                : serviceFilter.trim().toLowerCase();
+        if (filter != null && resolveDbTarget(filter) == null) {
+            throw new IllegalArgumentException(
+                    "Unknown service filter=" + filter
+                            + " (use hrms, payroll, file, notification, report)");
+        }
+
         java.util.List<Map<String, Object>> results = new java.util.ArrayList<>();
         int ok = 0;
         int failed = 0;
+        int skipped = 0;
         java.util.Set<String> tenants = new java.util.LinkedHashSet<>();
+
         for (TenantRouting row : repository.findAllByOrderByTenantIdAscServiceNameAsc()) {
             tenants.add(row.getTenantId());
+        }
+
+        // Full fleet (or satellite services): ensure old tenants get files/notif/reports DBs.
+        boolean touchSatellites = filter == null
+                || SERVICE_FILE.equals(filter)
+                || SERVICE_NOTIFICATION.equals(filter)
+                || SERVICE_REPORT.equals(filter);
+        if (touchSatellites) {
+            for (String tenantId : tenants) {
+                try {
+                    ensureSatelliteServiceRouting(tenantId);
+                } catch (Exception e) {
+                    log.warn("Fleet satellite ensure failed for tenant={}: {}", tenantId, e.getMessage());
+                }
+            }
+        }
+
+        for (TenantRouting row : repository.findAllByOrderByTenantIdAscServiceNameAsc()) {
+            if (filter != null && !filter.equalsIgnoreCase(row.getServiceName())) {
+                skipped++;
+                continue;
+            }
             Map<String, Object> item = new java.util.LinkedHashMap<>();
             item.put("tenantId", row.getTenantId());
             item.put("service", row.getServiceName());
@@ -240,28 +311,50 @@ public class ProvisioningService {
                 if (target == null) {
                     item.put("status", "SKIPPED");
                     item.put("reason", "no DbTarget for service");
+                    skipped++;
                 } else {
                     provisioner.migrateExisting(row.getJdbcUrl(), target);
-                    cachePublisher.publishRouting(row);
+                    markRouting(row, TenantRoutingStatuses.ACTIVE);
                     item.put("status", "OK");
+                    item.put("routingStatus", TenantRoutingStatuses.ACTIVE);
                     ok++;
                 }
             } catch (Exception e) {
                 failed++;
                 item.put("status", "FAILED");
                 item.put("error", e.getMessage());
+                try {
+                    markRouting(row, TenantRoutingStatuses.SCHEMA_OUTDATED);
+                    item.put("routingStatus", TenantRoutingStatuses.SCHEMA_OUTDATED);
+                } catch (Exception markEx) {
+                    log.warn("Could not mark SCHEMA_OUTDATED tenant={} service={}: {}",
+                            row.getTenantId(), row.getServiceName(), markEx.getMessage());
+                }
                 log.warn("migrate-all failed tenant={} service={}: {}",
                         row.getTenantId(), row.getServiceName(), e.getMessage());
             }
             results.add(item);
         }
-        return Map.of(
-                "tenants", tenants.size(),
-                "ok", ok,
-                "failed", failed,
-                "results", results,
-                "message", "Fleet schema migrate complete (no reseed)."
-        );
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("tenants", tenants.size());
+        out.put("serviceFilter", filter == null ? "ALL" : filter);
+        out.put("ok", ok);
+        out.put("failed", failed);
+        out.put("skipped", skipped);
+        out.put("results", results);
+        out.put("message", filter == null
+                ? "Fleet schema migrate complete (all services; no reseed). Failed rows marked SCHEMA_OUTDATED."
+                : "Fleet schema migrate complete for service=" + filter
+                        + " only (other services untouched; no reseed).");
+        return out;
+    }
+
+    private void markRouting(TenantRouting row, String status) {
+        row.setStatus(status);
+        row.setVersion(System.currentTimeMillis());
+        row.setUpdatedAt(Instant.now());
+        repository.save(row);
+        cachePublisher.publishRouting(row);
     }
 
     private PlatformProperties.DbTarget resolveDbTarget(String serviceName) {
@@ -335,7 +428,7 @@ public class ProvisioningService {
                 row.setJdbcUrl(jdbc);
                 row.setUsername(target.getUsername());
                 row.setPassword(target.getPassword());
-                row.setStatus("ACTIVE");
+                row.setStatus(TenantRoutingStatuses.ACTIVE);
                 row.setVersion(version);
                 row.setUpdatedAt(now);
                 repository.save(row);
@@ -407,7 +500,7 @@ public class ProvisioningService {
         row.setJdbcUrl(jdbcUrl);
         row.setUsername(target.getUsername());
         row.setPassword(target.getPassword());
-        row.setStatus("ACTIVE");
+        row.setStatus(TenantRoutingStatuses.ACTIVE);
         row.setVersion(version);
         row.setCreatedAt(now);
         row.setUpdatedAt(now);

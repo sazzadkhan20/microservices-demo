@@ -14,7 +14,8 @@ import { MONTH_NAMES, datesBetween, dowOf, monthCells, ymd, DOW_LABEL, DOW } fro
 import { fmtNumber, fmtRange, isoDate, todayIso } from "@/lib/format";
 import { leaveAppRowSchema, leavePolicySchema, type LeaveAppRow } from "@/lib/schemas/admin";
 
-const LIVE = new Set(["APPROVED", "PENDING_APPROVAL", "PENDING", "PENDING_RELIEF"]);
+/** Still blocks the calendar until cancel is fully approved (or denied back to APPROVED). */
+const LIVE = new Set(["APPROVED", "PENDING_APPROVAL", "PENDING", "PENDING_RELIEF", "PENDING_CANCEL"]);
 const firstName = (n: string) => n.split(" ")[0];
 
 export default function LeaveCalendarPage() {

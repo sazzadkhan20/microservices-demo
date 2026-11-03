@@ -23,6 +23,7 @@ const MAP: Record<string, Tone> = {
   cancelled: "",
   canceled: "",
   cancel_pending: "warn",
+  pending_cancel: "warn",
   // payroll
   draft: "warn",
   finalized: "good",

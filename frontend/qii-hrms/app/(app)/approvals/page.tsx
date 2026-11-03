@@ -14,7 +14,14 @@ import { byId, rowsOf, useEmployeesLookup, type Rec } from "@/lib/api/lookups";
 import { fmtDate, fmtDateTime, fmtNumber, fmtRange, str } from "@/lib/format";
 import type { LeaveRow } from "@/lib/schemas/leave";
 
-type Decision = { kind: "leave" | "corr"; id: string | number; action: "approve" | "reject"; who: string };
+type Decision = {
+  kind: "leave" | "corr";
+  id: string | number;
+  action: "approve" | "reject";
+  who: string;
+  /** Leave cancellation chain (PENDING_CANCEL) — avoid scanning leaveRows (may contain nulls). */
+  isCancel?: boolean;
+};
 
 export default function ApprovalsPage() {
   const { me, can } = useAuth();
@@ -40,8 +47,10 @@ export default function ApprovalsPage() {
     enabled: canCorr,
   });
 
-  const leaveRows = rowsOf<LeaveRow & Rec>(pending.data);
-  const corrRows = rowsOf<Rec>(corrections.data);
+  const leaveRows = rowsOf<LeaveRow & Rec>(pending.data).filter(
+    (r): r is LeaveRow & Rec => r != null && r.id != null && r.id !== "",
+  );
+  const corrRows = rowsOf<Rec>(corrections.data).filter((r): r is Rec => r != null && r.id != null);
 
   function refresh() {
     void qc.invalidateQueries({ queryKey: ["approvals-pending"] });
@@ -88,7 +97,7 @@ export default function ApprovalsPage() {
     <div className="stack">
       <PageHeader
         title="Approvals"
-        subtitle="Leave requests and attendance corrections waiting on a decision."
+        subtitle="New leave, cancellation requests, and attendance corrections waiting on your step."
         actions={
           <button type="button" className="btn" onClick={refresh}>
             Refresh
@@ -103,7 +112,7 @@ export default function ApprovalsPage() {
             <span className="pill acc">{leaveRows.length}</span>
           </div>
           <p className="small muted" style={{ margin: 0 }}>
-            Only requests at your step in the approval chain (reporting manager first, then HR when configured).
+            Includes new leave and cancellation requests at your step in the configured approval chain.
           </p>
           <ErrorNote error={pending.error} />
           <div className="tbl-wrap">
@@ -129,11 +138,17 @@ export default function ApprovalsPage() {
                 ) : (
                   leaveRows.map((r) => {
                     const who = names.get(String(r.employeeId)) ?? `Employee #${r.employeeId}`;
+                    const isCancel = String(r.status ?? "").toUpperCase() === "PENDING_CANCEL";
                     return (
                       <tr key={String(r.id)}>
                         <td>
                           <b>{who}</b>
                           <div className="small muted">{str(r.reason, "")}</div>
+                          {isCancel ? (
+                            <div className="small" style={{ marginTop: 4 }}>
+                              <span className="pill warn">Cancellation request</span>
+                            </div>
+                          ) : null}
                         </td>
                         <td>{str(r.leaveTypeCode)}</td>
                         <td>{fmtRange(r.startDate, r.endDate)}</td>
@@ -169,17 +184,21 @@ export default function ApprovalsPage() {
                               type="button"
                               className="btn sm primary"
                               disabled={decide.isPending}
-                              onClick={() => open({ kind: "leave", id: r.id, action: "approve", who })}
+                              onClick={() =>
+                                open({ kind: "leave", id: r.id, action: "approve", who, isCancel })
+                              }
                             >
-                              Approve
+                              {isCancel ? "Approve cancel" : "Approve"}
                             </button>
                             <button
                               type="button"
                               className="btn sm danger"
                               disabled={decide.isPending}
-                              onClick={() => open({ kind: "leave", id: r.id, action: "reject", who })}
+                              onClick={() =>
+                                open({ kind: "leave", id: r.id, action: "reject", who, isCancel })
+                              }
                             >
-                              Reject
+                              {isCancel ? "Deny cancel" : "Reject"}
                             </button>
                           </div>
                         </td>
@@ -277,8 +296,18 @@ export default function ApprovalsPage() {
       <Modal
         open={!!decision}
         onClose={() => setDecision(null)}
-        title={decision ? `${decision.action === "approve" ? "Approve" : "Reject"} — ${decision.who}` : ""}
-        subtitle={decision?.kind === "leave" ? "Leave request" : "Attendance correction"}
+        title={
+          decision
+            ? `${decision.action === "approve" ? "Approve" : "Reject"} — ${decision.who}`
+            : ""
+        }
+        subtitle={
+          decision?.kind === "leave"
+            ? decision.isCancel
+              ? "Leave cancellation request"
+              : "Leave request"
+            : "Attendance correction"
+        }
         footer={
           <>
             <button type="button" className="btn" onClick={() => setDecision(null)}>
@@ -290,7 +319,15 @@ export default function ApprovalsPage() {
               disabled={decide.isPending || (decision?.action === "reject" && note.trim().length < 3)}
               onClick={() => decision && decide.mutate({ ...decision, note: note.trim() })}
             >
-              {decide.isPending ? "Saving…" : decision?.action === "approve" ? "Confirm approval" : "Confirm rejection"}
+              {decide.isPending
+                ? "Saving…"
+                : decision?.action === "approve"
+                  ? decision.isCancel
+                    ? "Confirm cancel approval"
+                    : "Confirm approval"
+                  : decision?.isCancel
+                    ? "Deny cancellation"
+                    : "Confirm rejection"}
             </button>
           </>
         }

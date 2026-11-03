@@ -89,9 +89,13 @@ public class LeaveIdleReminderJob {
 
         for (LeaveApplication app : idle) {
             try {
-                LeaveApproval step = approvalRepository
-                        .findByApplicationIdAndStepOrder(app.getId(), Math.max(1, app.getCurrentStep()))
-                        .orElse(null);
+                List<LeaveApproval> stepRows = approvalRepository
+                        .findByApplicationIdAndStepOrderOrderByIdAsc(
+                                app.getId(), Math.max(1, app.getCurrentStep()));
+                LeaveApproval step = stepRows.stream()
+                        .filter(s -> LeaveApproval.STATUS_PENDING.equals(s.getStatus()))
+                        .reduce((a, b) -> b)
+                        .orElse(stepRows.isEmpty() ? null : stepRows.get(stepRows.size() - 1));
                 if (step == null || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
                     continue;
                 }

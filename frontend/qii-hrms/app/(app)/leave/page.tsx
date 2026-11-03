@@ -68,6 +68,8 @@ export default function MyLeavePage() {
   const [formError, setFormError] = useState("");
   const [status, setStatus] = useState("");
   const [withdrawId, setWithdrawId] = useState<string | number | null>(null);
+  /** When true, withdraw undoes a PENDING_CANCEL request (leave stays approved). */
+  const [withdrawCancelRequest, setWithdrawCancelRequest] = useState(false);
   const [cancelId, setCancelId] = useState<string | number | null>(null);
 
   // Preview state
@@ -154,10 +156,13 @@ export default function MyLeavePage() {
     mutationFn: (id: string | number) =>
       apiFetch(api.hrms(`leave-applications/${id}/withdraw`), { method: "POST" }),
     onSuccess: () => {
-      toast.show("Request withdrawn");
+      toast.show(withdrawCancelRequest ? "Cancellation withdrawn — leave stays approved" : "Request withdrawn");
       setWithdrawId(null);
+      setWithdrawCancelRequest(false);
       void qc.invalidateQueries({ queryKey: ["my-leave"] });
       void qc.invalidateQueries({ queryKey: ["my-balances"] });
+      void qc.invalidateQueries({ queryKey: ["approvals-pending"] });
+      void qc.invalidateQueries({ queryKey: ["approvals-pending-count"] });
     },
     onError: (e: Error) => toast.error(e),
   });
@@ -166,10 +171,12 @@ export default function MyLeavePage() {
     mutationFn: (id: string | number) =>
       apiFetch(api.hrms(`leave-applications/${id}/cancel`), { method: "POST" }),
     onSuccess: () => {
-      toast.show("Cancellation requested");
+      toast.show("Cancellation requested — waiting on approval chain");
       setCancelId(null);
       void qc.invalidateQueries({ queryKey: ["my-leave"] });
       void qc.invalidateQueries({ queryKey: ["my-balances"] });
+      void qc.invalidateQueries({ queryKey: ["approvals-pending"] });
+      void qc.invalidateQueries({ queryKey: ["approvals-pending-count"] });
     },
     onError: (e: Error) => toast.error(e),
   });
@@ -501,13 +508,32 @@ export default function MyLeavePage() {
                 header: "",
                 render: (r) => {
                   const st = String(r.status ?? "").toUpperCase();
+                  if (st === "PENDING_CANCEL" && can("leave", "request")) {
+                    return (
+                      <button
+                        type="button"
+                        className="btn sm"
+                        disabled={withdraw.isPending}
+                        onClick={() => {
+                          setWithdrawCancelRequest(true);
+                          setWithdrawId(r.id);
+                        }}
+                        title="Withdraw the cancellation request; leave stays approved"
+                      >
+                        Withdraw cancel
+                      </button>
+                    );
+                  }
                   if (isPending(r.status) && st !== "PENDING_CANCEL" && can("leave", "request")) {
                     return (
                       <button
                         type="button"
                         className="btn sm"
                         disabled={withdraw.isPending}
-                        onClick={() => setWithdrawId(r.id)}
+                        onClick={() => {
+                          setWithdrawCancelRequest(false);
+                          setWithdrawId(r.id);
+                        }}
                       >
                         Withdraw
                       </button>
@@ -533,17 +559,22 @@ export default function MyLeavePage() {
         </section>
       </div>
 
-      {/* ── Withdraw confirm ── */}
+      {/* ── Withdraw confirm (apply pending OR cancel pending) ── */}
       <ConfirmModal
         open={withdrawId !== null}
-        title="Withdraw leave request?"
+        title={withdrawCancelRequest ? "Withdraw cancellation request?" : "Withdraw leave request?"}
         confirmLabel="Withdraw"
         danger
         busy={withdraw.isPending}
-        onCancel={() => setWithdrawId(null)}
+        onCancel={() => {
+          setWithdrawId(null);
+          setWithdrawCancelRequest(false);
+        }}
         onConfirm={() => withdrawId !== null && withdraw.mutate(withdrawId)}
       >
-        The request will be cancelled and any held balance released.
+        {withdrawCancelRequest
+          ? "The cancellation request will be withdrawn. Your leave stays approved and the balance is unchanged."
+          : "The request will be withdrawn and any held balance released."}
       </ConfirmModal>
 
       {/* ── Cancel approved leave confirm ── */}

@@ -743,6 +743,26 @@ public class QiiBusinessSeeder {
                        1.00, 'PENDING_APPROVAL', 'Family errand', FALSE, 0, 0, TRUE, FALSE,
                        '{}'::jsonb, 1, NOW(), NOW()
                 FROM employee e WHERE e.employee_code = 'QII-0020'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM leave_application la
+                    WHERE la.employee_id = e.id AND la.reason = 'Family errand'
+                      AND la.status = 'PENDING_APPROVAL'
+                  )
+                """);
+
+        // Config-driven chain materialization: CASUAL → MANAGER (REPORTING_MANAGER).
+        st.executeUpdate("""
+                INSERT INTO leave_approval
+                  (application_id, step_order, approver_role, status, resolver, expected_approver_id)
+                SELECT la.id, 1, 'MANAGER', 'PENDING', 'REPORTING_MANAGER', e.manager_id
+                FROM leave_application la
+                JOIN employee e ON e.id = la.employee_id
+                WHERE la.reason = 'Family errand'
+                  AND la.status = 'PENDING_APPROVAL'
+                  AND e.manager_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM leave_approval x WHERE x.application_id = la.id
+                  )
                 """);
 
         st.executeUpdate("""
@@ -755,6 +775,11 @@ public class QiiBusinessSeeder {
                        3.00, 'APPROVED', 'Short break', FALSE, 14, 7, TRUE, FALSE,
                        '{}'::jsonb, 2, NOW(), NOW()
                 FROM employee e WHERE e.employee_code = 'QII-0022'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM leave_application la
+                    WHERE la.employee_id = e.id AND la.reason = 'Short break'
+                      AND la.status = 'APPROVED'
+                  )
                 """);
     }
 

@@ -5,13 +5,14 @@ import { api, apiFetch, listParams } from "@/lib/api/client";
 
 export type Rec = Record<string, unknown>;
 
-/** Accepts a bare array or a PageResponse envelope and returns the rows. */
+/** Accepts a bare array or a PageResponse envelope and returns the rows (null holes dropped). */
 export function rowsOf<T = Rec>(data: unknown): T[] {
-  if (Array.isArray(data)) return data as T[];
-  if (data && typeof data === "object" && Array.isArray((data as { content?: unknown }).content)) {
-    return (data as { content: T[] }).content;
-  }
-  return [];
+  const raw: unknown[] = Array.isArray(data)
+    ? data
+    : data && typeof data === "object" && Array.isArray((data as { content?: unknown }).content)
+      ? (data as { content: unknown[] }).content
+      : [];
+  return raw.filter((r): r is T => r != null) as T[];
 }
 
 export type Dept = { id: number; code?: string | null; name: string };

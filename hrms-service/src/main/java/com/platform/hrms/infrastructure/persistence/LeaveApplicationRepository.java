@@ -28,7 +28,7 @@ public interface LeaveApplicationRepository extends JpaRepository<LeaveApplicati
 
     @Query("""
             select a from LeaveApplication a
-             where a.status in ('APPROVED', 'PENDING_APPROVAL', 'PENDING_RELIEF', 'SUBMITTED')
+             where a.status in ('APPROVED', 'PENDING_APPROVAL', 'PENDING_RELIEF', 'SUBMITTED', 'PENDING_CANCEL')
                and a.storeId = :storeId
                and a.shiftPattern = :shift
                and a.startDate <= :day
@@ -43,7 +43,7 @@ public interface LeaveApplicationRepository extends JpaRepository<LeaveApplicati
     @Query("""
             select a from LeaveApplication a
              where a.employeeId in :employeeIds
-               and a.status in ('APPROVED', 'PENDING_APPROVAL', 'PENDING_RELIEF', 'SUBMITTED')
+               and a.status in ('APPROVED', 'PENDING_APPROVAL', 'PENDING_RELIEF', 'SUBMITTED', 'PENDING_CANCEL')
                and a.startDate <= :endDate
                and a.endDate >= :startDate
                and a.employeeId <> :excludeEmployeeId
@@ -56,7 +56,7 @@ public interface LeaveApplicationRepository extends JpaRepository<LeaveApplicati
     @Query("""
             select a from LeaveApplication a
              where a.employeeId = :employeeId
-               and a.status in ('PENDING_APPROVAL', 'APPROVED', 'PENDING_RELIEF', 'SUBMITTED')
+               and a.status in ('PENDING_APPROVAL', 'APPROVED', 'PENDING_RELIEF', 'SUBMITTED', 'PENDING_CANCEL')
                and a.startDate <= :endDate
                and a.endDate >= :startDate
                and (:excludeAppId is null or a.id <> :excludeAppId)
@@ -68,7 +68,7 @@ public interface LeaveApplicationRepository extends JpaRepository<LeaveApplicati
 
     @Query("""
             select a from LeaveApplication a
-             where a.status = 'PENDING_APPROVAL'
+             where a.status in ('PENDING_APPROVAL', 'PENDING_CANCEL', 'SUBMITTED', 'IN_REVIEW')
                and a.updatedAt < :cutoff
             """)
     List<LeaveApplication> findPendingApprovalOlderThan(@Param("cutoff") java.time.Instant cutoff);

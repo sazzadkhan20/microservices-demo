@@ -1,0 +1,29 @@
+databaseChangeLog:
+  # Cancel-chain rebuild previously left duplicate (application_id, step_order) rows,
+  # which made Optional findByApplicationIdAndStepOrder throw NonUniqueResultException.
+  - changeSet:
+      id: hrms-019-dedupe-leave-approval-steps
+      author: platform
+      changes:
+        - sql:
+            sql: >
+              DELETE FROM leave_approval a
+               USING leave_approval b
+               WHERE a.application_id = b.application_id
+                 AND a.step_order = b.step_order
+                 AND a.id < b.id;
+
+  - changeSet:
+      id: hrms-019-uk-leave-approval-app-step
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - uniqueConstraintExists:
+                tableName: leave_approval
+                constraintName: uk_leave_approval_app_step
+      changes:
+        - addUniqueConstraint:
+            tableName: leave_approval
+            columnNames: application_id, step_order
+            constraintName: uk_leave_approval_app_step

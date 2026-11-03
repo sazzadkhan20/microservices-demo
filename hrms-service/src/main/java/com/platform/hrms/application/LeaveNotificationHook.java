@@ -67,6 +67,20 @@ public class LeaveNotificationHook {
                 "/approvals");
     }
 
+    /** FR-LV-18 — notify current-step approver that an approved leave cancel was requested. */
+    public void notifyLeaveCancelRequested(Long approverEmployeeId, Long applicationId, String applicantName) {
+        if (approverEmployeeId == null) return;
+        // Reuse LEAVE_SUBMITTED toggle so packs without a separate cancel flag still notify.
+        if (!isEnabled("LEAVE_SUBMITTED") && !isEnabled("LEAVE_CANCEL_REQUEST")) return;
+        String who = applicantName == null || applicantName.isBlank() ? "An employee" : applicantName;
+        push(approverEmployeeId,
+                "Leave cancellation approval needed",
+                who + " requested cancellation of leave #" + applicationId,
+                "LEAVE",
+                "leave-cancel-" + applicationId + "-" + approverEmployeeId,
+                "/approvals");
+    }
+
     /** FR-LV-14 — team clash ALERT: notify manager / team lead / first approver (not the applicant). */
     public void notifyTeamClash(Long recipientEmployeeId, Long applicationId, String message) {
         if (recipientEmployeeId == null) return;

@@ -128,25 +128,37 @@ public class LeaveApplicationService {
     }
 
     /**
-     * Pending approvals the caller can actually decide now: data scope + current-step authority.
-     * HR with leave:approve does not see manager-step items until the reporting manager has acted.
+     * Statuses that wait on an approval decision (apply chain or cancel chain).
+     * Shared by pending queue, idle reminders, and decision gates — config-agnostic.
      */
-    @Transactional(readOnly = true)
+    public static boolean isAwaitingApprovalDecision(String status) {
+        if (status == null || status.isBlank()) {
+            return false;
+        }
+        String s = status.trim().toUpperCase(Locale.ROOT);
+        return LeaveApplication.STATUS_PENDING_APPROVAL.equals(s)
+                || LeaveApplication.STATUS_PENDING_CANCEL.equals(s)
+                || "SUBMITTED".equals(s)
+                || "IN_REVIEW".equals(s);
+    }
+
+    /**
+     * Pending approvals the caller can actually decide now: data scope + current-step authority.
+     * Includes {@code PENDING_CANCEL} (FR-LV-18 cancel chain uses the same resolvers).
+     * HR with leave:approve does not see manager-step items until the reporting manager has acted.
+     * <p>Legacy/seed rows awaiting a decision with zero approval steps are rebuilt from the
+     * tenant leave category/policy chain (same engine as apply/cancel) so packs stay config-driven.
+     */
+    @Transactional
     public List<LeaveApplicationResponse> pendingForCaller() {
         Long actorId = AuthContext.requireEmployeeId();
         DataScopeService.Visibility visible = dataScopeService.visibility(actorId, "leave", "approve");
         return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
-                .filter(a -> {
-                    String s = a.getStatus() == null ? "" : a.getStatus().toUpperCase(Locale.ROOT);
-                    return LeaveApplication.STATUS_PENDING_APPROVAL.equals(s)
-                            || "SUBMITTED".equals(s)
-                            || "IN_REVIEW".equals(s);
-                })
+                .filter(a -> isAwaitingApprovalDecision(a.getStatus()))
                 .filter(a -> visible.allows(a.getEmployeeId()))
+                .peek(this::ensureApprovalStepsIfMissing)
                 .filter(a -> {
-                    LeaveApproval step = approvalRepository
-                            .findByApplicationIdAndStepOrder(a.getId(), Math.max(1, a.getCurrentStep()))
-                            .orElse(null);
+                    LeaveApproval step = currentApprovalStep(a.getId(), Math.max(1, a.getCurrentStep()));
                     return step != null
                             && LeaveApproval.STATUS_PENDING.equals(step.getStatus())
                             && approvalAuthorityService.canApprove(actorId, step, a);
@@ -229,7 +241,6 @@ public class LeaveApplicationService {
         if (!actorId.equals(targetId) && !rbacService.hasPermission(actorId, "leave", "manage")) {
             throw new IllegalStateException("Cannot apply leave for another employee");
         }
-
         ApplyContext ctx = buildApplyContext(request);
         Employee employee = ctx.employee();
         LeaveType leaveType = ctx.leaveType();
@@ -342,14 +353,7 @@ public class LeaveApplicationService {
         List<LeaveApproval> createdSteps =
                 approvalRepository.findByApplicationIdOrderByStepOrderAsc(saved.getId());
         // FR-NT-01 — notify current-step expected approver(s)
-        for (LeaveApproval step : createdSteps) {
-            if (step.getStepOrder() == Math.max(1, saved.getCurrentStep())
-                    && LeaveApproval.STATUS_PENDING.equals(step.getStatus())
-                    && step.getExpectedApproverId() != null) {
-                notificationHook.notifyLeaveSubmitted(
-                        step.getExpectedApproverId(), saved.getId(), employee.getFullName());
-            }
-        }
+        notifyCurrentStepApprovers(saved, createdSteps, employee.getFullName(), false);
         if (teamClashAlert) {
             String clashMsg = warnings.getOrDefault("teamClash", "Team clash alert").toString();
             Set<Long> clashRecipients = new HashSet<>();
@@ -576,8 +580,8 @@ public class LeaveApplicationService {
             throw new IllegalStateException("Cancel-request only allowed for APPROVED leaves; status=" + app.getStatus());
         }
         // Wipe prior approval steps so cancel chain step_order 1..n is unambiguous (FR-LV-18).
-        approvalRepository.findByApplicationIdOrderByStepOrderAsc(applicationId)
-                .forEach(approvalRepository::delete);
+        // Must flush-delete: orphaned duplicates make findByApplicationIdAndStepOrder throw NonUniqueResult.
+        approvalRepository.deleteByApplicationId(applicationId);
 
         app.setStatus(LeaveApplication.STATUS_PENDING_CANCEL);
         app.setCurrentStep(1);
@@ -589,7 +593,14 @@ public class LeaveApplicationService {
                 ? leaveCategoryRepository.findByCodeAndActiveTrue(app.getLeaveTypeCode()).orElse(null) : null;
         Employee employee = employeeRepository.findById(app.getEmployeeId()).orElse(null);
         List<Map<String, Object>> chain = resolveApprovalChain(category, policy);
+        assertReportingManagerPresent(employee, chain);
         createApprovalSteps(app, chain, employee);
+
+        // Same chain engine as apply — notify current-step expected approver(s).
+        List<LeaveApproval> createdSteps =
+                approvalRepository.findByApplicationIdOrderByStepOrderAsc(applicationId);
+        String applicantName = employee == null ? null : employee.getFullName();
+        notifyCurrentStepApprovers(app, createdSteps, applicantName, true);
 
         auditService.record(actorId, "CANCEL_REQUEST", "LeaveApplication", String.valueOf(applicationId),
                 Map.of("status", LeaveApplication.STATUS_APPROVED),
@@ -728,8 +739,11 @@ public class LeaveApplicationService {
             throw new IllegalStateException("Cannot approve status=" + app.getStatus());
         }
 
-        LeaveApproval step = approvalRepository.findByApplicationIdAndStepOrder(applicationId, app.getCurrentStep())
-                .orElseThrow(() -> new IllegalStateException("Missing approval step " + app.getCurrentStep()));
+        ensureApprovalStepsIfMissing(app);
+        LeaveApproval step = currentApprovalStep(applicationId, app.getCurrentStep());
+        if (step == null) {
+            throw new IllegalStateException("Missing approval step " + app.getCurrentStep());
+        }
         if (!LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
             throw new IllegalStateException("Current step already decided");
         }
@@ -750,27 +764,44 @@ public class LeaveApplicationService {
                 && LeaveApproval.STATUS_PENDING.equals(a.getStatus()));
         if (more) {
             app.setCurrentStep(app.getCurrentStep() + 1);
+            app.setUpdatedAt(now);
             // Keep status (PENDING_APPROVAL or PENDING_CANCEL) as-is
-        } else {
-            if (isCancelChain) {
-                // FR-LV-18: final approval of cancel chain → restore balance and set CANCELLED
-                app.setStatus(LeaveApplication.STATUS_CANCELLED);
-                if (app.getLeaveTypeCode() != null && app.isBalanceDeducted()) {
-                    leaveBalanceService.restoreOnCancel(
-                            app.getEmployeeId(),
-                            app.getLeaveTypeCode(),
-                            app.getStartDate().getYear(),
-                            app.getWorkingDaysCounted());
-                }
-            } else {
-                app.setStatus(LeaveApplication.STATUS_APPROVED);
-                deductIfNeeded(app);
+            applicationRepository.save(app);
+            // Notify next step's expected approver (apply + cancel chains).
+            Employee applicant = employeeRepository.findById(app.getEmployeeId()).orElse(null);
+            notifyCurrentStepApprovers(
+                    app,
+                    approvalRepository.findByApplicationIdOrderByStepOrderAsc(applicationId),
+                    applicant == null ? null : applicant.getFullName(),
+                    isCancelChain);
+            notificationHook.notifyLeaveDecision(
+                    app.getEmployeeId(),
+                    applicationId,
+                    app.getStatus(),
+                    isCancelChain ? "Leave cancellation still pending approval" : "Leave still pending approval");
+            return get(applicationId);
+        }
+        if (isCancelChain) {
+            // FR-LV-18: final approval of cancel chain → restore balance and set CANCELLED
+            app.setStatus(LeaveApplication.STATUS_CANCELLED);
+            if (app.getLeaveTypeCode() != null && app.isBalanceDeducted()) {
+                leaveBalanceService.restoreOnCancel(
+                        app.getEmployeeId(),
+                        app.getLeaveTypeCode(),
+                        app.getStartDate().getYear(),
+                        app.getWorkingDaysCounted());
             }
+        } else {
+            app.setStatus(LeaveApplication.STATUS_APPROVED);
+            deductIfNeeded(app);
         }
         app.setUpdatedAt(now);
         applicationRepository.save(app);
         notificationHook.notifyLeaveDecision(
-                app.getEmployeeId(), applicationId, app.getStatus(), "Leave " + app.getStatus());
+                app.getEmployeeId(),
+                applicationId,
+                app.getStatus(),
+                isCancelChain ? "Leave cancellation approved" : "Leave " + app.getStatus());
         return get(applicationId);
     }
 
@@ -783,17 +814,22 @@ public class LeaveApplicationService {
         }
         LeaveApplication app = requireApp(applicationId);
         if (LeaveApplication.STATUS_APPROVED.equals(app.getStatus())
-                || LeaveApplication.STATUS_REJECTED.equals(app.getStatus())) {
+                || LeaveApplication.STATUS_REJECTED.equals(app.getStatus())
+                || LeaveApplication.STATUS_CANCELLED.equals(app.getStatus())) {
             throw new IllegalStateException("Already final: " + app.getStatus());
         }
-        LeaveApproval step = approvalRepository.findByApplicationIdAndStepOrder(applicationId, Math.max(1, app.getCurrentStep()))
-                .orElse(null);
+        boolean isCancelChain = LeaveApplication.STATUS_PENDING_CANCEL.equals(app.getStatus());
+        ensureApprovalStepsIfMissing(app);
+        LeaveApproval step = currentApprovalStep(applicationId, Math.max(1, app.getCurrentStep()));
 
         // BE-03: approver identity comes from the JWT/AuthContext, never from the request body.
         Long approverId = AuthContext.requireEmployeeId();
         Employee approver;
         if (step != null && LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
             approver = requireActiveApprover(approverId, step, app);
+        } else if (isCancelChain) {
+            // Cancel reject must still go through current-step authority when a step exists.
+            throw new IllegalStateException("Missing pending cancel-approval step");
         } else {
             approver = requireActiveEmployee(approverId);
         }
@@ -807,12 +843,24 @@ public class LeaveApplicationService {
             step.setDecidedAt(now);
             approvalRepository.save(step);
         }
-        app.setStatus(LeaveApplication.STATUS_REJECTED);
-        app.setRejectReason(request == null ? null : request.comment());
+        if (isCancelChain) {
+            // Deny cancellation → leave remains APPROVED; balance stays deducted.
+            app.setStatus(LeaveApplication.STATUS_APPROVED);
+            app.setRejectReason(null);
+            app.setCurrentStep(0);
+            notificationHook.notifyLeaveDecision(
+                    app.getEmployeeId(),
+                    applicationId,
+                    LeaveApplication.STATUS_APPROVED,
+                    "Leave cancellation denied — leave remains approved");
+        } else {
+            app.setStatus(LeaveApplication.STATUS_REJECTED);
+            app.setRejectReason(request == null ? null : request.comment());
+            notificationHook.notifyLeaveDecision(
+                    app.getEmployeeId(), applicationId, LeaveApplication.STATUS_REJECTED, "Leave rejected");
+        }
         app.setUpdatedAt(now);
         applicationRepository.save(app);
-        notificationHook.notifyLeaveDecision(
-                app.getEmployeeId(), applicationId, LeaveApplication.STATUS_REJECTED, "Leave rejected");
         return get(applicationId);
     }
 
@@ -822,6 +870,23 @@ public class LeaveApplicationService {
         LeaveApplication app = requireApp(applicationId);
         if (!actorId.equals(app.getEmployeeId()) && !rbacService.hasPermission(actorId, "leave", "manage")) {
             throw new IllegalStateException("Forbidden: only the requester or leave:manage can withdraw");
+        }
+        // Withdraw a cancel request → restore APPROVED (leave stands).
+        if (LeaveApplication.STATUS_PENDING_CANCEL.equals(app.getStatus())) {
+            String before = app.getStatus();
+            approvalRepository.deleteByApplicationId(applicationId);
+            app.setStatus(LeaveApplication.STATUS_APPROVED);
+            app.setCurrentStep(0);
+            app.setUpdatedAt(Instant.now());
+            applicationRepository.save(app);
+            auditService.record(actorId, "CANCEL_WITHDRAW", "LeaveApplication", String.valueOf(applicationId),
+                    Map.of("status", before), Map.of("status", LeaveApplication.STATUS_APPROVED));
+            notificationHook.notifyLeaveDecision(
+                    app.getEmployeeId(),
+                    applicationId,
+                    LeaveApplication.STATUS_APPROVED,
+                    "Leave cancellation withdrawn — leave remains approved");
+            return get(applicationId);
         }
         String before = app.getStatus();
         if (!Set.of(LeaveApplication.STATUS_PENDING_APPROVAL, LeaveApplication.STATUS_PENDING_RELIEF,
@@ -984,12 +1049,86 @@ public class LeaveApplicationService {
     }
 
     /**
+     * Resolve the current decision step safely when duplicates exist (legacy cancel bug).
+     * Prefers {@code PENDING}, else the latest row by id.
+     */
+    LeaveApproval currentApprovalStep(Long applicationId, int stepOrder) {
+        List<LeaveApproval> rows = approvalRepository
+                .findByApplicationIdAndStepOrderOrderByIdAsc(applicationId, stepOrder);
+        if (rows == null || rows.isEmpty()) {
+            return null;
+        }
+        return rows.stream()
+                .filter(s -> LeaveApproval.STATUS_PENDING.equals(s.getStatus()))
+                .reduce((a, b) -> b) // last pending
+                .orElse(rows.get(rows.size() - 1));
+    }
+
+    /**
+     * Notify the expected actor(s) for the application's current pending step.
+     * Used for apply submit, cancel request, and mid-chain advancement — same chain engine for all packs.
+     */
+    private void notifyCurrentStepApprovers(
+            LeaveApplication app,
+            List<LeaveApproval> steps,
+            String applicantName,
+            boolean cancelChain) {
+        if (app == null || steps == null || steps.isEmpty()) {
+            return;
+        }
+        int current = Math.max(1, app.getCurrentStep());
+        for (LeaveApproval step : steps) {
+            if (step.getStepOrder() != current
+                    || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())
+                    || step.getExpectedApproverId() == null) {
+                continue;
+            }
+            if (cancelChain) {
+                notificationHook.notifyLeaveCancelRequested(
+                        step.getExpectedApproverId(), app.getId(), applicantName);
+            } else {
+                notificationHook.notifyLeaveSubmitted(
+                        step.getExpectedApproverId(), app.getId(), applicantName);
+            }
+        }
+    }
+
+    /**
+     * Rebuild approval steps from leave category/policy config when an awaiting application has none.
+     * Keeps tenants/packs config-driven: seed gaps and pre-chain rows heal without tenant-specific code.
+     */
+    private void ensureApprovalStepsIfMissing(LeaveApplication app) {
+        if (app == null || !isAwaitingApprovalDecision(app.getStatus())) {
+            return;
+        }
+        List<LeaveApproval> existing = approvalRepository.findByApplicationIdOrderByStepOrderAsc(app.getId());
+        if (existing != null && !existing.isEmpty()) {
+            return;
+        }
+        LeavePolicy policy = configLoader.loadLeavePolicyOrDefault();
+        LeaveCategory category = app.getLeaveTypeCode() != null
+                ? leaveCategoryRepository.findByCodeAndActiveTrue(app.getLeaveTypeCode()).orElse(null) : null;
+        Employee employee = employeeRepository.findById(app.getEmployeeId()).orElse(null);
+        List<Map<String, Object>> chain = resolveApprovalChain(category, policy);
+        assertReportingManagerPresent(employee, chain);
+        createApprovalSteps(app, chain, employee);
+        if (app.getCurrentStep() < 1) {
+            app.setCurrentStep(1);
+            app.setUpdatedAt(Instant.now());
+            applicationRepository.save(app);
+        }
+    }
+
+    /**
      * FR-LV-12/13 — materialize approval chain with skip logic.
      * Resolvers: MANAGER, REPORTING_MANAGER, MANAGER_OF_MANAGER, NAMED_EMPLOYEE, RBAC_ROLE, DESIGNATION_OR_RBAC.
      * Skip when: expected approver is null/inactive, equals requester, or equals previous step's expected approver.
      * Max 4 steps; throws if no steps remain.
      */
     private void createApprovalSteps(LeaveApplication app, List<Map<String, Object>> chain, Employee employee) {
+        // Idempotent rebuild — never leave duplicate (application_id, step_order) rows.
+        approvalRepository.deleteByApplicationId(app.getId());
+
         Long requesterId = app.getEmployeeId();
         List<LeaveApproval> steps = new ArrayList<>();
         Long prevExpectedId = null;

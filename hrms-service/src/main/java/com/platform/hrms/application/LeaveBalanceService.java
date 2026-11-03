@@ -41,11 +41,11 @@ public class LeaveBalanceService {
     private final LeaveApplicationRepository leaveApplicationRepository;
     private final LeaveCategoryRepository leaveCategoryRepository;
 
+    /** Holds that have not yet deducted balance (PENDING_CANCEL already deducted — exclude). */
     private static final Set<String> PENDING_STATUSES = Set.of(
             LeaveApplication.STATUS_PENDING_APPROVAL,
             LeaveApplication.STATUS_PENDING_RELIEF,
-            LeaveApplication.STATUS_SUBMITTED,
-            LeaveApplication.STATUS_PENDING_CANCEL
+            LeaveApplication.STATUS_SUBMITTED
     );
 
     public LeaveBalanceService(
@@ -135,6 +135,8 @@ public class LeaveBalanceService {
                 .findByEmployeeIdOrderByCreatedAtDesc(employeeId).stream()
                 .filter(a -> leaveTypeCode.equalsIgnoreCase(a.getLeaveTypeCode()))
                 .filter(a -> PENDING_STATUSES.contains(a.getStatus()))
+                // Skip rows whose days are already deducted (e.g. mis-set flags); cancel chain is APPROVED→PENDING_CANCEL.
+                .filter(a -> !a.isBalanceDeducted())
                 .filter(a -> a.getStartDate() != null
                         && !a.getStartDate().isBefore(yearStart)
                         && a.getStartDate().isBefore(yearEnd))

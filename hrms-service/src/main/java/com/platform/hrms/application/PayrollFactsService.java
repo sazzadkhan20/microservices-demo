@@ -124,9 +124,10 @@ public class PayrollFactsService {
         Map<String, LeaveType> leaveTypeMap = leaveTypeRepository.findByActiveTrueOrderBySortOrderAsc()
                 .stream().collect(Collectors.toMap(LeaveType::getCode, lt -> lt, (a, b) -> a));
 
-        // --- absentDays: per working day through min(today, monthEnd) ---
+        // --- absentDays / lateCount: per working day through min(today, monthEnd) ---
         LocalDate checkUpTo = today.isBefore(monthEnd) ? today : monthEnd;
         BigDecimal absentDays = BigDecimal.ZERO;
+        long lateCount = 0;
         long missingCheckoutCount = 0;
         long hoursWorkedMinutes = 0;
 
@@ -154,13 +155,16 @@ public class PayrollFactsService {
             AttendanceRecord rec = attByDate.get(d);
             if (rec != null) {
                 String status = rec.getStatusCode() == null ? "" : rec.getStatusCode().toUpperCase(Locale.ROOT);
-                // A / ABSENT = 1, HD / HALF_DAY = 0.5
+                // A / ABSENT = 1, HD / HALF_DAY = 0.5; L / LATE counted separately (penalty via payroll config)
                 if (!hourly) {
                     if ("A".equals(status) || "ABSENT".equals(status)) {
                         absentDays = absentDays.add(BigDecimal.ONE);
                     } else if ("HD".equals(status) || "HALF".equals(status) || "HALF_DAY".equals(status)) {
                         absentDays = absentDays.add(new BigDecimal("0.5"));
                     }
+                }
+                if ("L".equals(status) || "LATE".equals(status)) {
+                    lateCount++;
                 }
                 // Count hours for closed shifts only
                 if (rec.getCheckInAt() != null && rec.getCheckOutAt() != null) {
@@ -219,6 +223,7 @@ public class PayrollFactsService {
         result.put("workingDaysInMonth", workingDaysInMonth);
         result.put("daysEmployed", daysEmployed);
         result.put("absentDays", absentDays);
+        result.put("lateCount", lateCount);
         result.put("unpaidLeaveDays", unpaidLeaveDays);
         result.put("paidLeaveDays", paidLeaveDays);
         result.put("hoursWorked", hoursWorked);

@@ -333,8 +333,17 @@ public class PracticeBusinessSeeder {
                     """)) {
                 ps.setBigDecimal(1, new BigDecimal("2.0000"));
                 ps.setBigDecimal(2, new BigDecimal("2.5000"));
+                // TechShop / practice: close on day 20 + fixed union dues.
                 ps.setString(3, """
-                        [{"type":"FIXED","amount":50,"label":"union_dues"}]
+                        [{"type":"CONFIG","key":"dayDivisorMode","value":"FIXED"},
+                         {"type":"CONFIG","key":"dayDivisor","value":30},
+                         {"type":"CONFIG","key":"absenceRule","value":"BALANCE_FIRST"},
+                         {"type":"CONFIG","key":"absenceCoverOrder","value":["CASUAL","ANNUAL"]},
+                         {"type":"CONFIG","key":"unpaidAlwaysDeduct","value":true},
+                         {"type":"CONFIG","key":"periodEndMode","value":"DAY_OF_MONTH"},
+                         {"type":"CONFIG","key":"periodEndDay","value":20},
+                         {"type":"CONFIG","key":"latePenaltyPerOccurrence","value":100},
+                         {"type":"FIXED","amount":50,"label":"union_dues"}]
                         """);
                 ps.setObject(4, OffsetDateTime.now(ZoneOffset.UTC));
                 int updated = ps.executeUpdate();

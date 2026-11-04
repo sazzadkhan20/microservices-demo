@@ -65,6 +65,12 @@ public class HrmsPayrollFactsClient {
             Map<String, Object> result = mapper.readValue(resp.body(), new TypeReference<>() {});
             normalizeBd(result, "baseSalary", "hourlyRate", "absentDays", "unpaidLeaveDays",
                     "paidLeaveDays", "hoursWorked");
+            Object late = result.get("lateCount");
+            if (late instanceof Number n) {
+                result.put("lateCount", n.longValue());
+            } else if (late instanceof String s) {
+                try { result.put("lateCount", Long.parseLong(s)); } catch (Exception ignored) { /* */ }
+            }
             normalizeLeaveBalances(result);
             return result;
         } catch (IllegalStateException e) {

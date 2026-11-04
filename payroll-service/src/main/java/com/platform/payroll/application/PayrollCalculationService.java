@@ -7,7 +7,9 @@ import com.platform.payroll.domain.PayrollConfigEntity;
 import com.platform.payroll.domain.Payslip;
 import com.platform.payroll.domain.SalaryHistory;
 import com.platform.payroll.extension.config.PayrollConfigLoader;
+import com.platform.payroll.extension.engine.DeductionRuleEngine;
 import com.platform.payroll.extension.engine.MonthlyPayrollEngine;
+import com.platform.payroll.extension.engine.PayrollPeriodPolicy;
 import com.platform.payroll.extension.engine.SalaryCalcEngine;
 import com.platform.payroll.infrastructure.HrmsPayrollFactsClient;
 import com.platform.payroll.infrastructure.grpc.HrmsEmployeeClient;
@@ -47,6 +49,7 @@ public class PayrollCalculationService {
     private final HrmsPayrollFactsClient hrmsPayrollFactsClient;
     private final PayrollConfigLoader configLoader;
     private final MonthlyPayrollEngine monthlyPayrollEngine;
+    private final DeductionRuleEngine deductionRuleEngine;
     private final SalaryCalcEngine salaryCalcEngine;
     private final PayslipRepository payslipRepository;
     private final SalaryHistoryRepository salaryHistoryRepository;
@@ -55,6 +58,7 @@ public class PayrollCalculationService {
             HrmsPayrollFactsClient hrmsPayrollFactsClient,
             PayrollConfigLoader configLoader,
             MonthlyPayrollEngine monthlyPayrollEngine,
+            DeductionRuleEngine deductionRuleEngine,
             SalaryCalcEngine salaryCalcEngine,
             PayslipRepository payslipRepository,
             SalaryHistoryRepository salaryHistoryRepository) {
@@ -62,6 +66,7 @@ public class PayrollCalculationService {
         this.hrmsPayrollFactsClient = hrmsPayrollFactsClient;
         this.configLoader = configLoader;
         this.monthlyPayrollEngine = monthlyPayrollEngine;
+        this.deductionRuleEngine = deductionRuleEngine;
         this.salaryCalcEngine = salaryCalcEngine;
         this.payslipRepository = payslipRepository;
         this.salaryHistoryRepository = salaryHistoryRepository;
@@ -166,10 +171,33 @@ public class PayrollCalculationService {
         details.put("factsSource", "hrms_payroll_facts");
         if (adjustment != null && adjustment.compareTo(BigDecimal.ZERO) != 0) {
             details.put("adjustmentAmount", adjustment);
+            details.put("adjustment", adjustment);
         }
         if (request.adjustmentNote() != null && !request.adjustmentNote().isBlank()) {
             details.put("adjustmentNote", request.adjustmentNote());
         }
+
+        // Tenant FIXED / PERCENT_GROSS pack rules (union dues, etc.) — config-driven, all businesses.
+        DeductionRuleEngine.DeductionResult moneyRules =
+                deductionRuleEngine.applyConfiguredMoneyRules(config, result.basePay());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> deductionLines = details.get("deductions") instanceof List<?> raw
+                ? new ArrayList<>((List<Map<String, Object>>) raw)
+                : new ArrayList<>();
+        deductionLines.addAll(moneyRules.applied());
+        BigDecimal totalDeduction = result.deduction().add(moneyRules.total()).setScale(2, java.math.RoundingMode.HALF_UP);
+        BigDecimal net = result.basePay().subtract(totalDeduction)
+                .add(adjustment == null ? BigDecimal.ZERO : adjustment)
+                .setScale(2, java.math.RoundingMode.HALF_UP);
+        details.put("deductions", deductionLines);
+        details.put("configuredRuleDeduction", moneyRules.total());
+        details.put("deduction", totalDeduction);
+        details.put("net", net);
+
+        PayrollPeriodPolicy periodPolicy = PayrollPeriodPolicy.from(config);
+        details.put("periodPolicy", periodPolicy.toMap());
+        details.put("periodCloseDate", periodPolicy.periodCloseDate(request.periodLabel()).toString());
+        details.put("canFinalize", periodPolicy.canFinalize(request.periodLabel(), LocalDate.now()));
 
         Payslip payslip = existing != null ? existing : new Payslip();
         payslip.setEmployeeId(employee.id());
@@ -180,8 +208,8 @@ public class PayrollCalculationService {
         payslip.setWeekendHours(
                 request.weekendHours() == null ? BigDecimal.ZERO : request.weekendHours());
         payslip.setGrossAmount(result.basePay());
-        payslip.setDeductionAmount(result.deduction());
-        payslip.setNetAmount(result.net());
+        payslip.setDeductionAmount(totalDeduction);
+        payslip.setNetAmount(net);
         payslip.setDetailsJson(details);
         if (existing == null) {
             payslip.setCreatedAt(Instant.now());
@@ -261,16 +289,13 @@ public class PayrollCalculationService {
             return toResponse(payslip, null, null, null);
         }
 
-        // FR-PAY-11: month must be over (today > monthEnd)
+        // FR-PAY-11: finalize eligibility is tenant config (MONTH_END vs DAY_OF_MONTH 20/25/…)
         String period = payslip.getPeriodLabel();
-        if (period != null && period.length() >= 7) {
-            YearMonth ym = YearMonth.parse(period.substring(0, 7));
-            LocalDate monthEnd = ym.atEndOfMonth();
-            if (!LocalDate.now().isAfter(monthEnd)) {
-                throw new IllegalStateException(
-                        "Cannot finalize: month " + period + " has not ended yet (today="
-                                + LocalDate.now() + ", monthEnd=" + monthEnd + ")");
-            }
+        PayrollConfigEntity config = configLoader.loadOrDefault();
+        PayrollPeriodPolicy periodPolicy = PayrollPeriodPolicy.from(config);
+        LocalDate today = LocalDate.now();
+        if (period != null && period.length() >= 7 && !periodPolicy.canFinalize(period, today)) {
+            throw new IllegalStateException(periodPolicy.finalizeBlockedReason(period, today));
         }
 
         Map<String, Object> details = new HashMap<>(payslip.getDetailsJson() == null ? Map.of() : payslip.getDetailsJson());
@@ -344,12 +369,16 @@ public class PayrollCalculationService {
             }
         }
 
-        return Map.of(
-                "currentPeriod", periodLabel,
-                "previousPeriod", prevPeriod,
-                "unfinalizedCount", unfinalized.size(),
-                "unfinalized", unfinalized
-        );
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("currentPeriod", periodLabel);
+        out.put("previousPeriod", prevPeriod);
+        out.put("unfinalizedCount", unfinalized.size());
+        out.put("unfinalized", unfinalized);
+        if (!unfinalized.isEmpty()) {
+            out.put("message", unfinalized.size() + " payslip(s) from " + prevPeriod
+                    + " are still not finalized");
+        }
+        return out;
     }
 
     // ---------------------- export CSV ----------------------

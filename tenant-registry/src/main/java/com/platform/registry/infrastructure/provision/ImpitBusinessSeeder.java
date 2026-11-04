@@ -265,7 +265,17 @@ public class ImpitBusinessSeeder {
                     """)) {
                 ps.setBigDecimal(1, new BigDecimal("1.5000"));
                 ps.setBigDecimal(2, new BigDecimal("2.0000"));
-                ps.setString(3, "[]");
+                // Impit: mid-month close (day 25) — finalize on/after the 25th; no late money penalty by default.
+                ps.setString(3, """
+                        [{"type":"CONFIG","key":"dayDivisorMode","value":"FIXED"},
+                         {"type":"CONFIG","key":"dayDivisor","value":30},
+                         {"type":"CONFIG","key":"absenceRule","value":"DIRECT"},
+                         {"type":"CONFIG","key":"absenceCoverOrder","value":["CASUAL","ANNUAL"]},
+                         {"type":"CONFIG","key":"unpaidAlwaysDeduct","value":true},
+                         {"type":"CONFIG","key":"periodEndMode","value":"DAY_OF_MONTH"},
+                         {"type":"CONFIG","key":"periodEndDay","value":25},
+                         {"type":"CONFIG","key":"latePenaltyPerOccurrence","value":0}]
+                        """);
                 ps.setObject(4, OffsetDateTime.now(ZoneOffset.UTC));
                 int updated = ps.executeUpdate();
                 if (updated == 0) {

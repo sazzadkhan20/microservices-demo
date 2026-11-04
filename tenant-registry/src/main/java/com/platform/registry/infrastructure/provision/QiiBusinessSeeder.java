@@ -796,9 +796,15 @@ public class QiiBusinessSeeder {
                 ps.setBigDecimal(1, new BigDecimal("1.5000"));
                 ps.setBigDecimal(2, new BigDecimal("2.0000"));
                 ps.setString(3, """
-                        [{"type":"CONFIG","key":"absenceCoverOrder","value":["CASUAL","ANNUAL"]},
+                        [{"type":"CONFIG","key":"dayDivisorMode","value":"SCHEDULE"},
+                         {"type":"CONFIG","key":"dayDivisor","value":22},
+                         {"type":"CONFIG","key":"absenceRule","value":"BALANCE_FIRST"},
+                         {"type":"CONFIG","key":"absenceCoverOrder","value":["CASUAL","ANNUAL"]},
                          {"type":"CONFIG","key":"unpaidAlwaysDeduct","value":true},
-                         {"type":"CONFIG","key":"dayDivisor","value":"WORKING_DAYS"}]
+                         {"type":"CONFIG","key":"periodEndMode","value":"MONTH_END"},
+                         {"type":"CONFIG","key":"periodEndDay","value":31},
+                         {"type":"CONFIG","key":"latePenaltyPerOccurrence","value":200},
+                         {"type":"CONFIG","key":"dailyHours","value":8}]
                         """);
                 ps.setObject(4, OffsetDateTime.now(ZoneOffset.UTC));
                 int updated = ps.executeUpdate();

@@ -10,6 +10,7 @@ import com.platform.payroll.domain.PayrollConfigEntity;
 import com.platform.payroll.domain.Payslip;
 import com.platform.payroll.domain.SalaryHistory;
 import com.platform.payroll.extension.config.PayrollConfigLoader;
+import com.platform.payroll.extension.engine.PayrollPeriodPolicy;
 import com.platform.payroll.infrastructure.persistence.PayrollConfigRepository;
 import com.platform.payroll.infrastructure.persistence.PayslipRepository;
 import com.platform.payroll.infrastructure.persistence.SalaryHistoryRepository;
@@ -86,7 +87,8 @@ public class PayrollController {
 
     @PostMapping("/payslips/{id}/finalize")
     @RequiresPermission(feature = "payroll", action = "run")
-    @Operation(summary = "Finalize (lock) a draft payslip — payroll:run. Body: {confirm:true} required. Month must have ended.")
+    @Operation(summary = "Finalize (lock) a draft payslip — payroll:run. Body: {confirm:true} required. "
+            + "Eligibility follows tenant periodEndMode (MONTH_END or DAY_OF_MONTH).")
     public CalculatePayrollResponse finalize(@PathVariable Long id,
                                              @RequestBody(required = false) Map<String, Object> body) {
         boolean confirm = body != null && Boolean.parseBoolean(String.valueOf(body.getOrDefault("confirm", "false")));
@@ -140,12 +142,14 @@ public class PayrollController {
     @Operation(summary = "View current tenant payroll config (platform defaults until customized) — payroll:view")
     public Map<String, Object> config() {
         var cfg = configLoader.loadOrDefault();
-        return Map.of(
-                "overtimeMultiplier", cfg.getOvertimeMultiplier(),
-                "weekendMultiplier", cfg.getWeekendMultiplier(),
-                "deductionRules", cfg.getDeductionRules(),
-                "source", "tenant_db.payroll_config"
-        );
+        PayrollPeriodPolicy period = PayrollPeriodPolicy.from(cfg);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("overtimeMultiplier", cfg.getOvertimeMultiplier());
+        out.put("weekendMultiplier", cfg.getWeekendMultiplier());
+        out.put("deductionRules", cfg.getDeductionRules());
+        out.put("periodPolicy", period.toMap());
+        out.put("source", "tenant_db.payroll_config");
+        return out;
     }
 
     @PutMapping("/config")

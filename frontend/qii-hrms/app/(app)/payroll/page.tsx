@@ -58,6 +58,41 @@ export default function PayrollPage() {
   const [detail, setDetail] = useState<Rec | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "finalize" | "reopen"; row: Rec } | null>(null);
   const [runMonthConfirm, setRunMonthConfirm] = useState(false);
+
+  const payrollConfig = useQuery({
+    queryKey: ["payroll-config"],
+    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll("config"), { signal }),
+    enabled: canViewPay || canRun,
+  });
+  const periodPolicy = (payrollConfig.data?.periodPolicy ?? null) as Rec | null;
+  const finalizeHint = useMemo(() => {
+    const mode = String(periodPolicy?.periodEndMode ?? "MONTH_END");
+    if (/DAY_OF_MONTH/i.test(mode)) {
+      const day = Number(periodPolicy?.periodEndDay ?? 25);
+      return `Finalize on/after day ${day} of the period month (tenant config).`;
+    }
+    return "Finalize after the calendar month ends (tenant config).";
+  }, [periodPolicy]);
+
+  function canFinalizeRow(r: Rec): boolean {
+    const d = (r.detailsJson ?? r.details) as Rec | undefined;
+    if (typeof d?.canFinalize === "boolean") return d.canFinalize;
+    // Client-side fallback from period policy + periodLabel
+    const label = String(r.periodLabel ?? "");
+    if (!/^\d{4}-\d{2}/.test(label)) return false;
+    const [y, m] = label.split("-").map(Number);
+    const today = new Date();
+    const mode = String(periodPolicy?.periodEndMode ?? "MONTH_END");
+    if (/DAY_OF_MONTH/i.test(mode)) {
+      const day = Math.min(Number(periodPolicy?.periodEndDay ?? 25) || 25, 28);
+      const close = new Date(y, m - 1, day);
+      const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      return start.getTime() >= close.getTime();
+    }
+    const monthEnd = new Date(y, m, 0); // last day of period month
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    return start.getTime() > monthEnd.getTime();
+  }
   const [form, setForm] = useState({
     employeeId: "",
     periodLabel: currentPeriod(),
@@ -215,7 +250,19 @@ export default function PayrollPage() {
 
   // Detail drawer — payslip details JSON (FR-PAY-15)
   const dj = (detail?.detailsJson ?? detail?.details) as Rec | undefined;
-  const djDeductions = dj?.deductions as Rec[] | undefined;
+  const djDeductions = useMemo(() => {
+    const raw = dj?.deductions;
+    if (Array.isArray(raw) && raw.length > 0) return raw as Rec[];
+    // Legacy payslips: synthesize lines from totals so the UI is never blank when money moved
+    const lines: Rec[] = [];
+    const absence = Number(dj?.absenceDeduction ?? 0);
+    const late = Number(dj?.lateDeduction ?? 0);
+    const total = Number(dj?.deduction ?? detail?.deductionAmount ?? 0);
+    if (absence > 0) lines.push({ label: "unpaid_absence", type: "ABSENCE", amount: absence });
+    if (late > 0) lines.push({ label: "late_penalty", type: "LATE", amount: late, lateCount: dj?.lateCount });
+    if (lines.length === 0 && total > 0) lines.push({ label: "deductions", type: "TOTAL", amount: total });
+    return lines;
+  }, [dj, detail]);
   const djNotes = Array.isArray(dj?.notes) ? (dj.notes as unknown[]) : [];
   const djConsumed = dj?.consumedByType && typeof dj.consumedByType === "object" ? (dj.consumedByType as Record<string, unknown>) : null;
 
@@ -226,6 +273,14 @@ export default function PayrollPage() {
     }
     const wd = warnings.data as Rec;
     if (wd.message) return [str(wd.message)];
+    // Backend shape: { previousPeriod, unfinalizedCount, unfinalized: [{payslipId,employeeId,status}] }
+    const count = Number(wd.unfinalizedCount ?? 0);
+    if (count > 0) {
+      const prev = str(wd.previousPeriod ?? "previous period");
+      return [
+        `${count} payslip(s) from ${prev} are still not finalized. Finalize them before closing the current run.`,
+      ];
+    }
     return [] as string[];
   }, [warnings.data]);
 
@@ -233,7 +288,7 @@ export default function PayrollPage() {
     <div className="stack">
       <PageHeader
         title="Payroll"
-        subtitle="Draft payslips are calculated from schedule, attendance and leave; finalize after the month ends."
+        subtitle={`Draft payslips use schedule, attendance and leave. ${finalizeHint}`}
         actions={
           canRun && tab === "payslips" ? (
             <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
@@ -355,7 +410,8 @@ export default function PayrollPage() {
                         <button
                           type="button"
                           className="btn sm primary"
-                          disabled={finalize.isPending}
+                          disabled={finalize.isPending || !canFinalizeRow(r)}
+                          title={!canFinalizeRow(r) ? finalizeHint : "Finalize payslip"}
                           onClick={() => setConfirm({ kind: "finalize", row: r })}
                         >
                           Finalize
@@ -552,7 +608,8 @@ export default function PayrollPage() {
               <button
                 type="button"
                 className="btn primary"
-                disabled={finalize.isPending}
+                disabled={finalize.isPending || !canFinalizeRow(detail)}
+                title={!canFinalizeRow(detail) ? finalizeHint : "Finalize payslip"}
                 onClick={() => setConfirm({ kind: "finalize", row: detail })}
               >
                 Finalize
@@ -613,16 +670,25 @@ export default function PayrollPage() {
                   {fmtNumber(dj?.absentDays ?? detail.absentDays)}
                 </div>
               ) : null}
-              {dj?.coveredDays !== undefined ? (
+              {dj?.lateCount !== undefined ? (
                 <div>
-                  <div className="label">Covered by leave</div>
-                  {fmtNumber(dj.coveredDays)}
+                  <div className="label">Late occurrences</div>
+                  {fmtNumber(dj.lateCount, 0)}
                 </div>
               ) : null}
-              {dj?.uncoveredDays !== undefined ? (
+              {(dj?.coveredDays !== undefined || djConsumed) ? (
+                <div>
+                  <div className="label">Covered by leave</div>
+                  {fmtNumber(
+                    dj?.coveredDays ??
+                      Object.values(djConsumed ?? {}).reduce((a, v) => a + Number(v || 0), 0),
+                  )}
+                </div>
+              ) : null}
+              {(dj?.uncoveredDays ?? dj?.uncoveredAbsentDays) !== undefined ? (
                 <div>
                   <div className="label">Uncovered days</div>
-                  {fmtNumber(dj.uncoveredDays)}
+                  {fmtNumber(dj?.uncoveredDays ?? dj?.uncoveredAbsentDays)}
                 </div>
               ) : null}
               {dj?.unpaidLeaveDays !== undefined ? (
@@ -631,16 +697,23 @@ export default function PayrollPage() {
                   {fmtNumber(dj.unpaidLeaveDays)}
                 </div>
               ) : null}
-              {(dj?.adjustment !== undefined && dj.adjustment !== 0) ? (
+              {((dj?.adjustment ?? dj?.adjustmentAmount) !== undefined &&
+                Number(dj?.adjustment ?? dj?.adjustmentAmount) !== 0) ? (
                 <div>
                   <div className="label">Adjustment</div>
-                  {fmtMoney(dj.adjustment)}
+                  {fmtMoney(dj?.adjustment ?? dj?.adjustmentAmount)}
                 </div>
               ) : null}
               {dj?.payMode ? (
                 <div>
                   <div className="label">Pay mode</div>
                   {str(dj.payMode)}
+                </div>
+              ) : null}
+              {dj?.periodCloseDate ? (
+                <div>
+                  <div className="label">Period closes</div>
+                  {str(dj.periodCloseDate)}
                 </div>
               ) : null}
               {dj?.missingCheckoutCount !== undefined && Number(dj.missingCheckoutCount) > 0 ? (
@@ -670,7 +743,7 @@ export default function PayrollPage() {
             ) : null}
 
             {/* Deductions breakdown */}
-            {Array.isArray(djDeductions) && djDeductions.length > 0 ? (
+            {djDeductions.length > 0 ? (
               <div className="tbl-wrap">
                 <table>
                   <thead>
@@ -682,7 +755,15 @@ export default function PayrollPage() {
                   <tbody>
                     {djDeductions.map((d, i) => (
                       <tr key={i}>
-                        <td>{str(d.label ?? d.name ?? d.key ?? d.type)}</td>
+                        <td>
+                          {str(d.label ?? d.name ?? d.key ?? d.type)}
+                          {d.lateCount != null ? (
+                            <span className="muted small"> · {fmtNumber(d.lateCount, 0)}×</span>
+                          ) : null}
+                          {d.days != null ? (
+                            <span className="muted small"> · {fmtNumber(d.days)}d</span>
+                          ) : null}
+                        </td>
                         <td className="n">{fmtMoney(d.amount ?? d.value)}</td>
                       </tr>
                     ))}
@@ -690,7 +771,10 @@ export default function PayrollPage() {
                 </table>
               </div>
             ) : (
-              <p className="muted small">No deductions applied.</p>
+              <p className="muted small">
+                No money deductions. Absences may be fully covered by leave balance
+                {dj?.absentDays != null ? ` (absent ${fmtNumber(dj.absentDays)}d)` : ""}.
+              </p>
             )}
 
             {/* Notes */}
@@ -724,7 +808,7 @@ export default function PayrollPage() {
       >
         {confirm?.kind === "reopen"
           ? "Reopen this finalized payslip for recalculation?"
-          : `Finalize ${confirm ? nameOf(confirm.row) : ""} · ${confirm ? String(confirm.row.periodLabel ?? "") : ""}? Confirm the month has ended — leave balances will be adjusted to reflect the final deductions and this payslip will be locked.`}
+          : `Finalize ${confirm ? nameOf(confirm.row) : ""} · ${confirm ? String(confirm.row.periodLabel ?? "") : ""}? ${finalizeHint} Leave balances will be adjusted for absence cover and this payslip will be locked.`}
       </ConfirmModal>
 
       {/* Run month confirm */}
@@ -811,7 +895,13 @@ function MyPayPanel() {
 function RulesPanel({ canRun }: { canRun: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
-  const [form, setForm] = useState({ overtimeMultiplier: "1.5", weekendMultiplier: "2" });
+  const [form, setForm] = useState({
+    overtimeMultiplier: "1.5",
+    weekendMultiplier: "2",
+    periodEndMode: "MONTH_END",
+    periodEndDay: "31",
+    latePenaltyPerOccurrence: "200",
+  });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -822,9 +912,18 @@ function RulesPanel({ canRun }: { canRun: boolean }) {
   });
 
   if (config.data && !loaded) {
+    const rules = Array.isArray(config.data.deductionRules) ? (config.data.deductionRules as Rec[]) : [];
+    const cfg = (key: string, fallback: string) => {
+      const hit = rules.find((r) => String(r.key) === key);
+      return hit?.value != null ? String(hit.value) : fallback;
+    };
+    const pp = (config.data.periodPolicy ?? {}) as Rec;
     setForm({
       overtimeMultiplier: String(config.data.overtimeMultiplier ?? "1.5"),
       weekendMultiplier: String(config.data.weekendMultiplier ?? "2"),
+      periodEndMode: String(pp.periodEndMode ?? cfg("periodEndMode", "MONTH_END")),
+      periodEndDay: String(pp.periodEndDay ?? cfg("periodEndDay", "31")),
+      latePenaltyPerOccurrence: cfg("latePenaltyPerOccurrence", "0"),
     });
     setLoaded(true);
   }
@@ -841,23 +940,41 @@ function RulesPanel({ canRun }: { canRun: boolean }) {
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    const parsed = rulesSchema.safeParse(form);
+    const parsed = rulesSchema.safeParse({
+      overtimeMultiplier: form.overtimeMultiplier,
+      weekendMultiplier: form.weekendMultiplier,
+    });
     if (!parsed.success) {
       const next: Record<string, string> = {};
       for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
       return setErrors(next);
     }
     setErrors({});
+    const existing = Array.isArray(config.data?.deductionRules) ? ([...(config.data!.deductionRules as Rec[])] as Rec[]) : [];
+    const upsert = (key: string, value: string | number) => {
+      const i = existing.findIndex((r) => String(r.type).toUpperCase() === "CONFIG" && String(r.key) === key);
+      const row = { type: "CONFIG", key, value };
+      if (i >= 0) existing[i] = row;
+      else existing.push(row);
+    };
+    upsert("periodEndMode", form.periodEndMode);
+    upsert("periodEndDay", Number(form.periodEndDay) || 31);
+    upsert("latePenaltyPerOccurrence", Number(form.latePenaltyPerOccurrence) || 0);
     save.mutate({
       overtimeMultiplier: parsed.data.overtimeMultiplier,
       weekendMultiplier: parsed.data.weekendMultiplier,
+      deductionRules: existing,
     });
   }
+
+  const ruleRows = Array.isArray(config.data?.deductionRules) ? (config.data!.deductionRules as Rec[]) : [];
 
   return (
     <section className="card stack">
       <h2>Payroll rules</h2>
-      <p className="muted small">Tenant overtime and weekend multipliers used when calculating payslips.</p>
+      <p className="muted small">
+        Tenant-pack config drives absence cover, late penalties, and when payslips may be finalized. Same engine for every business.
+      </p>
       <ErrorNote error={config.error} />
       {!canRun ? <p className="muted">You need payroll:run to change these rules.</p> : null}
       <form className="stack" onSubmit={submit} noValidate>
@@ -882,7 +999,59 @@ function RulesPanel({ canRun }: { canRun: boolean }) {
               onChange={(e) => setForm({ ...form, weekendMultiplier: e.target.value })}
             />
           </FormField>
+          <FormField label="Period end mode" hint="MONTH_END (Qii) or DAY_OF_MONTH (e.g. day 20/25).">
+            <select
+              value={form.periodEndMode}
+              disabled={!canRun || config.isLoading}
+              onChange={(e) => setForm({ ...form, periodEndMode: e.target.value })}
+            >
+              <option value="MONTH_END">MONTH_END</option>
+              <option value="DAY_OF_MONTH">DAY_OF_MONTH</option>
+            </select>
+          </FormField>
+          <FormField label="Period end day" hint="Used when mode is DAY_OF_MONTH (1–28).">
+            <input
+              type="number"
+              min={1}
+              max={28}
+              value={form.periodEndDay}
+              disabled={!canRun || config.isLoading || form.periodEndMode === "MONTH_END"}
+              onChange={(e) => setForm({ ...form, periodEndDay: e.target.value })}
+            />
+          </FormField>
+          <FormField label="Late penalty / occurrence" hint="Money deducted per L/LATE attendance day. 0 = track only.">
+            <input
+              type="number"
+              min={0}
+              step="0.01"
+              value={form.latePenaltyPerOccurrence}
+              disabled={!canRun || config.isLoading}
+              onChange={(e) => setForm({ ...form, latePenaltyPerOccurrence: e.target.value })}
+            />
+          </FormField>
         </div>
+        {ruleRows.length > 0 ? (
+          <div className="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rule</th>
+                  <th>Type</th>
+                  <th>Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ruleRows.map((r, i) => (
+                  <tr key={i}>
+                    <td className="mono">{str(r.key ?? r.label ?? "—")}</td>
+                    <td>{str(r.type)}</td>
+                    <td className="mono">{typeof r.value === "object" ? JSON.stringify(r.value) : str(r.value ?? r.amount ?? r.percent)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
         {err ? <div className="notice bad">{err}</div> : null}
         <div>
           <button type="submit" className="btn primary" disabled={!canRun || save.isPending || config.isLoading}>

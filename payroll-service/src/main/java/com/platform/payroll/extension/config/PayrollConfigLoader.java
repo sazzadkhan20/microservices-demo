@@ -43,7 +43,12 @@ public class PayrollConfigLoader {
                 // Unpaid leave is always deducted (FR-PAY-05)
                 java.util.Map.of("type", "CONFIG", "key", "unpaidAlwaysDeduct", "value", true),
                 // Default daily hours for hourly employee unpaid-leave deduction
-                java.util.Map.of("type", "CONFIG", "key", "dailyHours", "value", 8)
+                java.util.Map.of("type", "CONFIG", "key", "dailyHours", "value", 8),
+                // Qii default: finalize only after calendar month ends
+                java.util.Map.of("type", "CONFIG", "key", "periodEndMode", "value", "MONTH_END"),
+                java.util.Map.of("type", "CONFIG", "key", "periodEndDay", "value", 31),
+                // Late penalty per L/LATE attendance day (0 = track only, no money)
+                java.util.Map.of("type", "CONFIG", "key", "latePenaltyPerOccurrence", "value", 200)
         ));
         return fallback;
     }

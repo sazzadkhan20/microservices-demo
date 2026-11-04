@@ -114,17 +114,59 @@ public class MonthlyPayrollEngine {
 
         // FR-PAY-05: unpaid leave always deducted
         BigDecimal totalDeductDays = uncoveredDays.add(unpaidLeaveDays.max(BigDecimal.ZERO));
-        BigDecimal deduction = totalDeductDays.multiply(perDayRate).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal absenceDeduction = totalDeductDays.multiply(perDayRate).setScale(2, RoundingMode.HALF_UP);
+
+        // Config-driven late penalty (0 = disabled). Facts.lateCount from HRMS attendance L/LATE.
+        long lateCount = longVal(facts, "lateCount", 0);
+        BigDecimal latePenaltyPer = configBd(config, "latePenaltyPerOccurrence", BigDecimal.ZERO);
+        BigDecimal lateDeduction = latePenaltyPer.multiply(BigDecimal.valueOf(Math.max(0, lateCount)))
+                .setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal deduction = absenceDeduction.add(lateDeduction).setScale(2, RoundingMode.HALF_UP);
         BigDecimal adj = adjustmentAmount == null ? BigDecimal.ZERO : adjustmentAmount.setScale(2, RoundingMode.HALF_UP);
         BigDecimal net = basePay.subtract(deduction).add(adj).setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal coveredDays = consumedByType.values().stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Line items for payslip UI / API (FR-PAY-15)
+        List<Map<String, Object>> deductions = new ArrayList<>();
+        if (absenceDeduction.compareTo(BigDecimal.ZERO) > 0) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("label", "unpaid_absence");
+            row.put("type", "ABSENCE");
+            row.put("amount", absenceDeduction);
+            row.put("days", totalDeductDays);
+            row.put("uncoveredAbsentDays", uncoveredDays);
+            row.put("unpaidLeaveDays", unpaidLeaveDays);
+            deductions.add(row);
+        }
+        if (lateDeduction.compareTo(BigDecimal.ZERO) > 0) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("label", "late_penalty");
+            row.put("type", "LATE");
+            row.put("amount", lateDeduction);
+            row.put("lateCount", lateCount);
+            row.put("perOccurrence", latePenaltyPer);
+            deductions.add(row);
+        }
 
         // Notes
         List<String> notes = new ArrayList<>();
         if (daysEmployed < workingDays) {
             notes.add(String.format("Pro-rated: %d of %d working days employed", daysEmployed, workingDays));
         }
+        if (absentDays.compareTo(BigDecimal.ZERO) > 0) {
+            notes.add(String.format("Absent %.2f day(s); leave cover used %.2f; unpaid %.2f",
+                    absentDays.doubleValue(), coveredDays.doubleValue(), uncoveredDays.doubleValue()));
+        }
         if (uncoveredDays.compareTo(BigDecimal.ZERO) > 0 && !"DIRECT".equalsIgnoreCase(absenceRule)) {
             notes.add(String.format("%.2f absent day(s) beyond leave balance deducted as unpaid", uncoveredDays.doubleValue()));
+        }
+        if (lateCount > 0) {
+            notes.add(lateCount + " late attendance occurrence(s)"
+                    + (lateDeduction.compareTo(BigDecimal.ZERO) > 0
+                    ? " — penalty " + lateDeduction : " — no late penalty configured"));
         }
         long missingCheckouts = longVal(facts, "missingCheckoutCount", 0);
         if (missingCheckouts > 0) {
@@ -140,10 +182,18 @@ public class MonthlyPayrollEngine {
         details.put("basePay", basePay);
         details.put("absentDays", absentDays);
         details.put("uncoveredAbsentDays", uncoveredDays);
+        details.put("uncoveredDays", uncoveredDays); // FE alias
+        details.put("coveredDays", coveredDays);     // FE alias
         details.put("unpaidLeaveDays", unpaidLeaveDays);
         details.put("totalDeductDays", totalDeductDays);
+        details.put("lateCount", lateCount);
+        details.put("latePenaltyPerOccurrence", latePenaltyPer);
+        details.put("lateDeduction", lateDeduction);
+        details.put("absenceDeduction", absenceDeduction);
         details.put("deduction", deduction);
+        details.put("deductions", deductions);
         details.put("adjustmentAmount", adj);
+        details.put("adjustment", adj); // FE alias
         details.put("net", net);
         details.put("absenceRule", absenceRule);
         details.put("absenceCoverOrder", absenceCoverOrder(config));
@@ -176,11 +226,36 @@ public class MonthlyPayrollEngine {
 
         // Unpaid leave deduction: days × rate × dailyHours
         BigDecimal dailyHours = configBd(config, "dailyHours", new BigDecimal("8"));
-        BigDecimal deduction = unpaidLeaveDays.multiply(rate).multiply(dailyHours)
+        BigDecimal unpaidDeduction = unpaidLeaveDays.multiply(rate).multiply(dailyHours)
                 .setScale(2, RoundingMode.HALF_UP);
 
+        long lateCount = longVal(facts, "lateCount", 0);
+        BigDecimal latePenaltyPer = configBd(config, "latePenaltyPerOccurrence", BigDecimal.ZERO);
+        BigDecimal lateDeduction = latePenaltyPer.multiply(BigDecimal.valueOf(Math.max(0, lateCount)))
+                .setScale(2, RoundingMode.HALF_UP);
+
+        BigDecimal deduction = unpaidDeduction.add(lateDeduction).setScale(2, RoundingMode.HALF_UP);
         BigDecimal adj = adjustmentAmount == null ? BigDecimal.ZERO : adjustmentAmount.setScale(2, RoundingMode.HALF_UP);
         BigDecimal net = basePay.subtract(deduction).add(adj).setScale(2, RoundingMode.HALF_UP);
+
+        List<Map<String, Object>> deductions = new ArrayList<>();
+        if (unpaidDeduction.compareTo(BigDecimal.ZERO) > 0) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("label", "unpaid_leave");
+            row.put("type", "ABSENCE");
+            row.put("amount", unpaidDeduction);
+            row.put("days", unpaidLeaveDays);
+            deductions.add(row);
+        }
+        if (lateDeduction.compareTo(BigDecimal.ZERO) > 0) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("label", "late_penalty");
+            row.put("type", "LATE");
+            row.put("amount", lateDeduction);
+            row.put("lateCount", lateCount);
+            row.put("perOccurrence", latePenaltyPer);
+            deductions.add(row);
+        }
 
         List<String> notes = new ArrayList<>();
         if (missingCheckouts > 0) {
@@ -190,6 +265,11 @@ public class MonthlyPayrollEngine {
             notes.add(String.format("%.2f unpaid leave day(s) deducted at rate×%.0fh",
                     unpaidLeaveDays.doubleValue(), dailyHours.doubleValue()));
         }
+        if (lateCount > 0) {
+            notes.add(lateCount + " late attendance occurrence(s)"
+                    + (lateDeduction.compareTo(BigDecimal.ZERO) > 0
+                    ? " — penalty " + lateDeduction : " — no late penalty configured"));
+        }
 
         Map<String, Object> details = new LinkedHashMap<>();
         details.put("payMode", "HOURLY");
@@ -198,8 +278,13 @@ public class MonthlyPayrollEngine {
         details.put("basePay", basePay);
         details.put("unpaidLeaveDays", unpaidLeaveDays);
         details.put("dailyHours", dailyHours);
+        details.put("lateCount", lateCount);
+        details.put("latePenaltyPerOccurrence", latePenaltyPer);
+        details.put("lateDeduction", lateDeduction);
         details.put("deduction", deduction);
+        details.put("deductions", deductions);
         details.put("adjustmentAmount", adj);
+        details.put("adjustment", adj);
         details.put("net", net);
         details.put("missingCheckoutCount", missingCheckouts);
         details.put("notes", notes);

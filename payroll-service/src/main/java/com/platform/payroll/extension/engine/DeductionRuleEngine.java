@@ -34,6 +34,47 @@ public class DeductionRuleEngine {
     }
 
     /**
+     * FIXED / PERCENT_GROSS money rules only (no absence cover — that lives in MonthlyPayrollEngine).
+     * Used after monthly/hourly calc so tenant pack rules (union dues, tax %, etc.) always apply.
+     */
+    public DeductionResult applyConfiguredMoneyRules(PayrollConfigEntity config, BigDecimal gross) {
+        BigDecimal total = BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP);
+        List<Map<String, Object>> applied = new ArrayList<>();
+        if (config == null || config.getDeductionRules() == null) {
+            return new DeductionResult(total, applied);
+        }
+        BigDecimal base = gross == null ? BigDecimal.ZERO : gross;
+        for (Map<String, Object> rule : config.getDeductionRules()) {
+            String type = String.valueOf(rule.getOrDefault("type", "")).toUpperCase(Locale.ROOT);
+            if ("CONFIG".equals(type) || "ABSENCE_COVER".equals(type) || "LATE".equals(type)) {
+                continue;
+            }
+            String label = String.valueOf(rule.getOrDefault("label", "deduction"));
+            BigDecimal amount = BigDecimal.ZERO;
+            if ("FIXED".equals(type)) {
+                Object amt = rule.get("amount");
+                if (amt == null) continue;
+                amount = new BigDecimal(String.valueOf(amt)).setScale(4, RoundingMode.HALF_UP);
+            } else if ("PERCENT_GROSS".equals(type)) {
+                Object pct = rule.get("percent");
+                if (pct == null) continue;
+                BigDecimal percent = new BigDecimal(String.valueOf(pct));
+                amount = base.multiply(percent).divide(new BigDecimal("100"), 4, RoundingMode.HALF_UP);
+            } else {
+                continue;
+            }
+            if (amount.compareTo(BigDecimal.ZERO) == 0) continue;
+            total = total.add(amount);
+            Map<String, Object> row = new HashMap<>();
+            row.put("label", label);
+            row.put("type", type);
+            row.put("amount", amount.setScale(2, RoundingMode.HALF_UP));
+            applied.add(row);
+        }
+        return new DeductionResult(total.setScale(2, RoundingMode.HALF_UP), applied);
+    }
+
+    /**
      * @param unpaidAbsenceDays  calendar unpaid days already known (no leave balance)
      * @param availableBalances  leaveType → remaining days (e.g. CASUAL→5, ANNUAL→10)
      */

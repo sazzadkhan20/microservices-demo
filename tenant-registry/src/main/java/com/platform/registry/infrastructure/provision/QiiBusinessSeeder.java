@@ -804,7 +804,9 @@ public class QiiBusinessSeeder {
                          {"type":"CONFIG","key":"periodEndMode","value":"MONTH_END"},
                          {"type":"CONFIG","key":"periodEndDay","value":31},
                          {"type":"CONFIG","key":"latePenaltyPerOccurrence","value":200},
-                         {"type":"CONFIG","key":"dailyHours","value":8}]
+                         {"type":"CONFIG","key":"dailyHours","value":8},
+                         {"type":"CONFIG","key":"notifyPayslipFinalized","value":true},
+                         {"type":"CONFIG","key":"payslipNotificationLink","value":"/payroll"}]
                         """);
                 ps.setObject(4, OffsetDateTime.now(ZoneOffset.UTC));
                 int updated = ps.executeUpdate();

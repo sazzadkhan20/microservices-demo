@@ -105,8 +105,8 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/payroll",
     title: "Payroll",
     nav: { group: "HR", label: "Payroll" },
-    // Company payroll runs — not the employee self-service payslip view
-    rule: anyOf(["payroll", "run"], ["payroll", "create"], ["payroll", "approve"]),
+    // payroll:run → company runs; payroll:view → own payslips (draft + finalized details)
+    rule: anyOf(["payroll", "run"], ["payroll", "create"], ["payroll", "approve"], ["payroll", "view"]),
   },
   {
     path: "/checklists",

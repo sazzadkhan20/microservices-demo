@@ -48,7 +48,10 @@ public class PayrollConfigLoader {
                 java.util.Map.of("type", "CONFIG", "key", "periodEndMode", "value", "MONTH_END"),
                 java.util.Map.of("type", "CONFIG", "key", "periodEndDay", "value", 31),
                 // Late penalty per L/LATE attendance day (0 = track only, no money)
-                java.util.Map.of("type", "CONFIG", "key", "latePenaltyPerOccurrence", "value", 200)
+                java.util.Map.of("type", "CONFIG", "key", "latePenaltyPerOccurrence", "value", 200),
+                // Notify only the payslip employee on finalize (pack toggle; HRMS PAYSLIP_READY also gates)
+                java.util.Map.of("type", "CONFIG", "key", "notifyPayslipFinalized", "value", true),
+                java.util.Map.of("type", "CONFIG", "key", "payslipNotificationLink", "value", "/payroll")
         ));
         return fallback;
     }

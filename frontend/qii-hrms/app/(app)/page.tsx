@@ -303,7 +303,7 @@ export default function HomePage() {
                       ))}
                   </div>
                 ) : (
-                  <p className="muted small">No finalized payslips yet.</p>
+                  <p className="muted small">No payslips yet (draft or finalized).</p>
                 )}
               </>
             ) : null}

@@ -274,7 +274,9 @@ public class ImpitBusinessSeeder {
                          {"type":"CONFIG","key":"unpaidAlwaysDeduct","value":true},
                          {"type":"CONFIG","key":"periodEndMode","value":"DAY_OF_MONTH"},
                          {"type":"CONFIG","key":"periodEndDay","value":25},
-                         {"type":"CONFIG","key":"latePenaltyPerOccurrence","value":0}]
+                         {"type":"CONFIG","key":"latePenaltyPerOccurrence","value":0},
+                         {"type":"CONFIG","key":"notifyPayslipFinalized","value":true},
+                         {"type":"CONFIG","key":"payslipNotificationLink","value":"/payroll"}]
                         """);
                 ps.setObject(4, OffsetDateTime.now(ZoneOffset.UTC));
                 int updated = ps.executeUpdate();

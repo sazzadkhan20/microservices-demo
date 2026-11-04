@@ -132,9 +132,27 @@ public class PayrollController {
 
     @GetMapping("/me/current")
     @RequiresPermission(feature = "payroll", action = "view")
-    @Operation(summary = "Current pay, finalized payslips, and MTD estimate for calling employee — payroll:view")
+    @Operation(summary = "Own payslips (draft + finalized) with full details + MTD estimate — payroll:view")
     public Map<String, Object> meCurrent() {
         return calculationService.meEstimate();
+    }
+
+    @GetMapping("/payslips/{id}")
+    @RequiresPermission(feature = "payroll", action = "view")
+    @Operation(summary = "Get one payslip — own with payroll:view; any with payroll:run")
+    public Map<String, Object> getPayslip(@PathVariable Long id, HttpServletRequest http) {
+        if (canRun(http)) {
+            Payslip p = payslipRepository.findById(id)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Payslip not found: " + id));
+            return toRow(p);
+        }
+        try {
+            return calculationService.getOwnPayslip(id);
+        } catch (SecurityException e) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, e.getMessage());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        }
     }
 
     @GetMapping("/config")

@@ -53,6 +53,8 @@ public class PayrollCalculationService {
     private final SalaryCalcEngine salaryCalcEngine;
     private final PayslipRepository payslipRepository;
     private final SalaryHistoryRepository salaryHistoryRepository;
+    private final PayrollNotificationHook notificationHook;
+
     public PayrollCalculationService(
             HrmsEmployeeClient hrmsEmployeeClient,
             HrmsPayrollFactsClient hrmsPayrollFactsClient,
@@ -61,7 +63,8 @@ public class PayrollCalculationService {
             DeductionRuleEngine deductionRuleEngine,
             SalaryCalcEngine salaryCalcEngine,
             PayslipRepository payslipRepository,
-            SalaryHistoryRepository salaryHistoryRepository) {
+            SalaryHistoryRepository salaryHistoryRepository,
+            PayrollNotificationHook notificationHook) {
         this.hrmsEmployeeClient = hrmsEmployeeClient;
         this.hrmsPayrollFactsClient = hrmsPayrollFactsClient;
         this.configLoader = configLoader;
@@ -70,6 +73,7 @@ public class PayrollCalculationService {
         this.salaryCalcEngine = salaryCalcEngine;
         this.payslipRepository = payslipRepository;
         this.salaryHistoryRepository = salaryHistoryRepository;
+        this.notificationHook = notificationHook;
     }
 
     // ---------------------- calculate ----------------------
@@ -312,8 +316,22 @@ public class PayrollCalculationService {
         details.put("finalizedBy", AuthContext.getEmployeeId());
         payslip.setDetailsJson(details);
 
-        // TODO: notify notification-service (best-effort HTTP call)
-        return toResponse(payslipRepository.save(payslip), null, null, null);
+        Payslip saved = payslipRepository.save(payslip);
+
+        // Config-driven: notify ONLY this payslip's employee (never broadcast).
+        String currency = details.get("currency") == null ? null : String.valueOf(details.get("currency"));
+        notificationHook.notifyPayslipFinalized(
+                config,
+                saved.getEmployeeId(),
+                saved.getId(),
+                saved.getPeriodLabel(),
+                saved.getNetAmount(),
+                currency);
+        details.put("notificationSentToEmployeeId", saved.getEmployeeId());
+        saved.setDetailsJson(details);
+        saved = payslipRepository.save(saved);
+
+        return toResponse(saved, null, null, null);
     }
 
     // ---------------------- reopen ----------------------
@@ -416,7 +434,8 @@ public class PayrollCalculationService {
     // ---------------------- me/current ----------------------
 
     /**
-     * FR-SAL-03: MTD estimate and finalized payslips for the calling employee.
+     * FR-SAL-03: MTD estimate + own payslips (DRAFT and FINALIZED) with full details.
+     * Employees may open any of their own slips regardless of status.
      */
     @Transactional(readOnly = true)
     public Map<String, Object> meEstimate() {
@@ -428,29 +447,56 @@ public class PayrollCalculationService {
         result.put("employeeId", empId);
         result.put("currentPeriod", currentPeriod);
 
-        // MTD estimate from draft payslip if exists
+        // MTD estimate from current-period payslip (draft or finalized)
         payslipRepository.findByEmployeeIdAndPeriodLabel(empId, currentPeriod)
-                .ifPresent(p -> result.put("mtdEstimate", Map.of(
-                        "grossAmount", p.getGrossAmount(),
-                        "deductionAmount", p.getDeductionAmount(),
-                        "netAmount", p.getNetAmount(),
-                        "status", statusOf(p))));
+                .ifPresent(p -> {
+                    Map<String, Object> mtd = new LinkedHashMap<>();
+                    mtd.put("id", p.getId());
+                    mtd.put("grossAmount", p.getGrossAmount());
+                    mtd.put("deductionAmount", p.getDeductionAmount());
+                    mtd.put("netAmount", p.getNetAmount());
+                    mtd.put("status", statusOf(p));
+                    mtd.put("details", p.getDetailsJson() == null ? Map.of() : p.getDetailsJson());
+                    result.put("mtdEstimate", mtd);
+                });
 
-        // Historical finalized payslips
+        // Own payslips — draft and finalized (never other employees)
         List<Map<String, Object>> history = payslipRepository
                 .findByEmployeeIdOrderByCreatedAtDesc(empId).stream()
-                .filter(p -> STATUS_FINALIZED.equalsIgnoreCase(statusOf(p)))
-                .map(p -> {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("id", p.getId());
-                    m.put("periodLabel", p.getPeriodLabel());
-                    m.put("netAmount", p.getNetAmount());
-                    m.put("grossAmount", p.getGrossAmount());
-                    m.put("deductionAmount", p.getDeductionAmount());
-                    return m;
-                }).toList();
+                .map(this::ownPayslipRow)
+                .toList();
         result.put("payslips", history);
         return result;
+    }
+
+    /** Single own payslip by id (DRAFT or FINALIZED). */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getOwnPayslip(Long payslipId) {
+        Long empId = AuthContext.getEmployeeId();
+        if (empId == null) throw new IllegalStateException("Missing employee identity");
+        Payslip p = payslipRepository.findById(payslipId)
+                .orElseThrow(() -> new IllegalArgumentException("Payslip not found: " + payslipId));
+        if (!empId.equals(p.getEmployeeId())) {
+            throw new SecurityException("Forbidden: payslip " + payslipId + " is not yours");
+        }
+        return ownPayslipRow(p);
+    }
+
+    private Map<String, Object> ownPayslipRow(Payslip p) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", p.getId());
+        m.put("employeeId", p.getEmployeeId());
+        m.put("periodLabel", p.getPeriodLabel());
+        m.put("grossAmount", p.getGrossAmount());
+        m.put("deductionAmount", p.getDeductionAmount());
+        m.put("netAmount", p.getNetAmount());
+        m.put("regularHours", p.getRegularHours());
+        m.put("overtimeHours", p.getOvertimeHours());
+        m.put("weekendHours", p.getWeekendHours());
+        m.put("status", statusOf(p));
+        m.put("details", p.getDetailsJson() == null ? Map.of() : p.getDetailsJson());
+        m.put("createdAt", p.getCreatedAt() == null ? null : p.getCreatedAt().toString());
+        return m;
     }
 
     // ---------------------- private helpers ----------------------

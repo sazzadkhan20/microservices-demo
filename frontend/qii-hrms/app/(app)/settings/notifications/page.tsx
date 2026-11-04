@@ -30,7 +30,7 @@ const EVENTS: { key: string; name: string; who: string; def: boolean }[] = [
   { key: "team_clash", name: "Team leave limit exceeded", who: "The manager, team lead and first approver", def: true },
   { key: "worklog_missing", name: "Work log missing for a worked day", who: "The employee, then the manager", def: true },
   { key: "monthly_report", name: "Monthly attendance report ready", who: "Every employee", def: true },
-  { key: "payroll", name: "Payslip ready", who: "The employee", def: true },
+  { key: "PAYSLIP_READY", name: "Payslip ready / finalized", who: "Only the employee whose payslip was finalized", def: true },
   { key: "celebration", name: "Work anniversary and birthday", who: "Team feed (optional)", def: false },
 ];
 
@@ -66,7 +66,13 @@ function Events() {
   const [draft, setDraft] = useState<Record<string, boolean>>({});
 
   const stored = bag.data ?? {};
-  const isOn = (key: string, def: boolean) => (key in draft ? draft[key] : typeof stored[key] === "boolean" ? (stored[key] as boolean) : def);
+  const isOn = (key: string, def: boolean) => {
+    if (key in draft) return draft[key];
+    if (typeof stored[key] === "boolean") return stored[key] as boolean;
+    // Legacy FE key for payslip finalize
+    if (key === "PAYSLIP_READY" && typeof stored.payroll === "boolean") return stored.payroll as boolean;
+    return def;
+  };
   const dirty = Object.keys(draft).length > 0;
 
   const save = useMutation({

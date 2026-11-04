@@ -343,6 +343,8 @@ public class PracticeBusinessSeeder {
                          {"type":"CONFIG","key":"periodEndMode","value":"DAY_OF_MONTH"},
                          {"type":"CONFIG","key":"periodEndDay","value":20},
                          {"type":"CONFIG","key":"latePenaltyPerOccurrence","value":100},
+                         {"type":"CONFIG","key":"notifyPayslipFinalized","value":true},
+                         {"type":"CONFIG","key":"payslipNotificationLink","value":"/payroll"},
                          {"type":"FIXED","amount":50,"label":"union_dues"}]
                         """);
                 ps.setObject(4, OffsetDateTime.now(ZoneOffset.UTC));

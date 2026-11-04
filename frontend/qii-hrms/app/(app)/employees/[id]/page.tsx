@@ -146,7 +146,13 @@ export default function EmployeeDetailPage() {
         <EmploymentTab emp={e} canEdit={can("employees", "edit")} showSalary={showSalary} />
       ) : null}
       {activeTab === "salary" && showSalary ? (
-        <SalaryTab empId={id} emp={e} canRun={canRun} showSalary={showSalary} />
+        <SalaryTab
+          empId={id}
+          emp={e}
+          canRun={canRun}
+          canFinalize={can("payroll", "run")}
+          showSalary={showSalary}
+        />
       ) : null}
       {activeTab === "attendance" ? <AttendanceTab empId={id} /> : null}
       {activeTab === "worklog" ? <WorkLogTab empId={id} /> : null}
@@ -451,16 +457,19 @@ function SalaryTab({
   empId,
   emp,
   canRun,
+  canFinalize,
   showSalary,
 }: {
   empId: string;
   emp: Employee;
   canRun: boolean;
+  canFinalize: boolean;
   showSalary: boolean;
 }) {
   const qc = useQueryClient();
   const toast = useToast();
   const [open, setOpen] = useState(false);
+  const [confirmFinalize, setConfirmFinalize] = useState<Rec | null>(null);
   const [form, setForm] = useState({
     effectiveDate: new Date().toISOString().slice(0, 10),
     amount: "",
@@ -488,6 +497,18 @@ function SalaryTab({
       void qc.invalidateQueries({ queryKey: ["employee", empId] });
     },
     onError: (e: Error) => setErr(e.message),
+  });
+
+  const finalize = useMutation({
+    mutationFn: (id: string | number) =>
+      apiFetch(api.payroll(`payslips/${id}/finalize`), { method: "POST", body: { confirm: true } }),
+    onSuccess: () => {
+      toast.show("Payslip finalized — employee notified");
+      setConfirmFinalize(null);
+      void qc.invalidateQueries({ queryKey: [`emp-payslips-${empId}`] });
+      void qc.invalidateQueries({ queryKey: ["payslips"] });
+    },
+    onError: (e: Error) => toast.error(e),
   });
 
   if (!showSalary) return <NoAccess what="salary information" />;
@@ -574,6 +595,9 @@ function SalaryTab({
 
       <div className="card stack">
         <h2>Payslips</h2>
+        <p className="muted small">
+          Finalizing a draft notifies only this employee (config: notifyPayslipFinalized + PAYSLIP_READY).
+        </p>
         <DataTable<Rec>
           queryKey={`emp-payslips-${empId}`}
           path={api.payroll("payslips")}
@@ -591,11 +615,48 @@ function SalaryTab({
               render: (r) => `${fmtNumber(r.regularHours)} / ${fmtNumber(r.overtimeHours)} / ${fmtNumber(r.weekendHours)}`,
             },
             { key: "grossAmount", header: "Gross", className: "n", render: (r) => fmtMoney(r.grossAmount) },
+            {
+              key: "deductionAmount",
+              header: "Deductions",
+              className: "n",
+              render: (r) => fmtMoney(r.deductionAmount),
+            },
             { key: "netAmount", header: "Net", className: "n", render: (r) => <b>{fmtMoney(r.netAmount)}</b> },
             { key: "status", header: "Status", render: (r) => <StatusPill status={r.status} /> },
+            {
+              key: "actions",
+              header: "",
+              render: (r) =>
+                canFinalize && !/final/i.test(String(r.status)) ? (
+                  <button
+                    type="button"
+                    className="btn sm primary"
+                    disabled={finalize.isPending}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmFinalize(r);
+                    }}
+                  >
+                    Finalize
+                  </button>
+                ) : null,
+            },
           ]}
         />
       </div>
+
+      <ConfirmModal
+        open={!!confirmFinalize}
+        title="Finalize payslip?"
+        confirmLabel="Finalize"
+        busy={finalize.isPending}
+        onCancel={() => setConfirmFinalize(null)}
+        onConfirm={() => {
+          if (confirmFinalize?.id != null) finalize.mutate(confirmFinalize.id as number);
+        }}
+      >
+        {`Finalize ${str(confirmFinalize?.periodLabel)} for this employee? They will receive an in-app notification; other employees will not.`}
+      </ConfirmModal>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Record salary change">
         <form className="stack" onSubmit={submit} noValidate>

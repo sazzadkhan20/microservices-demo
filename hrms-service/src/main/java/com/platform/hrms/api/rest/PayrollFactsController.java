@@ -1,6 +1,8 @@
 package com.platform.hrms.api.rest;
 
 import com.platform.hrms.application.PayrollFactsService;
+import com.platform.hrms.domain.TenantSettings;
+import com.platform.hrms.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.hrms.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -13,6 +15,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -25,9 +29,78 @@ import java.util.Map;
 public class PayrollFactsController {
 
     private final PayrollFactsService payrollFactsService;
+    private final TenantSettingsRepository tenantSettingsRepository;
 
-    public PayrollFactsController(PayrollFactsService payrollFactsService) {
+    public PayrollFactsController(
+            PayrollFactsService payrollFactsService,
+            TenantSettingsRepository tenantSettingsRepository) {
         this.payrollFactsService = payrollFactsService;
+        this.tenantSettingsRepository = tenantSettingsRepository;
+    }
+
+    /**
+     * S2S gate for payroll-service: is a notification event enabled for this tenant?
+     * Recognizes {@code PAYSLIP_READY} and legacy FE key {@code payroll}. Defaults true.
+     */
+    @GetMapping("/notification-event")
+    @RequiresPermission(feature = "settings", action = "view", allowInternal = true)
+    @Operation(summary = "Check tenant notificationEvents[key] for payroll S2S — defaults true")
+    public Map<String, Object> notificationEvent(@RequestParam String key) {
+        String requested = key == null ? "" : key.trim();
+        boolean enabled = isNotificationEventEnabled(requested);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("key", requested);
+        out.put("enabled", enabled);
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean isNotificationEventEnabled(String key) {
+        if (key == null || key.isBlank()) {
+            return true;
+        }
+        try {
+            TenantSettings settings = tenantSettingsRepository.findAll().stream().findFirst().orElse(null);
+            if (settings == null || settings.getSettings() == null) {
+                return true;
+            }
+            Object raw = settings.getSettings().get("notificationEvents");
+            if (!(raw instanceof Map<?, ?> m)) {
+                return true;
+            }
+            // Accept both canonical and FE alias keys for payslip.
+            String[] aliases = aliasesFor(key);
+            for (String alias : aliases) {
+                Object val = m.get(alias);
+                if (val == null) {
+                    // case-insensitive scan
+                    for (Map.Entry<?, ?> e : m.entrySet()) {
+                        if (e.getKey() != null
+                                && alias.equalsIgnoreCase(String.valueOf(e.getKey()))) {
+                            val = e.getValue();
+                            break;
+                        }
+                    }
+                }
+                if (val instanceof Boolean b) {
+                    return b;
+                }
+                if (val != null) {
+                    return Boolean.parseBoolean(String.valueOf(val));
+                }
+            }
+        } catch (Exception ignored) {
+            return true;
+        }
+        return true;
+    }
+
+    private static String[] aliasesFor(String key) {
+        String k = key.toUpperCase(Locale.ROOT);
+        if ("PAYSLIP_READY".equals(k) || "PAYROLL".equals(k)) {
+            return new String[]{"PAYSLIP_READY", "payroll", "PAYROLL"};
+        }
+        return new String[]{key, k, key.toLowerCase(Locale.ROOT)};
     }
 
     @GetMapping("/employee/{id}")

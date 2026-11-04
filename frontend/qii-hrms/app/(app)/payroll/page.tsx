@@ -44,13 +44,20 @@ export default function PayrollPage() {
   const canViewPay = can("payroll", "view");
 
   const tabs = useMemo(() => {
-    const t: { id: string; label: string }[] = [{ id: "payslips", label: "Payslips" }];
-    if (!canRun && canViewPay) t.push({ id: "mypay", label: "My pay" });
-    if (canRun) t.push({ id: "rules", label: "Rules" });
+    const t: { id: string; label: string }[] = [];
+    // Employees with view-only start on My pay (own draft + finalized details).
+    if (canViewPay) t.push({ id: "mypay", label: "My pay" });
+    if (canRun) {
+      t.push({ id: "payslips", label: "Payslips" });
+      t.push({ id: "rules", label: "Rules" });
+    } else if (canViewPay) {
+      // View-only: still list own slips via scoped GET /payslips
+      t.push({ id: "payslips", label: "My payslips" });
+    }
     return t;
   }, [canRun, canViewPay]);
 
-  const [tab, setTab] = useState("payslips");
+  const [tab, setTab] = useState(canRun ? "payslips" : "mypay");
   const [period, setPeriod] = useState(currentPeriod());
   const [empFilter, setEmpFilter] = useState("");
   const [open, setOpen] = useState(false);
@@ -171,7 +178,7 @@ export default function PayrollPage() {
     mutationFn: (id: string | number) =>
       apiFetch(api.payroll(`payslips/${id}/finalize`), { method: "POST", body: { confirm: true } }),
     onSuccess: () => {
-      toast.show("Payslip finalized");
+      toast.show("Payslip finalized — that employee was notified");
       setConfirm(null);
       setDetail(null);
       refresh();
@@ -808,7 +815,7 @@ export default function PayrollPage() {
       >
         {confirm?.kind === "reopen"
           ? "Reopen this finalized payslip for recalculation?"
-          : `Finalize ${confirm ? nameOf(confirm.row) : ""} · ${confirm ? String(confirm.row.periodLabel ?? "") : ""}? ${finalizeHint} Leave balances will be adjusted for absence cover and this payslip will be locked.`}
+          : `Finalize ${confirm ? nameOf(confirm.row) : ""} · ${confirm ? String(confirm.row.periodLabel ?? "") : ""}? ${finalizeHint} Leave balances will be adjusted for absence cover. Only this employee receives a payslip-ready notification.`}
       </ConfirmModal>
 
       {/* Run month confirm */}
@@ -830,6 +837,7 @@ export default function PayrollPage() {
 
 // ── My Pay panel (FR-SAL-03 self-view) ─────────────────────────────────────
 function MyPayPanel() {
+  const [detail, setDetail] = useState<Rec | null>(null);
   const myCurrent = useQuery({
     queryKey: ["payroll-me-current"],
     queryFn: ({ signal }) => apiFetch<Rec>(api.payroll("me/current"), { signal }),
@@ -837,26 +845,28 @@ function MyPayPanel() {
 
   const data = myCurrent.data;
   const payslips = rowsOf<Rec>(data?.payslips);
+  const mtd = data?.mtdEstimate as Rec | undefined;
 
   return (
     <section className="card stack">
       <h2>My pay</h2>
+      <p className="muted small">Open any of your draft or finalized payslips to see the full breakdown.</p>
       <ErrorNote error={myCurrent.error} />
       {myCurrent.isLoading ? <p className="muted">Loading…</p> : null}
       {data ? (
         <>
           <div className="grid g3">
             <div className="stat">
-              <span className="s">Current pay</span>
-              <span className="v">{fmtMoney(data.currentPay)}</span>
+              <span className="s">Period</span>
+              <span className="v mono">{str(data.currentPeriod)}</span>
             </div>
             <div className="stat">
-              <span className="s">MTD estimate</span>
-              <span className="v">
-                {fmtMoney(
-                  (data.mtdEstimate as Rec | undefined)?.netAmount ?? data.mtdEstimate,
-                )}
-              </span>
+              <span className="s">MTD net</span>
+              <span className="v">{fmtMoney(mtd?.netAmount ?? data.mtdEstimate)}</span>
+            </div>
+            <div className="stat">
+              <span className="s">MTD status</span>
+              <span className="v">{mtd?.status ? <StatusPill status={mtd.status} /> : "—"}</span>
             </div>
           </div>
           {payslips.length > 0 ? (
@@ -865,15 +875,26 @@ function MyPayPanel() {
                 <thead>
                   <tr>
                     <th>Period</th>
+                    <th className="n">Gross</th>
+                    <th className="n">Deductions</th>
                     <th className="n">Net</th>
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
                   {payslips.map((p, i) => (
-                    <tr key={String(p.id ?? i)}>
+                    <tr
+                      key={String(p.id ?? i)}
+                      style={{ cursor: "pointer" }}
+                      onClick={() => setDetail(p)}
+                      title="View payslip details"
+                    >
                       <td className="mono">{str(p.periodLabel)}</td>
-                      <td className="n">{fmtMoney(p.netAmount)}</td>
+                      <td className="n">{fmtMoney(p.grossAmount)}</td>
+                      <td className="n">{fmtMoney(p.deductionAmount)}</td>
+                      <td className="n">
+                        <b>{fmtMoney(p.netAmount)}</b>
+                      </td>
                       <td>
                         <StatusPill status={p.status} />
                       </td>
@@ -883,11 +904,161 @@ function MyPayPanel() {
               </table>
             </div>
           ) : (
-            <p className="muted">No finalized payslips yet.</p>
+            <p className="muted">No payslips yet (draft or finalized).</p>
           )}
         </>
       ) : null}
+
+      <Modal
+        open={!!detail}
+        onClose={() => setDetail(null)}
+        title={detail ? `My payslip · ${str(detail.periodLabel)}` : ""}
+        subtitle={detail ? `Status ${str(detail.status)}` : undefined}
+      >
+        {detail ? <OwnPayslipDetail payslip={detail} /> : null}
+      </Modal>
     </section>
+  );
+}
+
+/** Employee self-view of one payslip (draft or finalized) — uses details from me/current or GET. */
+function OwnPayslipDetail({ payslip }: { payslip: Rec }) {
+  const dj = (payslip.detailsJson ?? payslip.details) as Rec | undefined;
+  const deductions = useMemo(() => {
+    const raw = dj?.deductions;
+    if (Array.isArray(raw) && raw.length > 0) return raw as Rec[];
+    const lines: Rec[] = [];
+    const absence = Number(dj?.absenceDeduction ?? 0);
+    const late = Number(dj?.lateDeduction ?? 0);
+    const total = Number(dj?.deduction ?? payslip.deductionAmount ?? 0);
+    if (absence > 0) lines.push({ label: "unpaid_absence", amount: absence });
+    if (late > 0) lines.push({ label: "late_penalty", amount: late, lateCount: dj?.lateCount });
+    if (lines.length === 0 && total > 0) lines.push({ label: "deductions", amount: total });
+    return lines;
+  }, [dj, payslip]);
+  const notes = Array.isArray(dj?.notes) ? (dj!.notes as unknown[]) : [];
+  const consumed =
+    dj?.consumedByType && typeof dj.consumedByType === "object"
+      ? (dj.consumedByType as Record<string, unknown>)
+      : null;
+
+  return (
+    <div className="stack">
+      <div className="grid g3">
+        <div className="stat">
+          <span className="s">Base pay</span>
+          <span className="v">{fmtMoney(dj?.basePay ?? payslip.grossAmount, String(dj?.currency ?? ""))}</span>
+        </div>
+        <div className="stat">
+          <span className="s">Deduction</span>
+          <span className="v">{fmtMoney(dj?.deduction ?? payslip.deductionAmount)}</span>
+        </div>
+        <div className="stat">
+          <span className="s">Net pay</span>
+          <span className="v">
+            <b>{fmtMoney(dj?.net ?? payslip.netAmount, String(dj?.currency ?? ""))}</b>
+          </span>
+        </div>
+      </div>
+      <div className="kv">
+        {dj?.perDayRate !== undefined ? (
+          <div>
+            <div className="label">Per-day rate</div>
+            {fmtMoney(dj.perDayRate)}
+          </div>
+        ) : null}
+        {(dj?.workingDays ?? payslip.workingDays) !== undefined ? (
+          <div>
+            <div className="label">Working days</div>
+            {fmtNumber(dj?.workingDays ?? payslip.workingDays)}
+          </div>
+        ) : null}
+        {dj?.daysEmployed !== undefined ? (
+          <div>
+            <div className="label">Days employed</div>
+            {fmtNumber(dj.daysEmployed)}
+          </div>
+        ) : null}
+        {dj?.absentDays !== undefined ? (
+          <div>
+            <div className="label">Absent days</div>
+            {fmtNumber(dj.absentDays)}
+          </div>
+        ) : null}
+        {dj?.lateCount !== undefined ? (
+          <div>
+            <div className="label">Late occurrences</div>
+            {fmtNumber(dj.lateCount, 0)}
+          </div>
+        ) : null}
+        {(dj?.uncoveredDays ?? dj?.uncoveredAbsentDays) !== undefined ? (
+          <div>
+            <div className="label">Uncovered days</div>
+            {fmtNumber(dj?.uncoveredDays ?? dj?.uncoveredAbsentDays)}
+          </div>
+        ) : null}
+        {dj?.hoursWorked !== undefined ? (
+          <div>
+            <div className="label">Hours worked</div>
+            {fmtNumber(dj.hoursWorked)}
+          </div>
+        ) : null}
+        <div>
+          <div className="label">Status</div>
+          <StatusPill status={payslip.status} />
+        </div>
+      </div>
+      {consumed && Object.keys(consumed).length > 0 ? (
+        <div>
+          <div className="label" style={{ marginBottom: 6 }}>
+            Leave cover used
+          </div>
+          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+            {Object.entries(consumed).map(([k, v]) => (
+              <span key={k} className="pill">
+                {k}: {fmtNumber(v)}d
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {deductions.length > 0 ? (
+        <div className="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Deduction</th>
+                <th className="n">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deductions.map((d, i) => (
+                <tr key={i}>
+                  <td>{str(d.label ?? d.type)}</td>
+                  <td className="n">{fmtMoney(d.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="muted small">No money deductions on this payslip.</p>
+      )}
+      {notes.length > 0 ? (
+        <div>
+          <div className="label" style={{ marginBottom: 4 }}>
+            Notes
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {notes.map((n, i) => (
+              <li key={i} className="small">
+                {str(n)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

@@ -34,6 +34,9 @@ payroll:
 
 platform:
   service-name: payroll
+  notification:
+    # Empty = log-only (finalize still succeeds). Points at notification-service.
+    base-url: ${NOTIFICATION_BASE_URL:http://127.0.0.1:8083}
   security:
     # Requests must carry X-Service-Key = this value (stamped by the gateway); also sent to HRMS gRPC.
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}

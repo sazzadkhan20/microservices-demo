@@ -1,0 +1,51 @@
+databaseChangeLog:
+  # People SoT: employees, org, RBAC, employment. Foreign domain tables may exist briefly
+  # during bootstrap seed then are purged by ProvisioningService (guide §3).
+  - include:
+      file: db/tenant-changelog/hrms/changes/001-core-schema.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/002-leave-workflow.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/003-org-structure.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/004-configurable-leave-types.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/005-qii-product-core.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/006-attendance-capture.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/007-attendance-correction.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/008-reporting-line-history.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/009-role-policy.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/010-roles-assign.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/011-permission-catalog.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/012-employment-history.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/013-work-schedule-unique.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/014-attendance-correction-originals.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/015-tasks-worklog-rules.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/016-leave-fr-gaps.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/017-leave-type-code-len.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/018-permission-catalog-repair.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/019-leave-approval-step-unique.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/020-architecture-outbox-leave.yaml
+  - include:
+      file: db/tenant-changelog/shared/changes/001-messaging-outbox-inbox.yaml
+  # Leave/Time&Work tables may exist briefly for pack seed / legacy clone, then
+  # ProvisioningService.purgeForeignTablesFromPeople() drops them (guide §3).
+  # people/changes/002-drop-foreign-domain-tables.yaml is applied by that purge path,
+  # not at Liquibase time — otherwise legacy clone / seeders cannot write owned rows.
+  - include:
+      file: db/tenant-changelog/people/changes/003-rename-audit-log.yaml

@@ -681,9 +681,14 @@ export function EmployeeForm({ mode, employee, sections = "all", onSaved, onCanc
                 ))}
               </select>
             </FormField>
-            <FormField label="Team" required={mode === "create"} error={errors.teamId}>
+            <FormField
+              label="Team"
+              required={mode === "create" && !v.departmentId}
+              error={errors.teamId}
+              hint="Optional if a department is set — useful before the team has a lead."
+            >
               <select value={v.teamId} onChange={(e) => onTeamChange(e.target.value)}>
-                <option value="">— Select —</option>
+                <option value="">— None —</option>
                 {(teams.data ?? []).map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
@@ -693,8 +698,8 @@ export function EmployeeForm({ mode, employee, sections = "all", onSaved, onCanc
             </FormField>
             <FormField
               label="Department"
-              required={mode === "create"}
-              hint="Picking a team fills this in."
+              required={mode === "create" && !v.teamId}
+              hint="Picking a team fills this in. Required if no team is chosen."
               error={errors.departmentId}
             >
               <select value={v.departmentId} onChange={(e) => set("departmentId", e.target.value)}>

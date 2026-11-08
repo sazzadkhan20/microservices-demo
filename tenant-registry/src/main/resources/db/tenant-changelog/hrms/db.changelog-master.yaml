@@ -38,4 +38,6 @@ databaseChangeLog:
       file: db/tenant-changelog/hrms/changes/018-permission-catalog-repair.yaml
   - include:
       file: db/tenant-changelog/hrms/changes/019-leave-approval-step-unique.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/020-architecture-outbox-leave.yaml
 

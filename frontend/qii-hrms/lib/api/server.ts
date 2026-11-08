@@ -58,7 +58,7 @@ export class GatewayError extends Error {
  */
 export function demoAuthHeaders(): Record<string, string> {
   if (!config.demoAuthKey) {
-    throw new GatewayError(503, "Server misconfigured: set DEMO_AUTH_KEY (or GATEWAY_SERVICE_KEY)");
+    throw new GatewayError(503, "Server misconfigured: set DEMO_AUTH_KEY in frontend .env (must match gateway)");
   }
   return { "X-Demo-Auth-Key": config.demoAuthKey };
 }

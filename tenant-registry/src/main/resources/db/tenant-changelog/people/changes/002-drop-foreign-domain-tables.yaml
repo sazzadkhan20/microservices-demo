@@ -1,0 +1,26 @@
+databaseChangeLog:
+  # People DB owns employees/org/RBAC/employment only — drop Leave & Time&Work SoT tables (guide §3).
+  - changeSet:
+      id: people-002-drop-foreign-v2
+      author: platform
+      changes:
+        - sql:
+            sql: |
+              DROP TABLE IF EXISTS leave_operation CASCADE;
+              DROP TABLE IF EXISTS leave_approval_delegate CASCADE;
+              DROP TABLE IF EXISTS leave_approval CASCADE;
+              DROP TABLE IF EXISTS leave_application CASCADE;
+              DROP TABLE IF EXISTS leave_balance_ledger CASCADE;
+              DROP TABLE IF EXISTS leave_balance CASCADE;
+              DROP TABLE IF EXISTS leave_blackout CASCADE;
+              DROP TABLE IF EXISTS leave_category CASCADE;
+              DROP TABLE IF EXISTS leave_type CASCADE;
+              DROP TABLE IF EXISTS leave_policy CASCADE;
+              DROP TABLE IF EXISTS store_shift_coverage CASCADE;
+              DROP TABLE IF EXISTS attendance_correction CASCADE;
+              DROP TABLE IF EXISTS attendance_record CASCADE;
+              DROP TABLE IF EXISTS work_task_assignee CASCADE;
+              DROP TABLE IF EXISTS work_log CASCADE;
+              DROP TABLE IF EXISTS work_task CASCADE;
+              DROP TABLE IF EXISTS work_schedule CASCADE;
+              DROP TABLE IF EXISTS holiday CASCADE;

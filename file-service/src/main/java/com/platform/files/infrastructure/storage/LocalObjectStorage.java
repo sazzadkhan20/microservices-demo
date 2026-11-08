@@ -46,4 +46,9 @@ public class LocalObjectStorage implements ObjectStorage {
     public void delete(String bucket, String objectKey) throws IOException {
         Files.deleteIfExists(Paths.get(root).resolve(bucket).resolve(objectKey));
     }
+
+    @Override
+    public boolean exists(String bucket, String objectKey) throws IOException {
+        return Files.isRegularFile(Paths.get(root).resolve(bucket).resolve(objectKey));
+    }
 }

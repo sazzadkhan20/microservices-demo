@@ -1,0 +1,128 @@
+databaseChangeLog:
+  - changeSet:
+      id: payroll-003-payslip-unique-employee-period
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - indexExists:
+                tableName: payslip
+                indexName: uq_payslip_employee_period
+      changes:
+        - createIndex:
+            tableName: payslip
+            indexName: uq_payslip_employee_period
+            unique: true
+            columns:
+              - column: { name: employee_id }
+              - column: { name: period_label }
+
+  - changeSet:
+      id: payroll-003-payslip-revision-columns
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - columnExists:
+                tableName: payslip
+                columnName: revision
+      changes:
+        - addColumn:
+            tableName: payslip
+            columns:
+              - column:
+                  name: revision
+                  type: BIGINT
+                  defaultValueNumeric: 1
+                  constraints: { nullable: false }
+              - column:
+                  name: status
+                  type: VARCHAR(32)
+                  defaultValue: DRAFT
+                  constraints: { nullable: false }
+              - column:
+                  name: operation_id
+                  type: VARCHAR(64)
+              - column:
+                  name: facts_snapshot
+                  type: JSONB
+
+  - changeSet:
+      id: payroll-003-outbox
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - tableExists:
+                tableName: message_outbox
+      changes:
+        - createTable:
+            tableName: message_outbox
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: event_id, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: event_type, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: routing_key, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: aggregate_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: aggregate_version, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: correlation_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: tenant_id, type: VARCHAR(100), constraints: { nullable: false } }
+              - column: { name: payload_json, type: JSONB, constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(24), defaultValue: PENDING, constraints: { nullable: false } }
+              - column: { name: attempts, type: INT, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: last_error, type: TEXT }
+              - column: { name: created_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: published_at, type: TIMESTAMPTZ }
+        - createIndex:
+            tableName: message_outbox
+            indexName: idx_outbox_status_created
+            columns:
+              - column: { name: status }
+              - column: { name: created_at }
+
+  - changeSet:
+      id: payroll-003-inbox
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - tableExists:
+                tableName: message_inbox
+      changes:
+        - createTable:
+            tableName: message_inbox
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: event_id, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: event_type, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: consumer_name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: payload_json, type: JSONB, constraints: { nullable: false } }
+              - column: { name: processed_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: result_json, type: JSONB }
+
+  - changeSet:
+      id: payroll-003-finalize-operation
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - tableExists:
+                tableName: finalize_operation
+      changes:
+        - createTable:
+            tableName: finalize_operation
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: operation_id, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: operation_key, type: VARCHAR(160), constraints: { nullable: false, unique: true } }
+              - column: { name: payslip_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: employee_id, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: period_label, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: revision, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: action, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(32), constraints: { nullable: false } }
+              - column: { name: correlation_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: error_message, type: TEXT }
+              - column: { name: created_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: updated_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: completed_at, type: TIMESTAMPTZ }

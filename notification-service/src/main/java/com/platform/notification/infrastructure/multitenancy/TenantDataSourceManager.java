@@ -59,6 +59,18 @@ public class TenantDataSourceManager {
         log.info("Invalidated all tenant DataSources");
     }
 
+    public java.util.Set<String> openTenantIds() {
+        return pools.openTenantIds();
+    }
+
+
+    public java.util.Set<String> outboxTenantIds() {
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>(pools.openTenantIds());
+        ids.addAll(com.platform.messaging.tenant.RoutedTenantScanner.listTenantIds(redis, properties.getServiceName()));
+        return ids;
+    }
+
+
     private HikariDataSource createPoolFor(String tenantId) {
         RoutingPayload payload = loadPayload(tenantId);
         if (!payload.isActive()) {

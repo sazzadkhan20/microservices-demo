@@ -4,6 +4,30 @@ server:
 spring:
   application:
     name: file-service
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    connection-timeout: 5000
+    listener:
+      simple:
+        acknowledge-mode: auto
+        missing-queues-fatal: false
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          initial-interval: 2000
+          max-attempts: 5
+          multiplier: 2.0
+    template:
+      retry:
+        enabled: true
+        initial-interval: 500
+        max-attempts: 3
+        multiplier: 2.0
   # Multi-tenant: DataSource is AbstractRoutingDataSource (no single fixed JDBC URL).
   liquibase:
     enabled: false
@@ -29,12 +53,16 @@ spring:
 
 platform:
   service-name: file
+  people-base-url: ${PEOPLE_BASE_URL:${HRMS_BASE_URL:http://127.0.0.1:8081}}
+  messaging:
+    enabled: ${PLATFORM_MESSAGING_ENABLED:true}
   security:
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
-    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+    service-key: ${PLATFORM_SERVICE_KEY}
+    internal-key: ${PLATFORM_INTERNAL_KEY}
   registry:
     base-url: ${REGISTRY_BASE_URL:http://127.0.0.1:8080}
-    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+    service-key: ${PLATFORM_SERVICE_KEY}
   datasource:
     maximum-pool-size: 5
     minimum-idle: 1
@@ -49,8 +77,16 @@ file:
     root: ${FILE_STORAGE_ROOT:./data/files}
   minio:
     endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9000}
-    access-key: ${MINIO_ACCESS_KEY:minioadmin}
-    secret-key: ${MINIO_SECRET_KEY:minioadmin}
+    access-key: ${MINIO_ACCESS_KEY}
+    secret-key: ${MINIO_SECRET_KEY}
+  # Guide §8 — short-lived download tokens after authorization
+  download:
+    signing-key: ${FILE_DOWNLOAD_SIGNING_KEY:${JWT_SECRET}}
+    ttl-seconds: ${FILE_DOWNLOAD_TTL_SECONDS:120}
+  retention:
+    enabled: ${FILE_RETENTION_ENABLED:true}
+    rejected-days: ${FILE_RETENTION_REJECTED_DAYS:30}
+    stuck-scan-minutes: ${FILE_STUCK_SCAN_MINUTES:15}
 
 springdoc:
   swagger-ui:
@@ -59,10 +95,19 @@ springdoc:
     tryItOutEnabled: true
 
 management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
   endpoints:
     web:
       exposure:
         include: health,info
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
 
 logging:
   level:

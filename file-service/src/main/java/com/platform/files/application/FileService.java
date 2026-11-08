@@ -1,31 +1,77 @@
 package com.platform.files.application;
 
+import com.platform.common.messaging.EventTypes;
+import com.platform.common.messaging.PlatformEvent;
+import com.platform.common.messaging.PlatformQueues;
+import com.platform.common.people.PeopleDirectoryClient;
+import com.platform.common.security.HrmsPermissionClient;
+import com.platform.common.tenant.TenantContext;
 import com.platform.common.tenant.TenantIds;
+import com.platform.files.api.dto.DownloadUrlResponse;
 import com.platform.files.api.dto.FileMetadataResponse;
 import com.platform.files.api.dto.FileUploadResponse;
 import com.platform.files.domain.FileObject;
 import com.platform.files.infrastructure.persistence.FileObjectRepository;
 import com.platform.files.infrastructure.storage.ObjectStorage;
+import com.platform.messaging.correlation.CorrelationContext;
+import com.platform.messaging.outbox.OutboxRelay;
+import com.platform.messaging.outbox.OutboxWriter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
+/**
+ * Document upload / quarantine / scan / release pipeline (Developer Guide §8).
+ *
+ * <ol>
+ *   <li>Validate size, MIME+magic, and document structure</li>
+ *   <li>Store privately under {@code quarantine/} and persist QUARANTINED metadata</li>
+ *   <li>Enqueue scan via durable outbox → RabbitMQ (async)</li>
+ *   <li>On clean: promote to {@code released/}, mark RELEASED</li>
+ *   <li>Downloads require RELEASED + classification/employee scope; short-lived tokens</li>
+ * </ol>
+ */
 @Service
 @Transactional
 public class FileService {
 
+    private static final Logger log = LoggerFactory.getLogger(FileService.class);
+
+    public static final String SCAN_QUARANTINED = "QUARANTINED";
+    public static final String SCAN_SCANNING = "SCANNING";
+    public static final String SCAN_CLEAN = "CLEAN";
+    public static final String SCAN_INFECTED = "INFECTED";
+    public static final String SCAN_RELEASED = "RELEASED";
+    public static final String SCAN_REJECTED = "REJECTED";
+    public static final String SCAN_FAILED = "FAILED";
+
     private static final long MAX_SIZE_BYTES = 10L * 1024 * 1024;
+    private static final String PREFIX_QUARANTINE = "quarantine/";
+    private static final String PREFIX_RELEASED = "released/";
 
     private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
             "application/pdf",
@@ -36,14 +82,44 @@ public class FileService {
 
     private final FileObjectRepository repository;
     private final ObjectStorage storage;
+    private final ObjectProvider<OutboxWriter> outboxWriter;
+    private final ObjectProvider<OutboxRelay> outboxRelay;
+    private final AuditService auditService;
+    private final DownloadTokenService downloadTokens;
+    private final ObjectProvider<PeopleDirectoryClient> peopleDirectory;
+    private final long rejectedRetentionDays;
 
-    public FileService(FileObjectRepository repository, ObjectStorage storage) {
+    public FileService(
+            FileObjectRepository repository,
+            ObjectStorage storage,
+            ObjectProvider<OutboxWriter> outboxWriter,
+            ObjectProvider<OutboxRelay> outboxRelay,
+            AuditService auditService,
+            DownloadTokenService downloadTokens,
+            ObjectProvider<PeopleDirectoryClient> peopleDirectory,
+            @org.springframework.beans.factory.annotation.Value("${file.retention.rejected-days:30}")
+            long rejectedRetentionDays) {
         this.repository = repository;
         this.storage = storage;
+        this.outboxWriter = outboxWriter;
+        this.outboxRelay = outboxRelay;
+        this.auditService = auditService;
+        this.downloadTokens = downloadTokens;
+        this.peopleDirectory = peopleDirectory;
+        this.rejectedRetentionDays = Math.max(1L, rejectedRetentionDays);
     }
 
     public FileUploadResponse upload(String tenantId, String uploadedBy, MultipartFile file)
             throws IOException {
+        return upload(tenantId, uploadedBy, file, "GENERAL", null);
+    }
+
+    public FileUploadResponse upload(
+            String tenantId,
+            String uploadedBy,
+            MultipartFile file,
+            String classification,
+            Long subjectEmployeeId) throws IOException {
 
         if (file.isEmpty()) {
             throw new IllegalArgumentException("Uploaded file must not be empty");
@@ -59,34 +135,75 @@ public class FileService {
         }
         byte[] bytes = file.getBytes();
         assertMagicMatches(contentType, bytes);
+        assertDocumentStructure(contentType, bytes);
 
         String normalized = TenantIds.normalize(tenantId);
         String bucket = TenantIds.filesBucket(normalized);
-        String objectKey = UUID.randomUUID().toString();
-        storage.store(bucket, objectKey, new java.io.ByteArrayInputStream(bytes), contentType, bytes.length);
+        String objectUuid = UUID.randomUUID().toString();
+        String objectKey = PREFIX_QUARANTINE + objectUuid;
 
-        FileObject fo = new FileObject();
-        fo.setTenantId(normalized);
-        fo.setOriginalName(file.getOriginalFilename() != null
-                ? file.getOriginalFilename() : objectKey);
-        fo.setContentType(contentType);
-        fo.setSizeBytes(bytes.length);
-        fo.setStorageKey(bucket + "/" + objectKey);
-        fo.setUploadedBy(uploadedBy);
+        // Store first; compensate delete if metadata commit fails (guide §8 orphan rule).
+        storage.store(bucket, objectKey, new ByteArrayInputStream(bytes), contentType, bytes.length);
 
-        FileObject saved = repository.save(fo);
+        FileObject saved;
+        try {
+            FileObject fo = new FileObject();
+            fo.setTenantId(normalized);
+            fo.setOriginalName(file.getOriginalFilename() != null
+                    ? file.getOriginalFilename() : objectUuid);
+            fo.setContentType(contentType);
+            fo.setSizeBytes(bytes.length);
+            fo.setStorageKey(bucket + "/" + objectKey);
+            fo.setUploadedBy(uploadedBy);
+            fo.setScanStatus(SCAN_QUARANTINED);
+            fo.setClassification(normalizeClassification(classification));
+            Long emp = subjectEmployeeId;
+            if (emp == null && uploadedBy != null && !uploadedBy.isBlank()) {
+                try {
+                    emp = Long.parseLong(uploadedBy.trim());
+                } catch (NumberFormatException ignored) {
+                    // non-numeric uploader identity is fine
+                }
+            }
+            fo.setEmployeeId(emp);
+
+            if (outboxWriter.getIfAvailable() == null) {
+                // Messaging disabled — still require structure checks then auto-release locally.
+                promoteToReleased(fo);
+                fo.setScanStatus(SCAN_RELEASED);
+                fo.setScanDetail("messaging-disabled-auto-release");
+                fo.setScannedAt(Instant.now());
+                fo.setReleasedAt(Instant.now());
+            }
+
+            saved = repository.save(fo);
+            Long actor = fo.getEmployeeId();
+            auditService.record(actor, "UPLOAD", "FileObject", String.valueOf(saved.getId()), null,
+                    Map.of("originalName", saved.getOriginalName(), "contentType", saved.getContentType(),
+                            "sizeBytes", saved.getSizeBytes(), "scanStatus", saved.getScanStatus(),
+                            "classification", saved.getClassification()));
+            if (outboxWriter.getIfAvailable() != null) {
+                enqueueScan(saved);
+                drainOutboxAfterCommit();
+            }
+        } catch (RuntimeException ex) {
+            try {
+                storage.delete(bucket, objectKey);
+            } catch (Exception cleanup) {
+                log.warn("Orphan object left after metadata failure bucket={} key={}: {}",
+                        bucket, objectKey, cleanup.getMessage());
+            }
+            throw ex;
+        }
+
         return new FileUploadResponse(
                 saved.getId(),
                 saved.getOriginalName(),
                 saved.getContentType(),
                 saved.getSizeBytes(),
-                "/api/files/" + saved.getId() + "/download"
+                saved.getScanStatus(),
+                "/api/files/" + saved.getId() + "/download-url"
         );
-    }
-
-    @Transactional(readOnly = true)
-    public FileMetadataResponse getMetadata(String tenantId, Long id) {
-        return getMetadata(tenantId, id, null);
     }
 
     @Transactional(readOnly = true)
@@ -96,18 +213,39 @@ public class FileService {
         return toMetadata(fo);
     }
 
+    /** Internal S2S existence/scan check (People document attach). */
+    @Transactional(readOnly = true)
+    public Map<String, Object> internalDescribe(String tenantId, Long id) {
+        FileObject fo = findByTenantId(tenantId, id);
+        boolean objectPresent;
+        try {
+            String[] parts = splitStorageKey(fo.getStorageKey());
+            objectPresent = storage.exists(parts[0], parts[1]);
+        } catch (Exception e) {
+            objectPresent = false;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", fo.getId());
+        out.put("tenantId", fo.getTenantId());
+        out.put("scanStatus", fo.getScanStatus());
+        out.put("classification", fo.getClassification());
+        out.put("employeeId", fo.getEmployeeId());
+        out.put("originalName", fo.getOriginalName());
+        out.put("contentType", fo.getContentType());
+        out.put("sizeBytes", fo.getSizeBytes());
+        out.put("objectPresent", objectPresent);
+        out.put("downloadable", isDownloadable(fo.getScanStatus()) && objectPresent);
+        return out;
+    }
+
     @Transactional(readOnly = true)
     public Map<String, Object> list(String tenantId, Long requesterEmployeeId, int page, int size, boolean all) {
         String t = TenantIds.normalize(tenantId);
         int p = Math.max(page, 0);
         int s = Math.min(Math.max(size, 1), 100);
         Page<FileObject> result;
-        if (all) {
-            // "all" still limited to own uploads unless caller identity missing (service hook)
-            result = requesterEmployeeId == null
-                    ? repository.findByTenantIdOrderByIdDesc(t, PageRequest.of(p, s))
-                    : repository.findByTenantIdAndUploadedByOrderByIdDesc(
-                            t, String.valueOf(requesterEmployeeId), PageRequest.of(p, s));
+        if (all && canViewDocuments(requesterEmployeeId)) {
+            result = repository.findByTenantIdOrderByIdDesc(t, PageRequest.of(p, s));
         } else {
             String by = requesterEmployeeId == null ? "" : String.valueOf(requesterEmployeeId);
             result = repository.findByTenantIdAndUploadedByOrderByIdDesc(t, by, PageRequest.of(p, s));
@@ -121,29 +259,303 @@ public class FileService {
         return out;
     }
 
-    @Transactional(readOnly = true)
-    public InputStream openDownload(String tenantId, Long id) throws IOException {
-        return openDownload(tenantId, id, null);
+    /** Authorize + issue short-lived download URL (guide §8). */
+    public DownloadUrlResponse issueDownloadUrl(String tenantId, Long id, Long requesterEmployeeId) {
+        FileObject fo = findByTenantId(tenantId, id);
+        assertCanAccess(fo, requesterEmployeeId, true);
+        assertReleased(fo);
+        DownloadTokenService.IssuedToken issued =
+                downloadTokens.issue(fo.getId(), fo.getTenantId(), requesterEmployeeId);
+        auditService.record(requesterEmployeeId, "DOWNLOAD_URL", "FileObject", String.valueOf(id), null,
+                Map.of("expiresAt", issued.expiresAt().toString(), "scanStatus", fo.getScanStatus(),
+                        "classification", fo.getClassification()));
+        String url = "/api/files/" + id + "/content?token=" + issued.token();
+        return new DownloadUrlResponse(id, url, issued.token(), issued.expiresAt());
     }
 
+    /**
+     * Verify short-lived token, audit access, and open the released object stream (guide §8).
+     */
+    @Transactional(readOnly = true)
+    public OpenedDownload openDownloadWithToken(String tenantId, Long id, String token) throws IOException {
+        FileObject fo = findByTenantId(tenantId, id);
+        DownloadTokenService.Claims claims = downloadTokens.verify(token, id, fo.getTenantId());
+        assertReleased(fo);
+        auditService.record(claims.requesterEmployeeId(), "DOWNLOAD", "FileObject", String.valueOf(id), null,
+                Map.of("storageKey", fo.getStorageKey(), "scanStatus", fo.getScanStatus(),
+                        "via", "short-lived-token"));
+        String[] parts = splitStorageKey(fo.getStorageKey());
+        return new OpenedDownload(toMetadata(fo), storage.load(parts[0], parts[1]));
+    }
+
+    public record OpenedDownload(FileMetadataResponse metadata, InputStream stream) {}
+
+    /** Legacy session download — still gated by quarantine + ACL; prefers short-lived URL path. */
     @Transactional(readOnly = true)
     public InputStream openDownload(String tenantId, Long id, Long requesterEmployeeId) throws IOException {
         FileObject fo = findByTenantId(tenantId, id);
         assertCanAccess(fo, requesterEmployeeId, true);
+        assertReleased(fo);
+        auditService.record(requesterEmployeeId, "DOWNLOAD", "FileObject", String.valueOf(id), null,
+                Map.of("storageKey", fo.getStorageKey(), "scanStatus", fo.getScanStatus(),
+                        "via", "session"));
         String[] parts = splitStorageKey(fo.getStorageKey());
         return storage.load(parts[0], parts[1]);
+    }
+
+    /**
+     * Async scan worker. Persists REJECTED durably and does <b>not</b> rethrow after that
+     * (inbox can ack — guide §7 durable processing).
+     *
+     * @return terminal scan status
+     */
+    public String processScan(Long fileId) {
+        FileObject fo = repository.findById(fileId)
+                .orElseThrow(() -> new IllegalArgumentException("File not found: " + fileId));
+        if (SCAN_RELEASED.equals(fo.getScanStatus()) || SCAN_REJECTED.equals(fo.getScanStatus())) {
+            return fo.getScanStatus();
+        }
+        fo.setScanStatus(SCAN_SCANNING);
+        repository.save(fo);
+
+        try {
+            String[] parts = splitStorageKey(fo.getStorageKey());
+            byte[] bytes;
+            try (InputStream in = storage.load(parts[0], parts[1])) {
+                bytes = in.readAllBytes();
+            }
+            if (bytes.length != fo.getSizeBytes() && fo.getSizeBytes() > 0) {
+                // allow minor variance only if size was unknown historically
+                log.debug("Scan size mismatch fileId={} meta={} actual={}",
+                        fileId, fo.getSizeBytes(), bytes.length);
+            }
+            assertMagicMatches(fo.getContentType(), bytes);
+            assertDocumentStructure(fo.getContentType(), bytes);
+            // Heuristic malware markers (demo scanner — replace with ClamAV/ICAP in hardened deploys).
+            assertNoMalwareMarkers(bytes);
+
+            fo.setScanStatus(SCAN_CLEAN);
+            fo.setScanDetail("heuristic-clean");
+            fo.setScannedAt(Instant.now());
+            promoteToReleased(fo);
+            fo.setScanStatus(SCAN_RELEASED);
+            fo.setReleasedAt(Instant.now());
+            repository.save(fo);
+            auditService.record(fo.getEmployeeId(), "SCAN_RELEASE", "FileObject", String.valueOf(fileId),
+                    SCAN_SCANNING, fo.getScanStatus());
+            return SCAN_RELEASED;
+        } catch (Exception e) {
+            fo.setScanStatus(SCAN_REJECTED);
+            fo.setScanDetail(truncate(e.getMessage(), 2000));
+            fo.setScannedAt(Instant.now());
+            repository.save(fo);
+            auditService.record(fo.getEmployeeId(), "SCAN_REJECT", "FileObject", String.valueOf(fileId),
+                    SCAN_SCANNING, fo.getScanStatus());
+            log.warn("File scan rejected id={}: {}", fileId, e.getMessage());
+            return SCAN_REJECTED;
+        }
+    }
+
+    public void delete(String tenantId, Long id, Long requesterEmployeeId) throws IOException {
+        FileObject fo = findByTenantId(tenantId, id);
+        assertCanAccess(fo, requesterEmployeeId, false);
+        if (!isOwner(fo, requesterEmployeeId) && !canManageDocuments(requesterEmployeeId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Forbidden: cannot delete this file");
+        }
+        String[] parts = splitStorageKey(fo.getStorageKey());
+        try {
+            storage.delete(parts[0], parts[1]);
+        } catch (Exception e) {
+            log.warn("Storage delete failed for {}: {}", fo.getStorageKey(), e.getMessage());
+        }
+        repository.delete(fo);
+        auditService.record(requesterEmployeeId, "DELETE", "FileObject", String.valueOf(id),
+                Map.of("storageKey", fo.getStorageKey(), "scanStatus", fo.getScanStatus()), null);
+    }
+
+    /** Retention: remove REJECTED rows older than configured days + their objects. */
+    public int purgeRejectedOlderThanRetention() {
+        Instant cutoff = Instant.now().minus(rejectedRetentionDays, ChronoUnit.DAYS);
+        List<FileObject> stale = repository.findByScanStatusAndCreatedAtBefore(SCAN_REJECTED, cutoff);
+        int n = 0;
+        for (FileObject fo : stale) {
+            try {
+                String[] parts = splitStorageKey(fo.getStorageKey());
+                storage.delete(parts[0], parts[1]);
+            } catch (Exception e) {
+                log.warn("Retention delete object failed {}: {}", fo.getStorageKey(), e.getMessage());
+            }
+            repository.delete(fo);
+            n++;
+        }
+        return n;
+    }
+
+    /** Re-enqueue scans stuck in QUARANTINED/SCANNING (broker/worker recovery). */
+    public int requeueStuckScans(Instant olderThan) {
+        List<FileObject> stuck = repository.findByScanStatusInAndCreatedAtBefore(
+                List.of(SCAN_QUARANTINED, SCAN_SCANNING), olderThan);
+        int n = 0;
+        for (FileObject fo : stuck) {
+            if (outboxWriter.getIfAvailable() == null) {
+                processScan(fo.getId());
+            } else {
+                enqueueScan(fo);
+            }
+            n++;
+        }
+        if (n > 0) {
+            drainOutboxAfterCommit();
+        }
+        return n;
+    }
+
+    private void enqueueScan(FileObject saved) {
+        OutboxWriter writer = outboxWriter.getIfAvailable();
+        if (writer == null) {
+            return;
+        }
+        String tenant = TenantContext.getTenantId();
+        if (tenant == null || tenant.isBlank()) {
+            tenant = saved.getTenantId();
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("fileId", saved.getId());
+        payload.put("storageKey", saved.getStorageKey());
+        PlatformEvent event = PlatformEvent.of(
+                EventTypes.FILE_SCAN_COMMAND,
+                String.valueOf(saved.getId()),
+                1L,
+                CorrelationContext.getOrCreate(),
+                tenant,
+                payload);
+        writer.enqueue(event, PlatformQueues.FILE_SCAN);
+    }
+
+    private void drainOutboxAfterCommit() {
+        OutboxRelay relay = outboxRelay.getIfAvailable();
+        if (relay == null) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        relay.drainBatch();
+                    } catch (Exception e) {
+                        log.debug("Outbox drain after file upload: {}", e.getMessage());
+                    }
+                }
+            });
+        } else {
+            relay.drainBatch();
+        }
+    }
+
+    private void promoteToReleased(FileObject fo) throws IOException {
+        String[] parts = splitStorageKey(fo.getStorageKey());
+        String bucket = parts[0];
+        String currentKey = parts[1];
+        if (currentKey.startsWith(PREFIX_RELEASED)) {
+            return;
+        }
+        String uuid = currentKey.startsWith(PREFIX_QUARANTINE)
+                ? currentKey.substring(PREFIX_QUARANTINE.length())
+                : currentKey;
+        String releasedKey = PREFIX_RELEASED + uuid;
+        storage.copy(bucket, currentKey, releasedKey, fo.getContentType(), fo.getSizeBytes());
+        try {
+            storage.delete(bucket, currentKey);
+        } catch (Exception e) {
+            log.warn("Failed to delete quarantine object {}/{}: {}", bucket, currentKey, e.getMessage());
+        }
+        fo.setStorageKey(bucket + "/" + releasedKey);
+    }
+
+    private static void assertReleased(FileObject fo) {
+        String status = fo.getScanStatus() == null ? SCAN_QUARANTINED : fo.getScanStatus();
+        if (isDownloadable(status)) {
+            return;
+        }
+        if (SCAN_REJECTED.equals(status) || SCAN_INFECTED.equals(status) || SCAN_FAILED.equals(status)) {
+            throw new ResponseStatusException(HttpStatus.GONE, "File rejected by content scan");
+        }
+        throw new ResponseStatusException(HttpStatus.LOCKED, "File still in quarantine/scan");
+    }
+
+    private static boolean isDownloadable(String status) {
+        return SCAN_RELEASED.equals(status) || SCAN_CLEAN.equals(status);
     }
 
     private void assertCanAccess(FileObject fo, Long requesterEmployeeId, boolean forDownload) {
         if (requesterEmployeeId == null) {
             return; // trusted internal / legacy
         }
+        if (isOwner(fo, requesterEmployeeId)) {
+            return;
+        }
+        if (fo.getEmployeeId() != null && fo.getEmployeeId().equals(requesterEmployeeId)) {
+            return;
+        }
+        // DOC01: authorized HR / documents viewers may access permitted employee documents.
+        String classification = fo.getClassification() == null ? "GENERAL" : fo.getClassification();
+        if ("PUBLIC".equalsIgnoreCase(classification) && canViewDocuments(requesterEmployeeId)) {
+            return;
+        }
+        if (canViewDocuments(requesterEmployeeId)) {
+            return;
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                forDownload ? "Forbidden: file belongs to another user"
+                        : "Forbidden: cannot view another user's file metadata");
+    }
+
+    private boolean isOwner(FileObject fo, Long requesterEmployeeId) {
+        if (requesterEmployeeId == null) {
+            return false;
+        }
         String owner = fo.getUploadedBy();
-        if (owner != null && !owner.isBlank() && !owner.equals(String.valueOf(requesterEmployeeId))) {
-            // Allow download if linked via HRMS documents is out of band; keep tenant files private to uploader
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    forDownload ? "Forbidden: file belongs to another user"
-                            : "Forbidden: cannot view another user's file metadata");
+        return owner != null && owner.equals(String.valueOf(requesterEmployeeId));
+    }
+
+    private boolean canViewDocuments(Long employeeId) {
+        return hasPermission(employeeId, "documents", "view")
+                || hasPermission(employeeId, "employees", "view");
+    }
+
+    private boolean canManageDocuments(Long employeeId) {
+        return hasPermission(employeeId, "documents", "delete")
+                || hasPermission(employeeId, "documents", "create")
+                || hasPermission(employeeId, "employees", "edit");
+    }
+
+    private boolean hasPermission(Long employeeId, String feature, String action) {
+        if (employeeId == null) {
+            return false;
+        }
+        PeopleDirectoryClient people = peopleDirectory.getIfAvailable();
+        if (people == null) {
+            return false;
+        }
+        try {
+            Object raw = people.authz(employeeId).get("permissions");
+            Set<String> keys = new HashSet<>();
+            if (raw instanceof java.util.Collection<?> col) {
+                for (Object o : col) {
+                    if (o != null) {
+                        keys.add(String.valueOf(o).toLowerCase(Locale.ROOT));
+                    }
+                }
+            }
+            Object wild = people.authz(employeeId).get("grantsWildcard");
+            if (wild instanceof Boolean b && b) {
+                return true;
+            }
+            return HrmsPermissionClient.grants(keys, feature, action);
+        } catch (Exception e) {
+            log.debug("People authz lookup failed for emp={}: {}", employeeId, e.getMessage());
+            return false;
         }
     }
 
@@ -161,13 +573,11 @@ public class FileService {
         if (bytes == null || bytes.length < 4) {
             throw new IllegalArgumentException("File content too short to validate");
         }
-        // PE/MZ executable
         if (bytes[0] == 'M' && bytes[1] == 'Z') {
             throw new IllegalArgumentException("Executable content is not allowed");
         }
-        // HTML / script disguised as image/pdf
         String head = new String(bytes, 0, Math.min(bytes.length, 64), java.nio.charset.StandardCharsets.ISO_8859_1)
-                .trim().toLowerCase(java.util.Locale.ROOT);
+                .trim().toLowerCase(Locale.ROOT);
         if (head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<script")
                 || head.startsWith("<?xml")) {
             throw new IllegalArgumentException("HTML/script content is not allowed for this upload type");
@@ -187,9 +597,51 @@ public class FileService {
         }
     }
 
-    /** Strip charset params; map common aliases; fall back to extension when browsers send octet-stream. */
+    /** Deeper structure checks beyond MIME + magic (guide §8). */
+    static void assertDocumentStructure(String contentType, byte[] bytes) {
+        if ("application/pdf".equals(contentType)) {
+            String tail = new String(
+                    bytes,
+                    Math.max(0, bytes.length - 1024),
+                    Math.min(1024, bytes.length),
+                    java.nio.charset.StandardCharsets.ISO_8859_1);
+            if (!tail.contains("%%EOF") && !tail.contains("%%eof")) {
+                throw new IllegalArgumentException("PDF structure invalid (missing %%EOF)");
+            }
+            return;
+        }
+        if (contentType != null && contentType.contains("wordprocessingml")) {
+            boolean hasContentTypes = false;
+            try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+                ZipEntry entry;
+                int checked = 0;
+                while ((entry = zis.getNextEntry()) != null && checked < 64) {
+                    checked++;
+                    if ("[Content_Types].xml".equals(entry.getName())) {
+                        hasContentTypes = true;
+                        break;
+                    }
+                }
+            } catch (IOException e) {
+                throw new IllegalArgumentException("DOCX structure invalid (not a readable ZIP)", e);
+            }
+            if (!hasContentTypes) {
+                throw new IllegalArgumentException("DOCX structure invalid (missing [Content_Types].xml)");
+            }
+        }
+    }
+
+    static void assertNoMalwareMarkers(byte[] bytes) {
+        // Lightweight demo heuristics — production should call ClamAV/ICAP.
+        String sample = new String(bytes, 0, Math.min(bytes.length, 8192), java.nio.charset.StandardCharsets.ISO_8859_1)
+                .toLowerCase(Locale.ROOT);
+        if (sample.contains("x5o!p%@ap") || sample.contains("eicar-standard-antivirus-test-file")) {
+            throw new IllegalArgumentException("Malware signature detected (EICAR)");
+        }
+    }
+
     static String normalizeContentType(String raw, String filename) {
-        String ct = raw == null ? "" : raw.trim().toLowerCase(java.util.Locale.ROOT);
+        String ct = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         int semi = ct.indexOf(';');
         if (semi >= 0) {
             ct = ct.substring(0, semi).trim();
@@ -198,7 +650,7 @@ public class FileService {
             ct = "image/jpeg";
         }
         if (ct.isBlank() || "application/octet-stream".equals(ct)) {
-            String name = filename == null ? "" : filename.toLowerCase(java.util.Locale.ROOT);
+            String name = filename == null ? "" : filename.toLowerCase(Locale.ROOT);
             if (name.endsWith(".pdf")) return "application/pdf";
             if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
             if (name.endsWith(".png")) return "image/png";
@@ -207,6 +659,17 @@ public class FileService {
             }
         }
         return ct.isBlank() ? null : ct;
+    }
+
+    private static String normalizeClassification(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "GENERAL";
+        }
+        String c = raw.trim().toUpperCase(Locale.ROOT);
+        return switch (c) {
+            case "GENERAL", "PUBLIC", "INTERNAL", "CONFIDENTIAL", "HR_ONLY", "SENSITIVE" -> c;
+            default -> "GENERAL";
+        };
     }
 
     private FileObject findByTenantId(String tenantId, Long id) {
@@ -230,8 +693,21 @@ public class FileService {
                 fo.getContentType(),
                 fo.getSizeBytes(),
                 fo.getUploadedBy(),
+                fo.getEmployeeId(),
+                fo.getScanStatus(),
+                fo.getClassification(),
+                fo.getScanDetail(),
+                fo.getScannedAt(),
+                fo.getReleasedAt(),
                 fo.getCreatedAt(),
-                "/api/files/" + fo.getId() + "/download"
+                "/api/files/" + fo.getId() + "/download-url"
         );
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) {
+            return null;
+        }
+        return s.length() <= max ? s : s.substring(0, max);
     }
 }

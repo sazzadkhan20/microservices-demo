@@ -785,10 +785,17 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
       if (!file) throw new Error("Choose a file to upload (PDF, JPG, PNG or DOCX, max 10 MB).");
       const fd = new FormData();
       fd.append("file", file);
-      const uploaded = await apiFetch<{ id: number | string; originalName?: string }>("/api/files", {
+      fd.append("employeeId", String(empId));
+      fd.append("classification", "GENERAL");
+      const uploaded = await apiFetch<{
+        id: number | string;
+        originalName?: string;
+        scanStatus?: string;
+      }>("/api/files", {
         method: "POST",
         body: fd,
       });
+      // Guide §8: file may still be QUARANTINED — attach metadata now; download stays locked until RELEASED.
       return apiFetch(api.hrms(`employees/${empId}/documents`), {
         method: "POST",
         body: {
@@ -800,7 +807,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
       });
     },
     onSuccess: () => {
-      toast.show("Document attached");
+      toast.show("Document attached (scanning in background)");
       setOpen(false);
       setName("");
       setExpiresAt("");
@@ -867,12 +874,20 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
                         className="btn sm"
                         onClick={() =>
                           void (async () => {
-                            await logAccess(String(d.fileId), "DOWNLOAD");
-                            await downloadFile(
-                              api.files(`${d.fileId}/download`),
-                              undefined,
-                              String(d.name ?? "document"),
-                            ).catch((er) => toast.error(er));
+                            try {
+                              await logAccess(String(d.fileId), "DOWNLOAD");
+                              // Guide §8: authorize then issue short-lived URL (blocked while quarantined).
+                              const issued = await apiFetch<{ url: string }>(
+                                api.files(`${d.fileId}/download-url`),
+                                { method: "POST" },
+                              );
+                              const path = issued.url.startsWith("/")
+                                ? issued.url
+                                : api.files(`${d.fileId}/content`);
+                              await downloadFile(path, undefined, String(d.name ?? "document"));
+                            } catch (er) {
+                              toast.error(er as Error);
+                            }
                           })()
                         }
                       >

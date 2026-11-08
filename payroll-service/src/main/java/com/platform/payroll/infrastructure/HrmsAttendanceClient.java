@@ -34,8 +34,8 @@ public class HrmsAttendanceClient {
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
 
     public HrmsAttendanceClient(
-            @Value("${payroll.hrms-base-url:http://127.0.0.1:8081}") String hrmsBaseUrl,
-            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
+            @Value("${payroll.time-work-base-url:http://127.0.0.1:8087}") String hrmsBaseUrl,
+            @Value("${platform.security.service-key}") String serviceKey,
             ObjectMapper mapper) {
         this.hrmsBaseUrl = hrmsBaseUrl == null ? "" : hrmsBaseUrl.replaceAll("/$", "");
         this.serviceKey = serviceKey;

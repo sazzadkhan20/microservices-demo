@@ -6,6 +6,7 @@ import com.platform.common.security.AuthContext;
 import com.platform.payroll.api.dto.CalculatePayrollRequest;
 import com.platform.payroll.api.dto.CalculatePayrollResponse;
 import com.platform.payroll.application.PayrollCalculationService;
+import com.platform.payroll.application.PayrollFinalizeService;
 import com.platform.payroll.domain.PayrollConfigEntity;
 import com.platform.payroll.domain.Payslip;
 import com.platform.payroll.domain.SalaryHistory;
@@ -60,6 +61,7 @@ import java.util.stream.Collectors;
 public class PayrollController {
 
     private final PayrollCalculationService calculationService;
+    private final PayrollFinalizeService finalizeService;
     private final PayrollConfigLoader configLoader;
     private final PayslipRepository payslipRepository;
     private final SalaryHistoryRepository salaryHistoryRepository;
@@ -67,11 +69,13 @@ public class PayrollController {
 
     public PayrollController(
             PayrollCalculationService calculationService,
+            PayrollFinalizeService finalizeService,
             PayrollConfigLoader configLoader,
             PayslipRepository payslipRepository,
             SalaryHistoryRepository salaryHistoryRepository,
             PayrollConfigRepository payrollConfigRepository) {
         this.calculationService = calculationService;
+        this.finalizeService = finalizeService;
         this.configLoader = configLoader;
         this.payslipRepository = payslipRepository;
         this.salaryHistoryRepository = salaryHistoryRepository;
@@ -88,18 +92,39 @@ public class PayrollController {
     @PostMapping("/payslips/{id}/finalize")
     @RequiresPermission(feature = "payroll", action = "run")
     @Operation(summary = "Finalize (lock) a draft payslip — payroll:run. Body: {confirm:true} required. "
-            + "Eligibility follows tenant periodEndMode (MONTH_END or DAY_OF_MONTH).")
-    public CalculatePayrollResponse finalize(@PathVariable Long id,
-                                             @RequestBody(required = false) Map<String, Object> body) {
+            + "Returns 202 when wait=false (poll GET /operations/{operationId}); default wait=true completes inline for Qii tests.")
+    public ResponseEntity<CalculatePayrollResponse> finalize(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "true") boolean wait,
+            @RequestBody(required = false) Map<String, Object> body) {
         boolean confirm = body != null && Boolean.parseBoolean(String.valueOf(body.getOrDefault("confirm", "false")));
-        return calculationService.finalize(id, confirm);
+        CalculatePayrollResponse resp = finalizeService.finalize(id, confirm, wait);
+        Object opStatus = resp.details() == null ? null : resp.details().get("operationStatus");
+        if (!wait && opStatus != null && !"SUCCEEDED".equals(String.valueOf(opStatus))) {
+            return ResponseEntity.accepted().body(resp);
+        }
+        return ResponseEntity.ok(resp);
     }
 
     @PostMapping("/payslips/{id}/reopen")
     @RequiresPermission(feature = "payroll", action = "run")
     @Operation(summary = "Reopen a finalized payslip for recalculation — payroll:run")
-    public CalculatePayrollResponse reopen(@PathVariable Long id) {
-        return calculationService.reopen(id);
+    public ResponseEntity<CalculatePayrollResponse> reopen(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "true") boolean wait) {
+        CalculatePayrollResponse resp = finalizeService.reopen(id, wait);
+        Object opStatus = resp.details() == null ? null : resp.details().get("operationStatus");
+        if (!wait && opStatus != null && !"SUCCEEDED".equals(String.valueOf(opStatus))) {
+            return ResponseEntity.accepted().body(resp);
+        }
+        return ResponseEntity.ok(resp);
+    }
+
+    @GetMapping("/operations/{operationId}")
+    @RequiresPermission(feature = "payroll", action = "run")
+    @Operation(summary = "Poll async finalize/reopen operation status — payroll:run")
+    public Map<String, Object> operation(@PathVariable String operationId) {
+        return finalizeService.getOperation(operationId);
     }
 
     @PostMapping("/calculate-month")
@@ -337,8 +362,14 @@ public class PayrollController {
         m.put("weekendHours", p.getWeekendHours());
         m.put("details", p.getDetailsJson());
         m.put("createdAt", p.getCreatedAt() == null ? null : p.getCreatedAt().toString());
-        Object status = p.getDetailsJson() == null ? null : p.getDetailsJson().get("status");
-        m.put("status", status == null ? "DRAFT" : status);
+        String status = p.getStatus();
+        if (status == null || status.isBlank()) {
+            Object fromDetails = p.getDetailsJson() == null ? null : p.getDetailsJson().get("status");
+            status = fromDetails == null ? "DRAFT" : String.valueOf(fromDetails);
+        }
+        m.put("status", status);
+        m.put("revision", p.getRevision());
+        m.put("operationId", p.getOperationId());
         return m;
     }
 }

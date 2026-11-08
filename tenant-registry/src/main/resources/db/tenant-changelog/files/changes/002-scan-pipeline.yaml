@@ -1,0 +1,73 @@
+databaseChangeLog:
+  - changeSet:
+      id: files-002-scan-pipeline
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - columnExists:
+                tableName: file_object
+                columnName: scan_status
+      changes:
+        - addColumn:
+            tableName: file_object
+            columns:
+              - column:
+                  name: scan_status
+                  type: VARCHAR(32)
+                  defaultValue: QUARANTINED
+                  constraints: { nullable: false }
+              - column:
+                  name: classification
+                  type: VARCHAR(64)
+                  defaultValue: GENERAL
+                  constraints: { nullable: false }
+              - column:
+                  name: employee_id
+                  type: BIGINT
+              - column:
+                  name: scan_detail
+                  type: TEXT
+              - column:
+                  name: scanned_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: released_at
+                  type: TIMESTAMPTZ
+
+  - changeSet:
+      id: files-002-outbox-inbox
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - tableExists:
+                tableName: message_outbox
+      changes:
+        - createTable:
+            tableName: message_outbox
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: event_id, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: event_type, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: routing_key, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: aggregate_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: aggregate_version, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: correlation_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: tenant_id, type: VARCHAR(100), constraints: { nullable: false } }
+              - column: { name: payload_json, type: JSONB, constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(24), defaultValue: PENDING, constraints: { nullable: false } }
+              - column: { name: attempts, type: INT, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: last_error, type: TEXT }
+              - column: { name: created_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: published_at, type: TIMESTAMPTZ }
+        - createTable:
+            tableName: message_inbox
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: event_id, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: event_type, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: consumer_name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: payload_json, type: JSONB, constraints: { nullable: false } }
+              - column: { name: processed_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: result_json, type: JSONB }

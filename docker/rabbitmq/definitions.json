@@ -1,0 +1,288 @@
+{
+  "rabbit_version": "3.13.0",
+  "rabbitmq_version": "3.13.0",
+  "users": [
+    {
+      "name": "platform",
+      "password_hash": "z9wyMJxIABdOPGdvXeu8MDYdEmFt97Gqap7p29qqfoc3edL6",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": [
+        "administrator"
+      ],
+      "limits": {}
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "platform",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "topic_permissions": [],
+  "parameters": [],
+  "global_parameters": [],
+  "policies": [],
+  "exchanges": [
+    {
+      "name": "platform.events",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "platform.events.dlx",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "q.payroll.leave-cover.command",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "platform.events.dlx",
+        "x-dead-letter-routing-key": "q.payroll.leave-cover.command"
+      }
+    },
+    {
+      "name": "q.payroll.leave-cover.command.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "q.leave.cover.result",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "platform.events.dlx",
+        "x-dead-letter-routing-key": "q.leave.cover.result"
+      }
+    },
+    {
+      "name": "q.leave.cover.result.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "q.notification.create.command",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "platform.events.dlx",
+        "x-dead-letter-routing-key": "q.notification.create.command"
+      }
+    },
+    {
+      "name": "q.notification.create.command.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "q.files.scan.command",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "platform.events.dlx",
+        "x-dead-letter-routing-key": "q.files.scan.command"
+      }
+    },
+    {
+      "name": "q.files.scan.command.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "q.reports.export.command",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "platform.events.dlx",
+        "x-dead-letter-routing-key": "q.reports.export.command"
+      }
+    },
+    {
+      "name": "q.reports.export.command.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "q.people.employee.upserted.leave",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "platform.events.dlx",
+        "x-dead-letter-routing-key": "q.people.employee.upserted.leave"
+      }
+    },
+    {
+      "name": "q.people.employee.upserted.leave.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "q.people.employee.upserted.timework",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "platform.events.dlx",
+        "x-dead-letter-routing-key": "q.people.employee.upserted.timework"
+      }
+    },
+    {
+      "name": "q.people.employee.upserted.timework.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "platform.events",
+      "vhost": "/",
+      "destination": "q.payroll.leave-cover.command",
+      "destination_type": "queue",
+      "routing_key": "payroll.leave-cover.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events.dlx",
+      "vhost": "/",
+      "destination": "q.payroll.leave-cover.command.dlq",
+      "destination_type": "queue",
+      "routing_key": "q.payroll.leave-cover.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events",
+      "vhost": "/",
+      "destination": "q.leave.cover.result",
+      "destination_type": "queue",
+      "routing_key": "leave.cover.result",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events.dlx",
+      "vhost": "/",
+      "destination": "q.leave.cover.result.dlq",
+      "destination_type": "queue",
+      "routing_key": "q.leave.cover.result",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events",
+      "vhost": "/",
+      "destination": "q.notification.create.command",
+      "destination_type": "queue",
+      "routing_key": "notification.create.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events.dlx",
+      "vhost": "/",
+      "destination": "q.notification.create.command.dlq",
+      "destination_type": "queue",
+      "routing_key": "q.notification.create.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events",
+      "vhost": "/",
+      "destination": "q.files.scan.command",
+      "destination_type": "queue",
+      "routing_key": "files.scan.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events.dlx",
+      "vhost": "/",
+      "destination": "q.files.scan.command.dlq",
+      "destination_type": "queue",
+      "routing_key": "q.files.scan.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events",
+      "vhost": "/",
+      "destination": "q.reports.export.command",
+      "destination_type": "queue",
+      "routing_key": "reports.export.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events.dlx",
+      "vhost": "/",
+      "destination": "q.reports.export.command.dlq",
+      "destination_type": "queue",
+      "routing_key": "q.reports.export.command",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events",
+      "vhost": "/",
+      "destination": "q.people.employee.upserted.leave",
+      "destination_type": "queue",
+      "routing_key": "people.employee.upserted",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events.dlx",
+      "vhost": "/",
+      "destination": "q.people.employee.upserted.leave.dlq",
+      "destination_type": "queue",
+      "routing_key": "q.people.employee.upserted.leave",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events",
+      "vhost": "/",
+      "destination": "q.people.employee.upserted.timework",
+      "destination_type": "queue",
+      "routing_key": "people.employee.upserted",
+      "arguments": {}
+    },
+    {
+      "source": "platform.events.dlx",
+      "vhost": "/",
+      "destination": "q.people.employee.upserted.timework.dlq",
+      "destination_type": "queue",
+      "routing_key": "q.people.employee.upserted.timework",
+      "arguments": {}
+    }
+  ]
+}

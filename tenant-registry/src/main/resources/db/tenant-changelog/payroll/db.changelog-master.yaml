@@ -3,3 +3,7 @@ databaseChangeLog:
       file: db/tenant-changelog/payroll/changes/001-core-schema.yaml
   - include:
       file: db/tenant-changelog/payroll/changes/002-salary-history.yaml
+  - include:
+      file: db/tenant-changelog/payroll/changes/003-architecture-outbox-finalize.yaml
+  - include:
+      file: db/tenant-changelog/payroll/changes/004-payroll-audit-log.yaml

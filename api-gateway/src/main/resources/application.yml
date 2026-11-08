@@ -76,9 +76,45 @@ spring:
           filters:
             - RewritePath=/registry/(?<segment>.*), /api/registry/${segment}
 
-        # --- Domain services ---
-        - id: hrms
-          uri: ${HRMS_URI:http://127.0.0.1:8081}
+        # --- Domain services (guide §3: People / Leave / Time&Work) ---
+        # Path-split under /hrms/** keeps the Qii BFF unchanged while routing to separate services.
+        - id: hrms-leave
+          uri: ${LEAVE_URI:http://127.0.0.1:8086}
+          predicates:
+            - Path=/hrms/api/leave-applications/**,/hrms/api/leave-balances/**,/hrms/api/leave-types/**,/hrms/api/leave-categories/**,/hrms/api/leave-policy/**,/hrms/api/leave-delegates/**,/hrms/api/leave/**,/hrms/api/approvals/**
+          filters:
+            - RewritePath=/hrms/(?<segment>.*), /${segment}
+
+        - id: hrms-time-work
+          uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
+          predicates:
+            - Path=/hrms/api/attendance/**,/hrms/api/work-schedules/**,/hrms/api/holidays/**,/hrms/api/tasks/**,/hrms/api/work-logs/**
+          filters:
+            - RewritePath=/hrms/(?<segment>.*), /${segment}
+
+        - id: people
+          uri: ${PEOPLE_URI:${HRMS_URI:http://127.0.0.1:8081}}
+          predicates:
+            - Path=/people/**
+          filters:
+            - RewritePath=/people/(?<segment>.*), /${segment}
+
+        - id: leave
+          uri: ${LEAVE_URI:http://127.0.0.1:8086}
+          predicates:
+            - Path=/leave/**
+          filters:
+            - RewritePath=/leave/(?<segment>.*), /${segment}
+
+        - id: time-work
+          uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
+          predicates:
+            - Path=/time-work/**
+          filters:
+            - RewritePath=/time-work/(?<segment>.*), /${segment}
+
+        - id: hrms-people
+          uri: ${PEOPLE_URI:${HRMS_URI:http://127.0.0.1:8081}}
           predicates:
             - Path=/hrms/**
           filters:
@@ -114,17 +150,17 @@ spring:
 
 platform:
   jwt:
-    secret: ${JWT_SECRET:practice-jwt-secret-change-me-32chars-min}
+    secret: ${JWT_SECRET}
   security:
     # Stamped by the gateway as X-Service-Key on every proxied request; services reject requests without it.
     # Clients can never set it (gateway strips and overwrites).
-    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+    service-key: ${PLATFORM_SERVICE_KEY}
   # Account picker (POST /api/registry/token, GET /hrms/api/auth/accounts) is NOT open:
   # callers must send X-Demo-Auth-Key (the Next.js BFF does, server-side). Set enabled=false to disable entirely.
   demo-auth:
     enabled: ${DEMO_AUTH_ENABLED:true}
     # Distinct from PLATFORM_SERVICE_KEY so the account-picker secret cannot bypass the gateway.
-    key: ${DEMO_AUTH_KEY:local-demo-auth-key-change-me}
+    key: ${DEMO_AUTH_KEY}
   # JWT not required for these (swagger assets + OpenAPI JSON + health). No service key is forwarded.
   public-paths:
     - /actuator/**
@@ -162,10 +198,19 @@ springdoc:
         url: /docs/reports/v3/api-docs
 
 management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
   endpoints:
     web:
       exposure:
         include: health,info
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
 
 logging:
   level:

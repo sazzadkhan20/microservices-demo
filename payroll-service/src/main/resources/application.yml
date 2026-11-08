@@ -4,6 +4,30 @@ server:
 spring:
   application:
     name: payroll-service
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    connection-timeout: 5000
+    listener:
+      simple:
+        acknowledge-mode: auto
+        missing-queues-fatal: false
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          initial-interval: 2000
+          max-attempts: 5
+          multiplier: 2.0
+    template:
+      retry:
+        enabled: true
+        initial-interval: 500
+        max-attempts: 3
+        multiplier: 2.0
   liquibase:
     enabled: false
   jpa:
@@ -31,20 +55,32 @@ grpc:
 
 payroll:
   hrms-base-url: ${HRMS_BASE_URL:http://127.0.0.1:8081}
+  time-work-base-url: ${TIME_WORK_BASE_URL:http://127.0.0.1:8087}
+  leave-base-url: ${LEAVE_BASE_URL:http://127.0.0.1:8086}
 
 platform:
   service-name: payroll
+  messaging:
+    enabled: ${PLATFORM_MESSAGING_ENABLED:true}
+    outbox-poll-ms: 1000
+    finalize-wait-seconds: 25
+  tenancy:
+    mode: ${PLATFORM_TENANCY_MODE:DYNAMIC}
+    fixed-tenant-id: ${PLATFORM_FIXED_TENANT_ID:}
+    fixed-jdbc-url: ${PLATFORM_FIXED_JDBC_URL:}
+    fixed-username: ${PLATFORM_FIXED_JDBC_USER:}
+    fixed-password: ${PLATFORM_FIXED_JDBC_PASSWORD:}
   notification:
     # Empty = log-only (finalize still succeeds). Points at notification-service.
     base-url: ${NOTIFICATION_BASE_URL:http://127.0.0.1:8083}
   security:
     # Requests must carry X-Service-Key = this value (stamped by the gateway); also sent to HRMS gRPC.
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
-    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
-    internal-key: ${PLATFORM_INTERNAL_KEY:local-internal-key-change-me}
+    service-key: ${PLATFORM_SERVICE_KEY}
+    internal-key: ${PLATFORM_INTERNAL_KEY}
   registry:
     base-url: ${REGISTRY_BASE_URL:http://localhost:8080}
-    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+    service-key: ${PLATFORM_SERVICE_KEY}
   datasource:
     maximum-pool-size: 5
     minimum-idle: 1
@@ -60,10 +96,19 @@ springdoc:
     tryItOutEnabled: true
 
 management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
   endpoints:
     web:
       exposure:
         include: health,info
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
 
 logging:
   level:

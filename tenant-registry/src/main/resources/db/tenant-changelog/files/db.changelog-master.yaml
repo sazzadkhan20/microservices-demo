@@ -1,3 +1,7 @@
 databaseChangeLog:
   - include:
       file: db/tenant-changelog/files/changes/001-file-object.yaml
+  - include:
+      file: db/tenant-changelog/files/changes/002-scan-pipeline.yaml
+  - include:
+      file: db/tenant-changelog/files/changes/003-files-audit-log.yaml

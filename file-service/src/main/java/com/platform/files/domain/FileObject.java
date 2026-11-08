@@ -50,6 +50,25 @@ public class FileObject {
     @Column(name = "uploaded_by", length = 255)
     private String uploadedBy;
 
+    /** QUARANTINED → SCANNING → CLEAN/INFECTED → RELEASED (or REJECTED). */
+    @Column(name = "scan_status", nullable = false, length = 32)
+    private String scanStatus = "QUARANTINED";
+
+    @Column(nullable = false, length = 64)
+    private String classification = "GENERAL";
+
+    @Column(name = "employee_id")
+    private Long employeeId;
+
+    @Column(name = "scan_detail", columnDefinition = "TEXT")
+    private String scanDetail;
+
+    @Column(name = "scanned_at")
+    private Instant scannedAt;
+
+    @Column(name = "released_at")
+    private Instant releasedAt;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -79,6 +98,24 @@ public class FileObject {
 
     public String getUploadedBy() { return uploadedBy; }
     public void setUploadedBy(String uploadedBy) { this.uploadedBy = uploadedBy; }
+
+    public String getScanStatus() { return scanStatus; }
+    public void setScanStatus(String scanStatus) { this.scanStatus = scanStatus; }
+
+    public String getClassification() { return classification; }
+    public void setClassification(String classification) { this.classification = classification; }
+
+    public Long getEmployeeId() { return employeeId; }
+    public void setEmployeeId(Long employeeId) { this.employeeId = employeeId; }
+
+    public String getScanDetail() { return scanDetail; }
+    public void setScanDetail(String scanDetail) { this.scanDetail = scanDetail; }
+
+    public Instant getScannedAt() { return scannedAt; }
+    public void setScannedAt(Instant scannedAt) { this.scannedAt = scannedAt; }
+
+    public Instant getReleasedAt() { return releasedAt; }
+    public void setReleasedAt(Instant releasedAt) { this.releasedAt = releasedAt; }
 
     public Instant getCreatedAt() { return createdAt; }
 }

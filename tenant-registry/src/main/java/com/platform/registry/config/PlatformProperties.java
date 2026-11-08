@@ -84,9 +84,9 @@ public class PlatformProperties {
 
     public static class Security {
         /** Header X-Platform-Admin-Key for provision/upgrade/tenant list */
-        private String adminKey = "local-platform-admin-change-me";
+        private String adminKey;
         /** Header X-Service-Key for internal routing with DB credentials */
-        private String serviceKey = "local-service-key-change-me";
+        private String serviceKey;
 
         public String getAdminKey() {
             return adminKey;
@@ -118,19 +118,55 @@ public class PlatformProperties {
     }
 
     public static class Provision {
+        /** @deprecated use {@link #people} — retained as YAML alias during cutover */
+        @Deprecated
         private DbTarget hrms = new DbTarget();
+        private DbTarget people = new DbTarget();
+        private DbTarget leave = new DbTarget();
+        private DbTarget timeWork = new DbTarget();
         private DbTarget payroll = new DbTarget();
         private DbTarget files = new DbTarget();
         private DbTarget notification = new DbTarget();
         private DbTarget report = new DbTarget();
         private Minio minio = new Minio();
 
+        /** Prefer people; falls back to legacy hrms target if people changelog unset. */
         public DbTarget getHrms() {
+            if (people.getChangelog() != null && !people.getChangelog().isBlank()) {
+                return people;
+            }
             return hrms;
         }
 
         public void setHrms(DbTarget hrms) {
             this.hrms = hrms;
+            if (people.getChangelog() == null || people.getChangelog().isBlank()) {
+                this.people = hrms;
+            }
+        }
+
+        public DbTarget getPeople() {
+            return getHrms();
+        }
+
+        public void setPeople(DbTarget people) {
+            this.people = people;
+        }
+
+        public DbTarget getLeave() {
+            return leave;
+        }
+
+        public void setLeave(DbTarget leave) {
+            this.leave = leave;
+        }
+
+        public DbTarget getTimeWork() {
+            return timeWork;
+        }
+
+        public void setTimeWork(DbTarget timeWork) {
+            this.timeWork = timeWork;
         }
 
         public DbTarget getPayroll() {
@@ -176,8 +212,8 @@ public class PlatformProperties {
 
     public static class Minio {
         private String endpoint = "http://127.0.0.1:9000";
-        private String accessKey = "minioadmin";
-        private String secretKey = "minioadmin";
+        private String accessKey;
+        private String secretKey;
         private boolean enabled = true;
 
         public String getEndpoint() {

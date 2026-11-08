@@ -24,6 +24,10 @@ public final class PlatformHeaders {
     public static final String DEMO_AUTH_KEY = "X-Demo-Auth-Key";
     public static final String GRPC_SERVICE_KEY = "x-service-key";
 
+    /** Propagated across HTTP / gRPC / broker messages (guide §7 / §9). */
+    public static final String CORRELATION_ID = "X-Correlation-ID";
+    public static final String GRPC_CORRELATION_ID = "x-correlation-id";
+
     private PlatformHeaders() {
     }
 }

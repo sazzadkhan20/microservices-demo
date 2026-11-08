@@ -3,3 +3,7 @@ databaseChangeLog:
       file: db/tenant-changelog/notification/changes/001-notifications.yaml
   - include:
       file: db/tenant-changelog/notification/changes/002-notification-link-url.yaml
+  - include:
+      file: db/tenant-changelog/notification/changes/003-delivery-outbox.yaml
+  - include:
+      file: db/tenant-changelog/notification/changes/004-notification-audit-log.yaml

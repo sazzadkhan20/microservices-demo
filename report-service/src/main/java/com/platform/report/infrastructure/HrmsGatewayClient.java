@@ -26,15 +26,20 @@ import java.util.Set;
 public class HrmsGatewayClient {
 
     private final String hrmsBaseUrl;
+    private final String timeWorkBaseUrl;
     private final String serviceKey;
     private final ObjectMapper mapper;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
 
     public HrmsGatewayClient(
             @Value("${report.hrms-base-url:http://127.0.0.1:8081}") String hrmsBaseUrl,
-            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
+            @Value("${report.time-work-base-url:http://127.0.0.1:8087}") String timeWorkBaseUrl,
+            @Value("${platform.security.service-key}") String serviceKey,
             ObjectMapper mapper) {
         this.hrmsBaseUrl = hrmsBaseUrl == null ? "" : hrmsBaseUrl.replaceAll("/$", "");
+        this.timeWorkBaseUrl = timeWorkBaseUrl == null || timeWorkBaseUrl.isBlank()
+                ? this.hrmsBaseUrl
+                : timeWorkBaseUrl.replaceAll("/$", "");
         this.serviceKey = serviceKey;
         this.mapper = mapper;
     }
@@ -74,6 +79,7 @@ public class HrmsGatewayClient {
      */
     public List<JsonNode> attendanceForEmployee(Long actorEmployeeId, Long targetEmployeeId, int page, int size) {
         JsonNode pageJson = getJson(
+                timeWorkBaseUrl,
                 "/api/attendance/employee/" + targetEmployeeId,
                 actorEmployeeId,
                 Map.of("page", String.valueOf(page), "size", String.valueOf(size), "sort", "workDate,asc"));
@@ -85,11 +91,15 @@ public class HrmsGatewayClient {
     }
 
     private JsonNode getJson(String path, Long actorEmployeeId, Map<String, String> query) {
-        if (hrmsBaseUrl.isBlank()) {
+        return getJson(hrmsBaseUrl, path, actorEmployeeId, query);
+    }
+
+    private JsonNode getJson(String baseUrl, String path, Long actorEmployeeId, Map<String, String> query) {
+        if (baseUrl == null || baseUrl.isBlank()) {
             return null;
         }
         try {
-            StringBuilder url = new StringBuilder(hrmsBaseUrl).append(path);
+            StringBuilder url = new StringBuilder(baseUrl).append(path);
             if (!query.isEmpty()) {
                 url.append('?');
                 boolean first = true;

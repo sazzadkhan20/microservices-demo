@@ -57,6 +57,15 @@ public class Notification {
     @Column(name = "link_url", length = 512)
     private String linkUrl;
 
+    @Column(name = "delivery_attempts", nullable = false)
+    private int deliveryAttempts = 1;
+
+    @Column(name = "last_delivery_at")
+    private Instant lastDeliveryAt;
+
+    @Column(name = "delivery_status", nullable = false, length = 32)
+    private String deliveryStatus = "DELIVERED";
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -95,6 +104,15 @@ public class Notification {
 
     public String getLinkUrl() { return linkUrl; }
     public void setLinkUrl(String linkUrl) { this.linkUrl = linkUrl; }
+
+    public int getDeliveryAttempts() { return deliveryAttempts; }
+    public void setDeliveryAttempts(int deliveryAttempts) { this.deliveryAttempts = deliveryAttempts; }
+
+    public Instant getLastDeliveryAt() { return lastDeliveryAt; }
+    public void setLastDeliveryAt(Instant lastDeliveryAt) { this.lastDeliveryAt = lastDeliveryAt; }
+
+    public String getDeliveryStatus() { return deliveryStatus; }
+    public void setDeliveryStatus(String deliveryStatus) { this.deliveryStatus = deliveryStatus; }
 
     public Instant getCreatedAt() { return createdAt; }
 }

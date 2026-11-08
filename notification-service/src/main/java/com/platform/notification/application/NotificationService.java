@@ -10,6 +10,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -17,9 +19,11 @@ import java.util.Optional;
 public class NotificationService {
 
     private final NotificationRepository repository;
+    private final AuditService auditService;
 
-    public NotificationService(NotificationRepository repository) {
+    public NotificationService(NotificationRepository repository, AuditService auditService) {
         this.repository = repository;
+        this.auditService = auditService;
     }
 
     /**
@@ -46,8 +50,15 @@ public class NotificationService {
         n.setDedupeKey(req.dedupeKey());
         n.setLinkUrl(req.linkUrl());
         n.setReadFlag(false);
+        n.setDeliveryAttempts(1);
+        n.setLastDeliveryAt(Instant.now());
+        n.setDeliveryStatus("DELIVERED");
 
-        return toResponse(repository.save(n));
+        Notification saved = repository.save(n);
+        auditService.record(req.employeeId(), "CREATE", "Notification", String.valueOf(saved.getId()), null,
+                Map.of("category", saved.getCategory() == null ? "" : saved.getCategory(),
+                        "title", saved.getTitle() == null ? "" : saved.getTitle()));
+        return toResponse(saved);
     }
 
     @Transactional(readOnly = true)
@@ -77,7 +88,9 @@ public class NotificationService {
             throw new IllegalStateException("Forbidden: notification belongs to another employee");
         }
         n.setReadFlag(true);
-        return toResponse(repository.save(n));
+        Notification saved = repository.save(n);
+        auditService.record(employeeId, "MARK_READ", "Notification", String.valueOf(id), false, true);
+        return toResponse(saved);
     }
 
 

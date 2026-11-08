@@ -1,11 +1,14 @@
 package com.platform.files.infrastructure.storage;
 
 import io.minio.BucketExistsArgs;
+import io.minio.CopyObjectArgs;
+import io.minio.CopySource;
 import io.minio.GetObjectArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
+import io.minio.StatObjectArgs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -28,8 +31,8 @@ public class MinioObjectStorage implements ObjectStorage {
 
     public MinioObjectStorage(
             @Value("${file.minio.endpoint:http://127.0.0.1:9000}") String endpoint,
-            @Value("${file.minio.access-key:minioadmin}") String accessKey,
-            @Value("${file.minio.secret-key:minioadmin}") String secretKey) {
+            @Value("${file.minio.access-key}") String accessKey,
+            @Value("${file.minio.secret-key}") String secretKey) {
         this.client = MinioClient.builder()
                 .endpoint(endpoint)
                 .credentials(accessKey, secretKey)
@@ -85,6 +88,35 @@ public class MinioObjectStorage implements ObjectStorage {
             client.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(objectKey).build());
         } catch (Exception e) {
             throw new IOException("MinIO delete failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public boolean exists(String bucket, String objectKey) throws IOException {
+        try {
+            client.statObject(StatObjectArgs.builder().bucket(bucket).object(objectKey).build());
+            return true;
+        } catch (Exception e) {
+            String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
+            if (msg.contains("nosuchkey") || msg.contains("not found") || msg.contains("no such key")) {
+                return false;
+            }
+            throw new IOException("MinIO stat failed: " + e.getMessage(), e);
+        }
+    }
+
+    @Override
+    public void copy(String bucket, String sourceKey, String destKey, String contentType, long sizeBytes)
+            throws IOException {
+        try {
+            client.copyObject(CopyObjectArgs.builder()
+                    .bucket(bucket)
+                    .object(destKey)
+                    .source(CopySource.builder().bucket(bucket).object(sourceKey).build())
+                    .build());
+        } catch (Exception e) {
+            // Fallback to stream copy when server-side copy is unavailable.
+            ObjectStorage.super.copy(bucket, sourceKey, destKey, contentType, sizeBytes);
         }
     }
 }

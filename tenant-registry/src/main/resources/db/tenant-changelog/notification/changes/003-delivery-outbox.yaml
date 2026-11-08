@@ -1,0 +1,64 @@
+databaseChangeLog:
+  - changeSet:
+      id: notif-003-delivery-attempts
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - columnExists:
+                tableName: notifications
+                columnName: delivery_attempts
+      changes:
+        - addColumn:
+            tableName: notifications
+            columns:
+              - column:
+                  name: delivery_attempts
+                  type: INT
+                  defaultValueNumeric: 1
+                  constraints: { nullable: false }
+              - column:
+                  name: last_delivery_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: delivery_status
+                  type: VARCHAR(32)
+                  defaultValue: DELIVERED
+                  constraints: { nullable: false }
+
+  - changeSet:
+      id: notif-003-outbox-inbox
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - tableExists:
+                tableName: message_outbox
+      changes:
+        - createTable:
+            tableName: message_outbox
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: event_id, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: event_type, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: routing_key, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: aggregate_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: aggregate_version, type: BIGINT, constraints: { nullable: false } }
+              - column: { name: correlation_id, type: VARCHAR(64), constraints: { nullable: false } }
+              - column: { name: tenant_id, type: VARCHAR(100), constraints: { nullable: false } }
+              - column: { name: payload_json, type: JSONB, constraints: { nullable: false } }
+              - column: { name: status, type: VARCHAR(24), defaultValue: PENDING, constraints: { nullable: false } }
+              - column: { name: attempts, type: INT, defaultValueNumeric: 0, constraints: { nullable: false } }
+              - column: { name: last_error, type: TEXT }
+              - column: { name: created_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: published_at, type: TIMESTAMPTZ }
+        - createTable:
+            tableName: message_inbox
+            columns:
+              - column: { name: id, type: BIGSERIAL, constraints: { primaryKey: true } }
+              - column: { name: event_id, type: VARCHAR(64), constraints: { nullable: false, unique: true } }
+              - column: { name: event_type, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: consumer_name, type: VARCHAR(128), constraints: { nullable: false } }
+              - column: { name: payload_json, type: JSONB, constraints: { nullable: false } }
+              - column: { name: processed_at, type: TIMESTAMPTZ, constraints: { nullable: false } }
+              - column: { name: result_json, type: JSONB }

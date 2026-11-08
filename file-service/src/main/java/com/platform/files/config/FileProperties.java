@@ -44,7 +44,7 @@ public class FileProperties {
 
     public static class Registry {
         private String baseUrl;
-        private String serviceKey = "local-service-key-change-me";
+        private String serviceKey;
 
         public String getBaseUrl() {
             return baseUrl;

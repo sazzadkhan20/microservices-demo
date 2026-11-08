@@ -2,15 +2,17 @@ package com.platform.notification;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
-/**
- * Notification service — stores and delivers in-app notifications per tenant.
- *
- * <p>DataSource auto-config is excluded because we supply a tenant-routing DataSource
- * (database-per-tenant {@code notif_*}, same pattern as HRMS/payroll).
- */
-@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
+@SpringBootApplication(
+        exclude = DataSourceAutoConfiguration.class,
+        scanBasePackages = {"com.platform.notification", "com.platform.messaging"})
+@EntityScan(basePackages = {"com.platform.notification", "com.platform.messaging.outbox"})
+@EnableJpaRepositories(basePackages = {"com.platform.notification", "com.platform.messaging.outbox"})
+@EnableScheduling
 public class NotificationApplication {
 
     public static void main(String[] args) {

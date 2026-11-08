@@ -13,8 +13,11 @@ dependencies {
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
     runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
     compileOnly 'org.slf4j:slf4j-api'
+    // EnvironmentPostProcessor (loads repo-root .env for IDE Run/Debug)
+    compileOnly 'org.springframework.boot:spring-boot'
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.5'
+    testImplementation 'org.springframework.boot:spring-boot'
     testRuntimeOnly 'com.h2database:h2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

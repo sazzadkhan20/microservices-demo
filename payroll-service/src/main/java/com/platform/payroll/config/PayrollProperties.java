@@ -9,6 +9,7 @@ public class PayrollProperties {
     private Registry registry = new Registry();
     private DatasourcePool datasource = new DatasourcePool();
     private Cache cache = new Cache();
+    private Tenancy tenancy = new Tenancy();
 
     public String getServiceName() {
         return serviceName;
@@ -24,6 +25,14 @@ public class PayrollProperties {
 
     public void setRegistry(Registry registry) {
         this.registry = registry;
+    }
+
+    public Tenancy getTenancy() {
+        return tenancy;
+    }
+
+    public void setTenancy(Tenancy tenancy) {
+        this.tenancy = tenancy;
     }
 
     public DatasourcePool getDatasource() {
@@ -44,7 +53,7 @@ public class PayrollProperties {
 
     public static class Registry {
         private String baseUrl;
-        private String serviceKey = "local-service-key-change-me";
+        private String serviceKey;
 
         public String getBaseUrl() {
             return baseUrl;
@@ -111,6 +120,55 @@ public class PayrollProperties {
 
         public void setL1ExpireAfterAccessMinutes(long l1ExpireAfterAccessMinutes) {
             this.l1ExpireAfterAccessMinutes = l1ExpireAfterAccessMinutes;
+        }
+    }
+
+    /** DYNAMIC (default SaaS routing) or FIXED single-company JDBC. */
+    public static class Tenancy {
+        private String mode = "DYNAMIC";
+        private String fixedTenantId;
+        private String fixedJdbcUrl;
+        private String fixedUsername;
+        private String fixedPassword;
+
+        public String getMode() {
+            return mode;
+        }
+
+        public void setMode(String mode) {
+            this.mode = mode;
+        }
+
+        public String getFixedTenantId() {
+            return fixedTenantId;
+        }
+
+        public void setFixedTenantId(String fixedTenantId) {
+            this.fixedTenantId = fixedTenantId;
+        }
+
+        public String getFixedJdbcUrl() {
+            return fixedJdbcUrl;
+        }
+
+        public void setFixedJdbcUrl(String fixedJdbcUrl) {
+            this.fixedJdbcUrl = fixedJdbcUrl;
+        }
+
+        public String getFixedUsername() {
+            return fixedUsername;
+        }
+
+        public void setFixedUsername(String fixedUsername) {
+            this.fixedUsername = fixedUsername;
+        }
+
+        public String getFixedPassword() {
+            return fixedPassword;
+        }
+
+        public void setFixedPassword(String fixedPassword) {
+            this.fixedPassword = fixedPassword;
         }
     }
 }

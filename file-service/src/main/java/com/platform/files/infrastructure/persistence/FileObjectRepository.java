@@ -5,6 +5,9 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 
 public interface FileObjectRepository extends JpaRepository<FileObject, Long> {
@@ -14,4 +17,8 @@ public interface FileObjectRepository extends JpaRepository<FileObject, Long> {
     Page<FileObject> findByTenantIdOrderByIdDesc(String tenantId, Pageable pageable);
 
     Page<FileObject> findByTenantIdAndUploadedByOrderByIdDesc(String tenantId, String uploadedBy, Pageable pageable);
+
+    List<FileObject> findByScanStatusAndCreatedAtBefore(String scanStatus, Instant cutoff);
+
+    List<FileObject> findByScanStatusInAndCreatedAtBefore(Collection<String> statuses, Instant cutoff);
 }

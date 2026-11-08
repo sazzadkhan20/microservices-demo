@@ -7,7 +7,8 @@ import java.util.regex.Pattern;
  * Validates and normalizes tenant identifiers used in DB names and Redis keys.
  *
  * <p>Every product service uses database-per-tenant naming (config-driven, reusable):
- * {@code hrms_*} / {@code payroll_*} / {@code files_*} / {@code notif_*} / {@code reports_*}.
+ * {@code people_*} / {@code leave_*} / {@code timework_*} / {@code payroll_*} /
+ * {@code files_*} / {@code notif_*} / {@code reports_*}.
  * Only lowercase letters, digits, and underscore are allowed after normalization.
  */
 public final class TenantIds {
@@ -34,8 +35,22 @@ public final class TenantIds {
         return normalized;
     }
 
+    /** @deprecated legacy monolith DB name — prefer {@link #peopleDbName} */
+    @Deprecated
     public static String hrmsDbName(String tenantId) {
         return "hrms_" + normalize(tenantId);
+    }
+
+    public static String peopleDbName(String tenantId) {
+        return "people_" + normalize(tenantId);
+    }
+
+    public static String leaveDbName(String tenantId) {
+        return "leave_" + normalize(tenantId);
+    }
+
+    public static String timeWorkDbName(String tenantId) {
+        return "timework_" + normalize(tenantId);
     }
 
     public static String payrollDbName(String tenantId) {

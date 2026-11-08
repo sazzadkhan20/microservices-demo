@@ -1,0 +1,112 @@
+server:
+  port: 8081
+
+# gRPC server for Payroll → HRMS internal calls
+grpc:
+  server:
+    port: 9081
+
+spring:
+  application:
+    name: people-service
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    connection-timeout: 5000
+    listener:
+      simple:
+        acknowledge-mode: auto
+        missing-queues-fatal: false
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          initial-interval: 2000
+          max-attempts: 5
+          multiplier: 2.0
+    template:
+      retry:
+        enabled: true
+        initial-interval: 500
+        max-attempts: 3
+        multiplier: 2.0
+  # Multi-tenant: DataSource is AbstractRoutingDataSource (no single fixed JDBC URL).
+  autoconfigure:
+    exclude: []
+  liquibase:
+    enabled: false
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          time_zone: UTC
+        # Avoid requiring a live connection during bootstrap before any tenant exists
+        boot:
+          allow_jdbc_metadata_access: false
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+
+platform:
+  service-name: people
+  leave-base-url: ${LEAVE_BASE_URL:http://127.0.0.1:8086}
+  time-work-base-url: ${TIME_WORK_BASE_URL:http://127.0.0.1:8087}
+  payroll-base-url: ${PAYROLL_BASE_URL:http://127.0.0.1:8082}
+  files-base-url: ${FILES_BASE_URL:http://127.0.0.1:8084}
+  notification-base-url: ${NOTIFICATION_BASE_URL:http://127.0.0.1:8083}
+  report-base-url: ${REPORT_BASE_URL:http://127.0.0.1:8085}
+  employee-projection:
+    publisher: true
+  messaging:
+    enabled: ${PLATFORM_MESSAGING_ENABLED:true}
+    outbox-poll-ms: 1000
+  security:
+    # Requests (REST + gRPC) must carry X-Service-Key = this value (stamped by the gateway).
+    require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
+    service-key: ${PLATFORM_SERVICE_KEY}
+    internal-key: ${PLATFORM_INTERNAL_KEY}
+    admin-key: ${PLATFORM_ADMIN_KEY}
+  registry:
+    base-url: ${REGISTRY_BASE_URL:http://localhost:8080}
+    service-key: ${PLATFORM_SERVICE_KEY}
+  datasource:
+    # Pool settings applied to each tenant DataSource created at runtime
+    maximum-pool-size: 5
+    minimum-idle: 1
+    max-lifetime-ms: 1800000
+  cache:
+    l1-max-size: 50
+    l1-expire-after-access-minutes: 5
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    persistAuthorization: true
+    tryItOutEnabled: true
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+logging:
+  level:
+    com.platform.people: INFO

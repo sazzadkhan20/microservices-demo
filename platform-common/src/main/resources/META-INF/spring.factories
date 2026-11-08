@@ -1,0 +1,4 @@
+# Spring Boot 3.3 still loads EnvironmentPostProcessor via spring.factories
+# (EnvironmentPostProcessorsFactory.fromSpringFactories → forDefaultResourceLocation).
+org.springframework.boot.env.EnvironmentPostProcessor=\
+com.platform.common.config.DotEnvEnvironmentPostProcessor

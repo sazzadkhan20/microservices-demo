@@ -114,6 +114,11 @@ public final class TenantPoolLifecycle {
         return Map.copyOf(pools);
     }
 
+    /** Tenant ids that currently have an open pool (used by outbox relay schedulers). */
+    public Set<String> openTenantIds() {
+        return Set.copyOf(pools.keySet());
+    }
+
     public static void closeQuietly(HikariDataSource ds) {
         if (ds != null && !ds.isClosed()) {
             ds.close();

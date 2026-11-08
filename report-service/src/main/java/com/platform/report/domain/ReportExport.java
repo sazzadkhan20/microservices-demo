@@ -44,6 +44,15 @@ public class ReportExport {
     @Column(name = "requested_by")
     private Long requestedBy;
 
+    @Column(nullable = false, length = 32)
+    private String status = "READY";
+
+    @Column(name = "error_message", columnDefinition = "TEXT")
+    private String errorMessage;
+
+    @Column(name = "completed_at")
+    private Instant completedAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -64,6 +73,12 @@ public class ReportExport {
     public void setStorageKey(String storageKey) { this.storageKey = storageKey; }
     public Long getRequestedBy() { return requestedBy; }
     public void setRequestedBy(Long requestedBy) { this.requestedBy = requestedBy; }
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+    public String getErrorMessage() { return errorMessage; }
+    public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+    public Instant getCompletedAt() { return completedAt; }
+    public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
 }

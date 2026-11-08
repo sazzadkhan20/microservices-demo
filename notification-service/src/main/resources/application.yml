@@ -4,6 +4,30 @@ server:
 spring:
   application:
     name: notification-service
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    connection-timeout: 5000
+    listener:
+      simple:
+        acknowledge-mode: auto
+        missing-queues-fatal: false
+        default-requeue-rejected: false
+        retry:
+          enabled: true
+          initial-interval: 2000
+          max-attempts: 5
+          multiplier: 2.0
+    template:
+      retry:
+        enabled: true
+        initial-interval: 500
+        max-attempts: 3
+        multiplier: 2.0
   liquibase:
     enabled: false
   jpa:
@@ -24,13 +48,15 @@ spring:
 
 platform:
   service-name: notification
+  messaging:
+    enabled: ${PLATFORM_MESSAGING_ENABLED:true}
   security:
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
-    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
-    internal-key: ${PLATFORM_INTERNAL_KEY:local-internal-key-change-me}
+    service-key: ${PLATFORM_SERVICE_KEY}
+    internal-key: ${PLATFORM_INTERNAL_KEY}
   registry:
     base-url: ${REGISTRY_BASE_URL:http://127.0.0.1:8080}
-    service-key: ${PLATFORM_SERVICE_KEY:local-service-key-change-me}
+    service-key: ${PLATFORM_SERVICE_KEY}
   datasource:
     maximum-pool-size: 5
     minimum-idle: 1
@@ -46,10 +72,19 @@ springdoc:
     tryItOutEnabled: true
 
 management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
   endpoints:
     web:
       exposure:
         include: health,info
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
 
 logging:
   level:

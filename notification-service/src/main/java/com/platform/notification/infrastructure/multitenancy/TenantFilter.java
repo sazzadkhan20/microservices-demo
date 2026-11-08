@@ -33,7 +33,7 @@ public class TenantFilter extends OncePerRequestFilter {
 
     public TenantFilter(
             @Value("${platform.security.require-gateway:true}") boolean requireGateway,
-            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey) {
+            @Value("${platform.security.service-key}") String serviceKey) {
         this.requireGateway = requireGateway;
         this.serviceKey = serviceKey;
     }

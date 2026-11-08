@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     implementation project(':platform-common')
+    implementation project(':platform-messaging')
     implementation project(':hrms-api')
 
     implementation 'org.springframework.boot:spring-boot-starter-web'
@@ -11,6 +12,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-amqp'
 
     implementation 'net.devh:grpc-client-spring-boot-starter:3.1.0.RELEASE'
     // Explicit transport + core so runtime matches hrms-api (not starter's older transitive grpc)

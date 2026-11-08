@@ -214,9 +214,15 @@ public class PayrollCalculationService {
         payslip.setGrossAmount(result.basePay());
         payslip.setDeductionAmount(totalDeduction);
         payslip.setNetAmount(net);
+        details.put("status", STATUS_DRAFT);
         payslip.setDetailsJson(details);
+        payslip.setStatus(STATUS_DRAFT);
+        payslip.setFactsSnapshot(facts);
         if (existing == null) {
             payslip.setCreatedAt(Instant.now());
+            if (payslip.getRevision() <= 0) {
+                payslip.setRevision(1L);
+            }
         }
         Payslip saved = payslipRepository.save(payslip);
         return toResponse(saved, employee.employeeCode(), null, null);
@@ -280,10 +286,10 @@ public class PayrollCalculationService {
         return out;
     }
 
-    // ---------------------- finalize ----------------------
+    // ---------------------- finalize (legacy sync fallback when messaging disabled) ----------------------
 
     @Transactional
-    public CalculatePayrollResponse finalize(Long payslipId, boolean confirm) {
+    public CalculatePayrollResponse finalizeLegacySync(Long payslipId, boolean confirm) {
         if (!confirm) {
             throw new IllegalArgumentException("Pass confirm=true to finalize a payslip");
         }
@@ -304,7 +310,6 @@ public class PayrollCalculationService {
 
         Map<String, Object> details = new HashMap<>(payslip.getDetailsJson() == null ? Map.of() : payslip.getDetailsJson());
 
-        // Apply leave cover in HRMS (best-effort)
         Map<String, BigDecimal> consumedByType = extractConsumedByType(details);
         if (!consumedByType.isEmpty()) {
             hrmsPayrollFactsClient.applyLeaveCover(payslip.getEmployeeId(), period, consumedByType, false);
@@ -315,10 +320,10 @@ public class PayrollCalculationService {
         details.put("finalizedAt", Instant.now().toString());
         details.put("finalizedBy", AuthContext.getEmployeeId());
         payslip.setDetailsJson(details);
+        payslip.setStatus(STATUS_FINALIZED);
 
         Payslip saved = payslipRepository.save(payslip);
 
-        // Config-driven: notify ONLY this payslip's employee (never broadcast).
         String currency = details.get("currency") == null ? null : String.valueOf(details.get("currency"));
         notificationHook.notifyPayslipFinalized(
                 config,
@@ -334,15 +339,14 @@ public class PayrollCalculationService {
         return toResponse(saved, null, null, null);
     }
 
-    // ---------------------- reopen ----------------------
+    // ---------------------- reopen (legacy sync fallback) ----------------------
 
     @Transactional
-    public CalculatePayrollResponse reopen(Long payslipId) {
+    public CalculatePayrollResponse reopenLegacySync(Long payslipId) {
         Payslip payslip = payslipRepository.findById(payslipId)
                 .orElseThrow(() -> new IllegalArgumentException("Payslip not found: " + payslipId));
         Map<String, Object> details = new HashMap<>(payslip.getDetailsJson() == null ? Map.of() : payslip.getDetailsJson());
 
-        // Reverse leave cover if it was applied
         boolean coverApplied = Boolean.TRUE.equals(details.get("leaveCoverApplied"));
         if (coverApplied) {
             Map<String, BigDecimal> consumedByType = extractConsumedByType(details);
@@ -359,7 +363,12 @@ public class PayrollCalculationService {
         details.put("reopenedAt", Instant.now().toString());
         details.put("reopenedBy", AuthContext.getEmployeeId());
         payslip.setDetailsJson(details);
+        payslip.setStatus(STATUS_DRAFT);
         return toResponse(payslipRepository.save(payslip), null, null, null);
+    }
+
+    public CalculatePayrollResponse toPublicResponse(Payslip p) {
+        return toResponse(p, null, null, null);
     }
 
     // ---------------------- warnings ----------------------
@@ -528,6 +537,9 @@ public class PayrollCalculationService {
     }
 
     private static String statusOf(Payslip p) {
+        if (p.getStatus() != null && !p.getStatus().isBlank()) {
+            return p.getStatus();
+        }
         if (p.getDetailsJson() == null) return STATUS_DRAFT;
         Object s = p.getDetailsJson().get("status");
         return s == null ? STATUS_DRAFT : String.valueOf(s);

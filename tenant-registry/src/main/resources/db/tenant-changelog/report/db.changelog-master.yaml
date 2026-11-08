@@ -1,3 +1,7 @@
 databaseChangeLog:
   - include:
       file: db/tenant-changelog/report/changes/001-report-export.yaml
+  - include:
+      file: db/tenant-changelog/report/changes/002-async-export.yaml
+  - include:
+      file: db/tenant-changelog/report/changes/003-report-audit-log.yaml

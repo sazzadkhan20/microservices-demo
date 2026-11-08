@@ -33,7 +33,7 @@ public class NotificationController {
 
     public NotificationController(
             NotificationService service,
-            @Value("${platform.security.internal-key:" + InternalCalls.DEFAULT_DEV_KEY + "}") String internalKey) {
+            @Value("${platform.security.internal-key}") String internalKey) {
         this.service = service;
         this.internalKey = internalKey;
     }

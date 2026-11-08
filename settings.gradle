@@ -5,7 +5,9 @@
  *  - platform-common        : shared tenant context, Redis key constants, JWT helpers
  *  - hrms-api               : protobuf / gRPC API contract used by HRMS + Payroll
  *  - tenant-registry        : control-plane (provision DBs, routing, Redis pub/sub)
- *  - hrms-service           : reusable HRMS modular monolith (REST + gRPC)
+ *  - people-service         : employees, org, RBAC (guide §3)
+ *  - leave-service          : leave policies, approvals, balances
+ *  - time-work-service      : schedules, attendance, tasks, work logs
  *  - payroll-service        : reusable Payroll modular monolith (REST + gRPC client)
  *  - api-gateway            : sole public entry (JWT trust boundary + routing)
  *  - notification-service   : in-app notification inbox per tenant (port 8083)
@@ -15,9 +17,12 @@
 rootProject.name = 'microservices-demo'
 
 include 'platform-common'
+include 'platform-messaging'
 include 'hrms-api'
 include 'tenant-registry'
-include 'hrms-service'
+include 'people-service'
+include 'leave-service'
+include 'time-work-service'
 include 'payroll-service'
 include 'api-gateway'
 include 'notification-service'

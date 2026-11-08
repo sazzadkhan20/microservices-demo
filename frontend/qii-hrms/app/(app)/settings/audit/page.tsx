@@ -35,6 +35,13 @@ export default function AuditPage() {
 
   const columns: Column<AuditRow>[] = [
     { key: "at", header: "When", className: "mono small", render: (r) => fmtDateTime(r.at) },
+    {
+      key: "service",
+      header: "Service",
+      sortable: true,
+      className: "mono small",
+      render: (r) => r.service ?? "people",
+    },
     { key: "actorEmployeeId", header: "Who", sortable: true, render: (r) => dir.nameOf(r.actorEmployeeId) },
     {
       key: "action",
@@ -62,7 +69,7 @@ export default function AuditPage() {
     <div className="stack">
       <PageHeader
         title="Audit log"
-        subtitle="Read only. Role and permission changes, attendance check-ins and corrections, and other recorded changes. Click a row for the full before/after."
+        subtitle="Read only. Federated from every microservice (newest first). Role changes, leave, attendance, payroll, files, and more. Click a row for the full before/after."
       />
       <DataTable<AuditRow>
         queryKey="audit-log"

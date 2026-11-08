@@ -41,8 +41,8 @@ public class PayrollNotificationHook {
     public PayrollNotificationHook(
             @Value("${platform.notification.base-url:http://127.0.0.1:8083}") String notificationBaseUrl,
             @Value("${payroll.hrms-base-url:http://127.0.0.1:8081}") String hrmsBaseUrl,
-            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
-            @Value("${platform.security.internal-key:" + InternalCalls.DEFAULT_DEV_KEY + "}") String internalKey) {
+            @Value("${platform.security.service-key}") String serviceKey,
+            @Value("${platform.security.internal-key}") String internalKey) {
         this.notificationBaseUrl = notificationBaseUrl == null ? "" : notificationBaseUrl.trim();
         this.hrmsBaseUrl = hrmsBaseUrl == null ? "" : hrmsBaseUrl.replaceAll("/$", "");
         this.serviceKey = serviceKey;

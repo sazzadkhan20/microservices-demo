@@ -1,0 +1,34 @@
+databaseChangeLog:
+  # Time&Work DB keeps schedules/attendance/tasks + messaging only.
+  # Leave SoT and People (employee/RBAC/org) MUST NOT live here (guide §3).
+  - changeSet:
+      id: timework-002-drop-foreign-v2
+      author: platform
+      changes:
+        - sql:
+            sql: |
+              DROP TABLE IF EXISTS leave_operation CASCADE;
+              DROP TABLE IF EXISTS leave_approval_delegate CASCADE;
+              DROP TABLE IF EXISTS leave_approval CASCADE;
+              DROP TABLE IF EXISTS leave_application CASCADE;
+              DROP TABLE IF EXISTS leave_balance_ledger CASCADE;
+              DROP TABLE IF EXISTS leave_balance CASCADE;
+              DROP TABLE IF EXISTS leave_blackout CASCADE;
+              DROP TABLE IF EXISTS leave_category CASCADE;
+              DROP TABLE IF EXISTS leave_type CASCADE;
+              DROP TABLE IF EXISTS leave_policy CASCADE;
+              DROP TABLE IF EXISTS store_shift_coverage CASCADE;
+              DROP TABLE IF EXISTS employment_field_history CASCADE;
+              DROP TABLE IF EXISTS reporting_line_history CASCADE;
+              DROP TABLE IF EXISTS tenant_field_definition CASCADE;
+              DROP TABLE IF EXISTS ext_indexed_attribute CASCADE;
+              DROP TABLE IF EXISTS department CASCADE;
+              DROP TABLE IF EXISTS designation CASCADE;
+              DROP TABLE IF EXISTS location CASCADE;
+              DROP TABLE IF EXISTS team CASCADE;
+              -- People owns employee + RBAC — Time&Work must not store them (guide §3)
+              DROP TABLE IF EXISTS app_user_role CASCADE;
+              DROP TABLE IF EXISTS app_role_permission CASCADE;
+              DROP TABLE IF EXISTS app_permission CASCADE;
+              DROP TABLE IF EXISTS app_role CASCADE;
+              DROP TABLE IF EXISTS employee CASCADE;

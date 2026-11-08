@@ -1,0 +1,22 @@
+/**
+ * Shared transactional outbox / inbox + RabbitMQ topology for all domain services.
+ */
+plugins {
+    id 'java-library'
+}
+
+dependencies {
+    api project(':platform-common')
+    api 'org.springframework.boot:spring-boot-starter-amqp'
+    api 'org.springframework.boot:spring-boot-starter-data-jpa'
+    api 'org.springframework.boot:spring-boot-starter-data-redis'
+    api 'org.springframework.boot:spring-boot-starter-web'
+    api 'com.fasterxml.jackson.core:jackson-databind'
+    api 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
+
+    compileOnly 'org.slf4j:slf4j-api'
+}
+
+tasks.named('jar') {
+    archiveBaseName = 'platform-messaging'
+}

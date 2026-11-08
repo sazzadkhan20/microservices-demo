@@ -50,8 +50,8 @@ public class RegistryController {
             PlatformProperties platformProperties,
             @org.springframework.beans.factory.annotation.Value("${platform.security.token-ttl-seconds:604800}") long tokenTtlSeconds,
             @org.springframework.beans.factory.annotation.Value("${HRMS_BASE_URL:http://127.0.0.1:8081}") String hrmsBaseUrl,
-            @org.springframework.beans.factory.annotation.Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey,
-            @org.springframework.beans.factory.annotation.Value("${platform.security.internal-key:local-internal-key-change-me}") String internalKey,
+            @org.springframework.beans.factory.annotation.Value("${platform.security.service-key}") String serviceKey,
+            @org.springframework.beans.factory.annotation.Value("${platform.security.internal-key}") String internalKey,
             org.springframework.web.client.RestClient.Builder restClientBuilder) {
         this.provisioningService = provisioningService;
         this.routingRepository = routingRepository;
@@ -135,6 +135,24 @@ public class RegistryController {
         return provisioningService.migrateAllTenants(service);
     }
 
+    @PostMapping("/tenants/split-workforce")
+    @Operation(summary = "Cut over every tenant from legacy hrms_* into people_/leave_/timework_ DBs "
+            + "and rewrite routing (requires X-Platform-Admin-Key). Idempotent.")
+    public Map<String, Object> splitWorkforce(
+            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey) {
+        platformAuth.requireAdmin(adminKey);
+        return provisioningService.splitWorkforceAllTenants();
+    }
+
+    @PostMapping("/tenants/{tenantId}/split-workforce")
+    @Operation(summary = "Cut over one tenant from hrms_* → people_/leave_/timework_ (X-Platform-Admin-Key)")
+    public Map<String, Object> splitWorkforceOne(
+            @RequestHeader(value = PlatformAuthSupport.ADMIN_HEADER, required = false) String adminKey,
+            @PathVariable String tenantId) {
+        platformAuth.requireAdmin(adminKey);
+        return provisioningService.ensureWorkforceServiceRouting(TenantIds.normalize(tenantId));
+    }
+
     @GetMapping("/routing/{service}/{tenantId}")
     @Operation(summary = "Routing view without credentials (requires X-Service-Key)")
     public TenantRoutingView routing(
@@ -168,15 +186,17 @@ public class RegistryController {
         platformAuth.requireService(svcKey);
         String tenantId = TenantIds.normalize(request.tenantId());
         // Require full core routing ACTIVE (reject half-provisioned or SCHEMA_OUTDATED tenants)
-        for (String svc : java.util.List.of("hrms", "payroll")) {
-            var row = routingRepository.findByServiceNameAndTenantId(svc, tenantId)
-                    .orElseThrow(() -> new IllegalArgumentException(
-                            "Unknown or incompletely provisioned tenant: " + tenantId + " (missing " + svc + ")"));
-            if (!TenantRoutingStatuses.isActive(row.getStatus())) {
-                throw new IllegalStateException(
-                        "Tenant " + tenantId + " service " + svc + " is not ready (status="
-                                + row.getStatus() + "). Fleet schema migrate required.");
-            }
+        requireActiveRouting(tenantId, "payroll");
+        // Prefer split workforce routings; accept legacy "hrms" until fleet cutover completes.
+        boolean splitReady = routingRepository.findByServiceNameAndTenantId("people", tenantId).isPresent()
+                && routingRepository.findByServiceNameAndTenantId("leave", tenantId).isPresent()
+                && routingRepository.findByServiceNameAndTenantId("time-work", tenantId).isPresent();
+        if (splitReady) {
+            requireActiveRouting(tenantId, "people");
+            requireActiveRouting(tenantId, "leave");
+            requireActiveRouting(tenantId, "time-work");
+        } else {
+            requireActiveRouting(tenantId, "hrms");
         }
         if (request.employeeId() == null) {
             throw new IllegalArgumentException("employeeId is required for account-picker sessions");
@@ -187,6 +207,17 @@ public class RegistryController {
                 : request.subject();
         String jwt = jwtSupport.issueToken(subject, tenantId, request.employeeId(), tokenTtlSeconds);
         return TokenResponse.of(jwt, tenantId, request.employeeId(), tokenTtlSeconds);
+    }
+
+    private void requireActiveRouting(String tenantId, String service) {
+        var row = routingRepository.findByServiceNameAndTenantId(service, tenantId)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Unknown or incompletely provisioned tenant: " + tenantId + " (missing " + service + ")"));
+        if (!TenantRoutingStatuses.isActive(row.getStatus())) {
+            throw new IllegalStateException(
+                    "Tenant " + tenantId + " service " + service + " is not ready (status="
+                            + row.getStatus() + "). Fleet schema migrate required.");
+        }
     }
 
     private void requireActiveEmployee(String tenantId, Long employeeId) {

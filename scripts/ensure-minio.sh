@@ -1,32 +1,44 @@
 #!/usr/bin/env bash
-# Ensure MinIO is up and tenant file buckets exist (required for document uploads).
+# Recreate/start MinIO and verify live + credentials match .env (file-service keys).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+if [[ ! -f "$ROOT/.env" ]]; then
+  echo "ERROR: missing .env"
+  exit 1
+fi
+set -a
+# shellcheck disable=SC1091
+. "$ROOT/.env"
+set +a
+
+if [[ -z "${MINIO_ROOT_USER:-}" || -z "${MINIO_ROOT_PASSWORD:-}" ]]; then
+  echo "ERROR: MINIO_ROOT_USER / MINIO_ROOT_PASSWORD required in .env"
+  exit 1
+fi
+if [[ "${MINIO_ACCESS_KEY:-}" != "$MINIO_ROOT_USER" || "${MINIO_SECRET_KEY:-}" != "$MINIO_ROOT_PASSWORD" ]]; then
+  echo "ERROR: MINIO_ACCESS_KEY/SECRET_KEY must equal MINIO_ROOT_USER/ROOT_PASSWORD"
+  exit 1
+fi
+if [[ ${#MINIO_ROOT_PASSWORD} -lt 8 ]]; then
+  echo "ERROR: MINIO_ROOT_PASSWORD must be at least 8 characters"
+  exit 1
+fi
 
 echo "==> Starting MinIO..."
-docker compose --profile minio up -d minio
+docker compose up -d minio
 
-echo "==> Waiting for MinIO health..."
-for i in $(seq 1 30); do
+echo "==> Waiting for health..."
+for i in $(seq 1 36); do
   if curl -sf "http://127.0.0.1:9000/minio/health/live" >/dev/null 2>&1; then
-    echo "MinIO is healthy."
-    break
+    echo "MinIO API healthy on :9000"
+    echo "Console: http://127.0.0.1:9001  (user=$MINIO_ROOT_USER)"
+    exit 0
   fi
-  sleep 1
-  if [[ "$i" -eq 30 ]]; then
-    echo "MinIO did not become healthy on :9000" >&2
-    exit 1
-  fi
+  sleep 2
 done
 
-NET=$(docker inspect microservices-demo-minio-1 -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' | awk '{print $1}')
-echo "==> Ensuring tenant buckets on network $NET..."
-docker run --rm --network "$NET" --entrypoint //bin/sh minio/mc -c '
-  mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null &&
-  mc mb -p local/t-qii-creative 2>/dev/null || true &&
-  mc mb -p local/t-techshop-retail 2>/dev/null || true &&
-  mc mb -p local/t-impit-limited 2>/dev/null || true &&
-  mc ls local
-'
-
-echo "Done. Console: http://127.0.0.1:9001  (minioadmin / minioadmin)"
+echo "ERROR: MinIO did not become healthy — docker compose logs minio"
+docker compose logs --tail 80 minio || true
+exit 1

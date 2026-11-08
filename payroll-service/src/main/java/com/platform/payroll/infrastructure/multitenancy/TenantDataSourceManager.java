@@ -3,7 +3,9 @@ package com.platform.payroll.infrastructure.multitenancy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.constants.RedisKeys;
 import com.platform.common.redis.RoutingPayload;
+import com.platform.common.tenant.TenancyMode;
 import com.platform.common.tenant.TenantPoolLifecycle;
+import com.platform.messaging.tenant.RoutedTenantScanner;
 import com.platform.payroll.config.PayrollProperties;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -44,6 +46,17 @@ public class TenantDataSourceManager {
     }
 
     public DataSource resolve(String tenantId) {
+        TenancyMode mode = TenancyMode.from(properties.getTenancy().getMode());
+        if (mode == TenancyMode.FIXED) {
+            String fixedId = properties.getTenancy().getFixedTenantId();
+            if (fixedId == null || fixedId.isBlank()) {
+                throw new IllegalStateException("platform.tenancy.fixed-tenant-id required in FIXED mode");
+            }
+            if (tenantId != null && !tenantId.isBlank() && !fixedId.equals(tenantId.trim())) {
+                throw new IllegalStateException("FIXED tenancy only allows tenant " + fixedId);
+            }
+            return pools.resolve(fixedId, this::createFixedPool);
+        }
         return pools.resolve(tenantId, this::createPoolFor);
     }
 
@@ -55,6 +68,45 @@ public class TenantDataSourceManager {
     public void invalidateAll() {
         pools.invalidateAll();
         log.info("Invalidated all tenant DataSources");
+    }
+
+    /** Tenant ids with currently open pools — used by outbox relay. */
+    public java.util.Set<String> openTenantIds() {
+        return pools.openTenantIds();
+    }
+
+    /**
+     * Open pools plus Redis-routed tenants so outbox drains after restart
+     * without waiting for an HTTP hit to open a pool.
+     */
+    public java.util.Set<String> outboxTenantIds() {
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>(pools.openTenantIds());
+        if (TenancyMode.from(properties.getTenancy().getMode()) == TenancyMode.FIXED) {
+            String fixedId = properties.getTenancy().getFixedTenantId();
+            if (fixedId != null && !fixedId.isBlank()) {
+                ids.add(fixedId.trim());
+            }
+            return ids;
+        }
+        ids.addAll(RoutedTenantScanner.listTenantIds(redis, properties.getServiceName()));
+        return ids;
+    }
+
+    private HikariDataSource createFixedPool(String tenantId) {
+        PayrollProperties.Tenancy t = properties.getTenancy();
+        if (t.getFixedJdbcUrl() == null || t.getFixedJdbcUrl().isBlank()) {
+            throw new IllegalStateException("platform.tenancy.fixed-jdbc-url required in FIXED mode");
+        }
+        HikariConfig config = new HikariConfig();
+        config.setPoolName("payroll-fixed-" + tenantId);
+        config.setJdbcUrl(t.getFixedJdbcUrl());
+        config.setUsername(t.getFixedUsername());
+        config.setPassword(t.getFixedPassword());
+        config.setMaximumPoolSize(properties.getDatasource().getMaximumPoolSize());
+        config.setMinimumIdle(properties.getDatasource().getMinimumIdle());
+        config.setMaxLifetime(properties.getDatasource().getMaxLifetimeMs());
+        config.setDriverClassName("org.postgresql.Driver");
+        return new HikariDataSource(config);
     }
 
     private HikariDataSource createPoolFor(String tenantId) {

@@ -1,0 +1,41 @@
+databaseChangeLog:
+  # Leave DB keeps Leave SoT + messaging only.
+  # People (employee/RBAC/org) and Time&Work (schedules/holidays/attendance) MUST NOT live here (guide §3).
+  - changeSet:
+      id: leave-002-drop-foreign-v2
+      author: platform
+      changes:
+        - sql:
+            sql: |
+              DROP TABLE IF EXISTS attendance_correction CASCADE;
+              DROP TABLE IF EXISTS attendance_record CASCADE;
+              DROP TABLE IF EXISTS work_task_assignee CASCADE;
+              DROP TABLE IF EXISTS work_log CASCADE;
+              DROP TABLE IF EXISTS work_task CASCADE;
+              DROP TABLE IF EXISTS work_schedule CASCADE;
+              DROP TABLE IF EXISTS holiday CASCADE;
+              DROP TABLE IF EXISTS employment_field_history CASCADE;
+              DROP TABLE IF EXISTS reporting_line_history CASCADE;
+              DROP TABLE IF EXISTS tenant_field_definition CASCADE;
+              DROP TABLE IF EXISTS ext_indexed_attribute CASCADE;
+              DROP TABLE IF EXISTS department CASCADE;
+              DROP TABLE IF EXISTS designation CASCADE;
+              DROP TABLE IF EXISTS location CASCADE;
+              DROP TABLE IF EXISTS team CASCADE;
+              -- People owns employee + RBAC — Leave must not store them (guide §3)
+              DROP TABLE IF EXISTS app_user_role CASCADE;
+              DROP TABLE IF EXISTS app_role_permission CASCADE;
+              DROP TABLE IF EXISTS app_permission CASCADE;
+              DROP TABLE IF EXISTS app_role CASCADE;
+              DROP TABLE IF EXISTS employee CASCADE;
+  - changeSet:
+      id: leave-002-drop-people-projections-v3
+      author: platform
+      changes:
+        - sql:
+            sql: |
+              DROP TABLE IF EXISTS app_user_role CASCADE;
+              DROP TABLE IF EXISTS app_role_permission CASCADE;
+              DROP TABLE IF EXISTS app_permission CASCADE;
+              DROP TABLE IF EXISTS app_role CASCADE;
+              DROP TABLE IF EXISTS employee CASCADE;

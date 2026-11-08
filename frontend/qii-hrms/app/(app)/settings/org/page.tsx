@@ -193,8 +193,9 @@ function Departments({ canManage }: { canManage: boolean }) {
 const teamSchema = z.object({
   code: z.string().trim().min(1, "Code is required"),
   name: z.string().trim().min(1, "Name is required"),
-  departmentId: z.string(),
-  leadEmployeeId: z.string(),
+  // FR-ORG-01 — teams belong to a department, each with one team lead.
+  departmentId: z.string().trim().min(1, "Department is required"),
+  leadEmployeeId: z.string().trim().min(1, "Team lead is required"),
   maxOnLeave: z.coerce.number("Enter a number").int().min(0, "Must be ≥ 0").max(100),
   clashAction: z.enum(["ALERT", "BLOCK"]),
 });
@@ -255,8 +256,8 @@ function Teams({ canManage }: { canManage: boolean }) {
     save.mutate({
       code: parsed.data.code,
       name: parsed.data.name,
-      departmentId: parsed.data.departmentId ? Number(parsed.data.departmentId) : undefined,
-      leadEmployeeId: parsed.data.leadEmployeeId ? Number(parsed.data.leadEmployeeId) : undefined,
+      departmentId: Number(parsed.data.departmentId),
+      leadEmployeeId: Number(parsed.data.leadEmployeeId),
       maxOnLeave: parsed.data.maxOnLeave,
       clashAction: parsed.data.clashAction,
     });
@@ -297,9 +298,9 @@ function Teams({ canManage }: { canManage: boolean }) {
             <FormField label="Name" required error={errors.name}>
               <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </FormField>
-            <FormField label="Department" error={errors.departmentId}>
+            <FormField label="Department" required error={errors.departmentId}>
               <select value={form.departmentId} onChange={(e) => setForm({ ...form, departmentId: e.target.value })}>
-                <option value="">— None —</option>
+                <option value="">— Select department —</option>
                 {(departments.data ?? []).map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name}
@@ -307,9 +308,14 @@ function Teams({ canManage }: { canManage: boolean }) {
                 ))}
               </select>
             </FormField>
-            <FormField label="Team lead" error={errors.leadEmployeeId}>
+            <FormField
+              label="Team lead"
+              required
+              error={errors.leadEmployeeId}
+              hint="Required — pick any existing employee (they do not need to be on this team yet)."
+            >
               <select value={form.leadEmployeeId} onChange={(e) => setForm({ ...form, leadEmployeeId: e.target.value })}>
-                <option value="">— None —</option>
+                <option value="">— Select team lead —</option>
                 {(employees.data ?? []).map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.fullName}

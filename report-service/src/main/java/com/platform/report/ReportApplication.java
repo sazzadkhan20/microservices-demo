@@ -2,17 +2,17 @@ package com.platform.report;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
-/**
- * Report service — generates downloadable reports and archives export metadata.
- *
- * <p>DataSource auto-config is excluded because we supply a tenant-routing DataSource
- * (database-per-tenant {@code reports_*}, same pattern as HRMS/payroll).
- *
- * <p>v1: Attendance monthly report as CSV (live data via {@code HRMS_BASE_URL}).
- */
-@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
+@SpringBootApplication(
+        exclude = DataSourceAutoConfiguration.class,
+        scanBasePackages = {"com.platform.report", "com.platform.messaging"})
+@EntityScan(basePackages = {"com.platform.report", "com.platform.messaging.outbox"})
+@EnableJpaRepositories(basePackages = {"com.platform.report", "com.platform.messaging.outbox"})
+@EnableScheduling
 public class ReportApplication {
 
     public static void main(String[] args) {

@@ -9,10 +9,10 @@ public class PlatformSecurityProperties {
      * Required on provision / upgrade / tenant list / internal routing.
      * Header: X-Platform-Admin-Key
      */
-    private String adminKey = "local-platform-admin-change-me";
+    private String adminKey;
 
     /** Shared secret for service-to-service internal routing. Header: X-Service-Key */
-    private String serviceKey = "local-service-key-change-me";
+    private String serviceKey;
 
     public String getAdminKey() {
         return adminKey;

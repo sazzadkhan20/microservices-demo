@@ -187,6 +187,8 @@ export const auditRowSchema = z.object({
   beforeJson: z.any().optional(),
   afterJson: z.any().optional(),
   ip: maybe(z.string()),
+  /** Owning microservice (people / leave / time-work / payroll / files / notification / report). */
+  service: maybe(z.string()),
 });
 export type AuditRow = z.infer<typeof auditRowSchema>;
 

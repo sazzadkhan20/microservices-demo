@@ -2,15 +2,17 @@ package com.platform.files;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
-/**
- * File service — multipart upload, metadata storage, and streaming download.
- *
- * <p>DataSource auto-config is excluded because we supply a tenant-routing DataSource
- * (database-per-tenant {@code files_*}, same pattern as HRMS/payroll).
- */
-@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
+@SpringBootApplication(
+        exclude = DataSourceAutoConfiguration.class,
+        scanBasePackages = {"com.platform.files", "com.platform.messaging"})
+@EntityScan(basePackages = {"com.platform.files", "com.platform.messaging.outbox"})
+@EnableJpaRepositories(basePackages = {"com.platform.files", "com.platform.messaging.outbox"})
+@EnableScheduling
 public class FileApplication {
 
     public static void main(String[] args) {

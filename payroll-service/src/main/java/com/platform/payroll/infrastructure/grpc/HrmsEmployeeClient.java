@@ -44,7 +44,7 @@ public class HrmsEmployeeClient {
             .build();
 
     public HrmsEmployeeClient(
-            @Value("${platform.security.service-key:local-service-key-change-me}") String serviceKey) {
+            @Value("${platform.security.service-key}") String serviceKey) {
         this.serviceKey = serviceKey;
     }
 

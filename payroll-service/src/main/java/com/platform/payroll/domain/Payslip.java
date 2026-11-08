@@ -6,6 +6,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -15,7 +16,11 @@ import java.util.HashMap;
 import java.util.Map;
 
 @Entity
-@Table(name = "payslip")
+@Table(
+        name = "payslip",
+        uniqueConstraints = @UniqueConstraint(
+                name = "uq_payslip_employee_period",
+                columnNames = {"employee_id", "period_label"}))
 public class Payslip {
 
     @Id
@@ -49,6 +54,19 @@ public class Payslip {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "details_json", nullable = false, columnDefinition = "jsonb")
     private Map<String, Object> detailsJson = new HashMap<>();
+
+    @Column(nullable = false)
+    private long revision = 1L;
+
+    @Column(nullable = false, length = 32)
+    private String status = "DRAFT";
+
+    @Column(name = "operation_id", length = 64)
+    private String operationId;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "facts_snapshot", columnDefinition = "jsonb")
+    private Map<String, Object> factsSnapshot;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
@@ -127,6 +145,38 @@ public class Payslip {
 
     public void setDetailsJson(Map<String, Object> detailsJson) {
         this.detailsJson = detailsJson == null ? new HashMap<>() : detailsJson;
+    }
+
+    public long getRevision() {
+        return revision;
+    }
+
+    public void setRevision(long revision) {
+        this.revision = revision;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public String getOperationId() {
+        return operationId;
+    }
+
+    public void setOperationId(String operationId) {
+        this.operationId = operationId;
+    }
+
+    public Map<String, Object> getFactsSnapshot() {
+        return factsSnapshot;
+    }
+
+    public void setFactsSnapshot(Map<String, Object> factsSnapshot) {
+        this.factsSnapshot = factsSnapshot;
     }
 
     public Instant getCreatedAt() {

@@ -8,11 +8,14 @@ import com.platform.registry.config.PlatformProperties;
 import com.platform.registry.domain.TenantRouting;
 import com.platform.registry.domain.TenantRoutingStatuses;
 import com.platform.registry.infrastructure.persistence.TenantRoutingRepository;
+import com.platform.registry.infrastructure.provision.DatabaseCloner;
 import com.platform.registry.infrastructure.provision.ImpitBusinessSeeder;
 import com.platform.registry.infrastructure.provision.MinioBucketProvisioner;
 import com.platform.registry.infrastructure.provision.PostgresDatabaseProvisioner;
 import com.platform.registry.infrastructure.provision.PracticeBusinessSeeder;
 import com.platform.registry.infrastructure.provision.QiiBusinessSeeder;
+import com.platform.registry.infrastructure.provision.AuditDataPartitioner;
+import com.platform.registry.infrastructure.provision.SettingsDistributor;
 import com.platform.registry.infrastructure.provision.TenantDataMigrator;
 import com.platform.registry.infrastructure.redis.RoutingCachePublisher;
 import org.slf4j.Logger;
@@ -21,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -29,7 +33,12 @@ public class ProvisioningService {
 
     private static final Logger log = LoggerFactory.getLogger(ProvisioningService.class);
 
+    /** @deprecated use {@link #SERVICE_PEOPLE} — kept for legacy registry rows / fleet cutover */
+    @Deprecated
     public static final String SERVICE_HRMS = "hrms";
+    public static final String SERVICE_PEOPLE = "people";
+    public static final String SERVICE_LEAVE = "leave";
+    public static final String SERVICE_TIME_WORK = "time-work";
     public static final String SERVICE_PAYROLL = "payroll";
     public static final String SERVICE_FILE = "file";
     public static final String SERVICE_NOTIFICATION = "notification";
@@ -37,6 +46,9 @@ public class ProvisioningService {
 
     private final TenantRoutingRepository repository;
     private final PostgresDatabaseProvisioner provisioner;
+    private final DatabaseCloner databaseCloner;
+    private final SettingsDistributor settingsDistributor;
+    private final AuditDataPartitioner auditDataPartitioner;
     private final PracticeBusinessSeeder practiceBusinessSeeder;
     private final ImpitBusinessSeeder impitBusinessSeeder;
     private final QiiBusinessSeeder qiiBusinessSeeder;
@@ -47,6 +59,9 @@ public class ProvisioningService {
     public ProvisioningService(
             TenantRoutingRepository repository,
             PostgresDatabaseProvisioner provisioner,
+            DatabaseCloner databaseCloner,
+            SettingsDistributor settingsDistributor,
+            AuditDataPartitioner auditDataPartitioner,
             PracticeBusinessSeeder practiceBusinessSeeder,
             ImpitBusinessSeeder impitBusinessSeeder,
             QiiBusinessSeeder qiiBusinessSeeder,
@@ -55,6 +70,9 @@ public class ProvisioningService {
             MinioBucketProvisioner minioBucketProvisioner) {
         this.repository = repository;
         this.provisioner = provisioner;
+        this.databaseCloner = databaseCloner;
+        this.settingsDistributor = settingsDistributor;
+        this.auditDataPartitioner = auditDataPartitioner;
         this.practiceBusinessSeeder = practiceBusinessSeeder;
         this.impitBusinessSeeder = impitBusinessSeeder;
         this.qiiBusinessSeeder = qiiBusinessSeeder;
@@ -74,14 +92,18 @@ public class ProvisioningService {
         long version = System.currentTimeMillis();
         Instant now = Instant.now();
 
-        String hrmsDb = TenantIds.hrmsDbName(tenantId);
+        String peopleDb = TenantIds.peopleDbName(tenantId);
+        String leaveDb = TenantIds.leaveDbName(tenantId);
+        String timeWorkDb = TenantIds.timeWorkDbName(tenantId);
         String payrollDb = TenantIds.payrollDbName(tenantId);
         String filesDb = TenantIds.filesDbName(tenantId);
         String notifDb = TenantIds.notificationDbName(tenantId);
         String reportsDb = TenantIds.reportsDbName(tenantId);
 
-        // Database-per-tenant for every product service (reusable / config-driven — no shared app DBs).
-        String hrmsJdbc = provisioner.createAndMigrate(hrmsDb, properties.getProvision().getHrms());
+        // Guide §3 — People / Leave / Time&Work each own a tenant database (no shared hrms_*).
+        String peopleJdbc = provisioner.createAndMigrate(peopleDb, properties.getProvision().getPeople());
+        String leaveJdbc = provisioner.createAndMigrate(leaveDb, properties.getProvision().getLeave());
+        String timeWorkJdbc = provisioner.createAndMigrate(timeWorkDb, properties.getProvision().getTimeWork());
         String payrollJdbc = provisioner.createAndMigrate(payrollDb, properties.getProvision().getPayroll());
         String filesJdbc = provisioner.createAndMigrate(filesDb, properties.getProvision().getFiles());
         String notifJdbc = provisioner.createAndMigrate(notifDb, properties.getProvision().getNotification());
@@ -89,10 +111,23 @@ public class ProvisioningService {
         minioBucketProvisioner.ensureTenantBucket(tenantId);
 
         String pack = request.resolvedBusinessPack();
-        String message = seedBusinessPack(pack, hrmsJdbc, payrollJdbc);
+        // Fresh People migrate still has Leave/Time&Work shells for pack seeders; reseed restores them if purged.
+        ensurePeopleBootstrapShells(peopleJdbc, leaveJdbc, timeWorkJdbc);
+        String message = seedBusinessPack(pack, peopleJdbc, payrollJdbc);
+        distributeDomainData(peopleJdbc, leaveJdbc, timeWorkJdbc);
+        distributeSettingsOwnership(peopleJdbc, leaveJdbc, timeWorkJdbc);
+        partitionAuditOwnership(peopleJdbc, leaveJdbc, timeWorkJdbc, payrollJdbc, filesJdbc, notifJdbc, reportsJdbc);
+        purgeForeignTablesFromPeople(peopleJdbc);
 
-        TenantRouting hrmsRouting = saveRouting(SERVICE_HRMS, tenantId, hrmsJdbc,
-                properties.getProvision().getHrms(), version, now);
+        TenantRouting peopleRouting = saveRouting(SERVICE_PEOPLE, tenantId, peopleJdbc,
+                properties.getProvision().getPeople(), version, now);
+        TenantRouting leaveRouting = saveRouting(SERVICE_LEAVE, tenantId, leaveJdbc,
+                properties.getProvision().getLeave(), version, now);
+        TenantRouting timeWorkRouting = saveRouting(SERVICE_TIME_WORK, tenantId, timeWorkJdbc,
+                properties.getProvision().getTimeWork(), version, now);
+        // Legacy alias so older clients resolving "hrms" still hit the People DB.
+        TenantRouting hrmsAlias = saveRouting(SERVICE_HRMS, tenantId, peopleJdbc,
+                properties.getProvision().getPeople(), version, now);
         TenantRouting payrollRouting = saveRouting(SERVICE_PAYROLL, tenantId, payrollJdbc,
                 properties.getProvision().getPayroll(), version, now);
         TenantRouting fileRouting = saveRouting(SERVICE_FILE, tenantId, filesJdbc,
@@ -102,26 +137,90 @@ public class ProvisioningService {
         TenantRouting reportRouting = saveRouting(SERVICE_REPORT, tenantId, reportsJdbc,
                 properties.getProvision().getReport(), version, now);
 
-        cachePublisher.publishRouting(hrmsRouting);
-        cachePublisher.publishRouting(payrollRouting);
-        cachePublisher.publishRouting(fileRouting);
-        cachePublisher.publishRouting(notifRouting);
-        cachePublisher.publishRouting(reportRouting);
+        List<TenantRouting> routings = List.of(
+                peopleRouting, leaveRouting, timeWorkRouting, hrmsAlias,
+                payrollRouting, fileRouting, notifRouting, reportRouting);
+        for (TenantRouting row : routings) {
+            cachePublisher.publishRouting(row);
+        }
 
-        log.info("Provisioned tenant {} → {}, {}, {}, {}, {} + MinIO (pack={})",
-                tenantId, hrmsDb, payrollDb, filesDb, notifDb, reportsDb, pack);
+        log.info("Provisioned tenant {} → {}, {}, {}, {}, {}, {}, {} + MinIO (pack={})",
+                tenantId, peopleDb, leaveDb, timeWorkDb, payrollDb, filesDb, notifDb, reportsDb, pack);
 
-        return new ProvisionResponse(
-                tenantId,
-                List.of(
-                        TenantRoutingView.from(hrmsRouting),
-                        TenantRoutingView.from(payrollRouting),
-                        TenantRoutingView.from(fileRouting),
-                        TenantRoutingView.from(notifRouting),
-                        TenantRoutingView.from(reportRouting)
-                ),
-                message
-        );
+        List<TenantRoutingView> views = new ArrayList<>();
+        for (TenantRouting row : routings) {
+            views.add(TenantRoutingView.from(row));
+        }
+        return new ProvisionResponse(tenantId, views, message);
+    }
+
+    /**
+     * Restore empty Leave/Time&amp;Work table shells on People for pack seeders (guide §3 bootstrap).
+     */
+    private void ensurePeopleBootstrapShells(String peopleJdbc, String leaveJdbc, String timeWorkJdbc) {
+        PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+        String user = people.getUsername();
+        String pass = people.getPassword();
+        databaseCloner.ensureEmptyTablesExist(leaveJdbc, peopleJdbc, user, pass, DatabaseCloner.LEAVE_SEED_TABLES);
+        databaseCloner.ensureEmptyTablesExist(timeWorkJdbc, peopleJdbc, user, pass, DatabaseCloner.TIMEWORK_SEED_TABLES);
+    }
+
+    /**
+     * Copy each domain's owned tables into the correct service DB.
+     * Runtime: services never open another service's JDBC — only their registry routing.
+     */
+    private void distributeDomainData(String peopleJdbc, String leaveJdbc, String timeWorkJdbc) {
+        PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+        String user = people.getUsername();
+        String pass = people.getPassword();
+        databaseCloner.cloneTables(peopleJdbc, leaveJdbc, user, pass, DatabaseCloner.LEAVE_SEED_TABLES);
+        databaseCloner.cloneTables(peopleJdbc, timeWorkJdbc, user, pass, DatabaseCloner.TIMEWORK_SEED_TABLES);
+    }
+
+    /** Split monolith settings JSON into People / Leave / Time&amp;Work owned tables. */
+    private void distributeSettingsOwnership(String peopleJdbc, String leaveJdbc, String timeWorkJdbc) {
+        PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+        settingsDistributor.distributeOwnedSlices(
+                peopleJdbc, leaveJdbc, timeWorkJdbc, people.getUsername(), people.getPassword());
+    }
+
+    /** Split cloned audit rows into each service's owned *_audit_log table. */
+    private void partitionAuditOwnership(
+            String peopleJdbc,
+            String leaveJdbc,
+            String timeWorkJdbc,
+            String payrollJdbc,
+            String filesJdbc,
+            String notifJdbc,
+            String reportsJdbc) {
+        PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+        auditDataPartitioner.partitionFromPeople(
+                peopleJdbc, leaveJdbc, timeWorkJdbc, payrollJdbc, filesJdbc, notifJdbc, reportsJdbc,
+                people.getUsername(), people.getPassword());
+    }
+
+    private void purgeForeignTablesFromPeople(String peopleJdbc) {
+        PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                peopleJdbc, people.getUsername(), people.getPassword());
+             java.sql.Statement st = conn.createStatement()) {
+            for (String sql : DatabaseCloner.PEOPLE_PURGE_FOREIGN_SQL) {
+                try {
+                    st.execute(sql);
+                } catch (Exception tableMissing) {
+                    log.debug("Purge skip {}: {}", sql, tableMissing.getMessage());
+                }
+            }
+            log.info("Cleared Leave/Time&Work SoT rows from People DB {}", peopleJdbc);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed purging foreign tables from People DB: " + e.getMessage(), e);
+        }
+    }
+
+    /** @deprecated use {@link #distributeDomainData} */
+    @Deprecated
+    private void replicatePeopleToSatellites(String peopleJdbc, String leaveJdbc, String timeWorkJdbc) {
+        distributeDomainData(peopleJdbc, leaveJdbc, timeWorkJdbc);
     }
 
     @Transactional(readOnly = true)
@@ -143,11 +242,11 @@ public class ProvisioningService {
     @Transactional
     public Map<String, Object> upgradeHrmsSchema(String tenantId, boolean reseed, String businessPack) {
         String normalized = TenantIds.normalize(tenantId);
-        TenantRouting hrms = repository.findByServiceNameAndTenantId(SERVICE_HRMS, normalized)
-                .orElseThrow(() -> new IllegalArgumentException("HRMS routing not found for " + normalized));
+        Map<String, Object> workforce = ensureWorkforceServiceRouting(normalized);
+        TenantRouting people = requirePeopleRouting(normalized);
 
-        provisioner.migrateExisting(hrms.getJdbcUrl(), properties.getProvision().getHrms());
-        markRouting(hrms, TenantRoutingStatuses.ACTIVE);
+        provisioner.migrateExisting(people.getJdbcUrl(), properties.getProvision().getPeople());
+        markRouting(people, TenantRoutingStatuses.ACTIVE);
 
         String pack = businessPack;
         if (reseed) {
@@ -155,17 +254,29 @@ public class ProvisioningService {
                 throw new IllegalArgumentException(
                         "businessPack is required when reseed=true (use techshop_retail, impit_limited, or qii_creative)");
             }
-            seedBusinessPack(pack, hrms.getJdbcUrl(), null);
+            TenantRouting leave = repository.findByServiceNameAndTenantId(SERVICE_LEAVE, normalized).orElseThrow();
+            TenantRouting timeWork = repository.findByServiceNameAndTenantId(SERVICE_TIME_WORK, normalized).orElseThrow();
+            ensurePeopleBootstrapShells(people.getJdbcUrl(), leave.getJdbcUrl(), timeWork.getJdbcUrl());
+            seedBusinessPack(pack, people.getJdbcUrl(), null);
+            distributeDomainData(people.getJdbcUrl(), leave.getJdbcUrl(), timeWork.getJdbcUrl());
+            distributeSettingsOwnership(people.getJdbcUrl(), leave.getJdbcUrl(), timeWork.getJdbcUrl());
+            purgeForeignTablesFromPeople(people.getJdbcUrl());
         }
         ensureSatelliteServiceRouting(normalized);
-        return Map.of(
-                "tenantId", normalized,
-                "jdbcUrl", hrms.getJdbcUrl(),
-                "migrated", true,
-                "reseed", reseed,
-                "businessPack", pack == null ? "" : pack,
-                "message", "HRMS schema upgraded; optional business pack reseed applied."
-        );
+        workforce.put("tenantId", normalized);
+        workforce.put("jdbcUrl", people.getJdbcUrl());
+        workforce.put("migrated", true);
+        workforce.put("reseed", reseed);
+        workforce.put("businessPack", pack == null ? "" : pack);
+        workforce.put("message", "People/Leave/Time&Work schemas upgraded; optional business pack reseed + clone applied.");
+        return workforce;
+    }
+
+    private TenantRouting requirePeopleRouting(String tenantId) {
+        return repository.findByServiceNameAndTenantId(SERVICE_PEOPLE, tenantId)
+                .or(() -> repository.findByServiceNameAndTenantId(SERVICE_HRMS, tenantId))
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "People (or legacy hrms) routing not found for " + tenantId));
     }
 
     /**
@@ -175,50 +286,64 @@ public class ProvisioningService {
     @Transactional
     public Map<String, Object> upgradeRbacMatrix(String tenantId, String businessPack) {
         String normalized = TenantIds.normalize(tenantId);
-        TenantRouting hrms = repository.findByServiceNameAndTenantId(SERVICE_HRMS, normalized)
-                .orElseThrow(() -> new IllegalArgumentException("HRMS routing not found for " + normalized));
+        ensureWorkforceServiceRouting(normalized);
+        TenantRouting people = requirePeopleRouting(normalized);
         String pack = (businessPack == null || businessPack.isBlank()) ? "qii_creative" : businessPack.trim();
-        return switch (pack) {
+        Map<String, Object> result = switch (pack) {
             case "qii_creative", "qii" -> {
-                qiiBusinessSeeder.reseedRbacMatrix(hrms.getJdbcUrl(), properties.getProvision().getHrms());
-                cachePublisher.publishRouting(hrms);
-                yield Map.of(
+                qiiBusinessSeeder.reseedRbacMatrix(people.getJdbcUrl(), properties.getProvision().getPeople());
+                cachePublisher.publishRouting(people);
+                yield new java.util.LinkedHashMap<>(Map.of(
                         "tenantId", normalized,
                         "businessPack", pack,
                         "message", "System RBAC matrix re-applied (SUPERADMIN/ADMIN/HR/MANAGER/EMPLOYEE)."
-                );
+                ));
             }
             case "impit_limited", "impit" -> {
-                impitBusinessSeeder.reseedRbacMatrix(hrms.getJdbcUrl(), properties.getProvision().getHrms());
-                cachePublisher.publishRouting(hrms);
-                yield Map.of(
+                impitBusinessSeeder.reseedRbacMatrix(people.getJdbcUrl(), properties.getProvision().getPeople());
+                cachePublisher.publishRouting(people);
+                yield new java.util.LinkedHashMap<>(Map.of(
                         "tenantId", normalized,
                         "businessPack", pack,
                         "message", "Impit RBAC matrix re-applied (HR/SUPERADMIN/MANAGER/ADMIN/EMPLOYEE bindings)."
-                );
+                ));
             }
             case "techshop_retail", "techshop", "retail" -> {
-                // Same shared system roles/matrix; bindings are pack-specific via full reseed if needed.
                 try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
-                        hrms.getJdbcUrl(),
-                        properties.getProvision().getHrms().getUsername(),
-                        properties.getProvision().getHrms().getPassword());
+                        people.getJdbcUrl(),
+                        properties.getProvision().getPeople().getUsername(),
+                        properties.getProvision().getPeople().getPassword());
                      java.sql.Statement st = conn.createStatement()) {
                     PracticeBusinessSeeder.ensureRetailRbacRoles(st);
                 } catch (Exception e) {
                     throw new IllegalStateException("TechShop RBAC repair failed: " + e.getMessage(), e);
                 }
-                cachePublisher.publishRouting(hrms);
-                yield Map.of(
+                cachePublisher.publishRouting(people);
+                yield new java.util.LinkedHashMap<>(Map.of(
                         "tenantId", normalized,
                         "businessPack", pack,
                         "message", "TechShop system RBAC roles/permissions ensured (shared product matrix)."
-                );
+                ));
             }
             default -> throw new IllegalArgumentException(
                     "RBAC matrix upgrade supported for qii_creative, impit_limited, techshop_retail (got businessPack="
                             + pack + ")");
         };
+        // Sync RBAC/employee projections into Leave + Time&Work (not full DB clone).
+        repository.findByServiceNameAndTenantId(SERVICE_LEAVE, normalized).ifPresent(leave ->
+                repository.findByServiceNameAndTenantId(SERVICE_TIME_WORK, normalized).ifPresent(tw -> {
+                    PlatformProperties.DbTarget p = properties.getProvision().getPeople();
+                    databaseCloner.cloneTables(
+                            people.getJdbcUrl(), leave.getJdbcUrl(), p.getUsername(), p.getPassword(),
+                            List.of("employee", "department", "designation", "location", "team",
+                                    "tenant_settings", "app_role", "app_permission",
+                                    "app_role_permission", "app_user_role"));
+                    databaseCloner.cloneTables(
+                            people.getJdbcUrl(), tw.getJdbcUrl(), p.getUsername(), p.getPassword(),
+                            List.of("employee", "tenant_settings", "app_role", "app_permission",
+                                    "app_role_permission", "app_user_role"));
+                }));
+        return result;
     }
 
     @Transactional
@@ -270,7 +395,7 @@ public class ProvisioningService {
         if (filter != null && resolveDbTarget(filter) == null) {
             throw new IllegalArgumentException(
                     "Unknown service filter=" + filter
-                            + " (use hrms, payroll, file, notification, report)");
+                            + " (use people, leave, time-work, hrms, payroll, file, notification, report)");
         }
 
         java.util.List<Map<String, Object>> results = new java.util.ArrayList<>();
@@ -281,6 +406,22 @@ public class ProvisioningService {
 
         for (TenantRouting row : repository.findAllByOrderByTenantIdAscServiceNameAsc()) {
             tenants.add(row.getTenantId());
+        }
+
+        // Full fleet (or workforce services): ensure People/Leave/Time&Work DBs exist for old tenants.
+        boolean touchWorkforce = filter == null
+                || SERVICE_PEOPLE.equals(filter)
+                || SERVICE_LEAVE.equals(filter)
+                || SERVICE_TIME_WORK.equals(filter)
+                || SERVICE_HRMS.equals(filter);
+        if (touchWorkforce) {
+            for (String tenantId : tenants) {
+                try {
+                    ensureWorkforceServiceRouting(tenantId);
+                } catch (Exception e) {
+                    log.warn("Fleet workforce ensure failed for tenant={}: {}", tenantId, e.getMessage());
+                }
+            }
         }
 
         // Full fleet (or satellite services): ensure old tenants get files/notif/reports DBs.
@@ -362,13 +503,183 @@ public class ProvisioningService {
             return null;
         }
         return switch (serviceName) {
-            case SERVICE_HRMS -> properties.getProvision().getHrms();
+            case SERVICE_PEOPLE, SERVICE_HRMS -> properties.getProvision().getPeople();
+            case SERVICE_LEAVE -> properties.getProvision().getLeave();
+            case SERVICE_TIME_WORK -> properties.getProvision().getTimeWork();
             case SERVICE_PAYROLL -> properties.getProvision().getPayroll();
             case SERVICE_FILE -> properties.getProvision().getFiles();
             case SERVICE_NOTIFICATION -> properties.getProvision().getNotification();
             case SERVICE_REPORT -> properties.getProvision().getReport();
             default -> null;
         };
+    }
+
+    /**
+     * Split every known tenant from legacy {@code hrms_*} into {@code people_*} / {@code leave_*} /
+     * {@code timework_*} databases and rewrite registry routing. Idempotent.
+     */
+    public Map<String, Object> splitWorkforceAllTenants() {
+        java.util.Set<String> tenants = new java.util.LinkedHashSet<>();
+        for (TenantRouting row : repository.findAllByOrderByTenantIdAscServiceNameAsc()) {
+            tenants.add(row.getTenantId());
+        }
+        java.util.List<Map<String, Object>> results = new java.util.ArrayList<>();
+        int ok = 0;
+        int failed = 0;
+        for (String tenantId : tenants) {
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("tenantId", tenantId);
+            try {
+                item.putAll(ensureWorkforceServiceRouting(tenantId));
+                item.put("status", "OK");
+                ok++;
+            } catch (Exception e) {
+                failed++;
+                item.put("status", "FAILED");
+                item.put("error", e.getMessage());
+                log.warn("Workforce split failed for tenant={}: {}", tenantId, e.getMessage(), e);
+            }
+            results.add(item);
+        }
+        return new java.util.LinkedHashMap<>(Map.of(
+                "tenants", tenants.size(),
+                "ok", ok,
+                "failed", failed,
+                "results", results,
+                "message", "Workforce DB split complete — people_/leave_/timework_ created; hrms routing aliased to people."
+        ));
+    }
+
+    /**
+     * Idempotent cutover: create people_/leave_/timework_ DBs, clone from legacy hrms_* when needed,
+     * and register service routings so the three workforce services no longer share one DB.
+     */
+    public Map<String, Object> ensureWorkforceServiceRouting(String tenantId) {
+        long version = System.currentTimeMillis();
+        Instant now = Instant.now();
+        String peopleDb = TenantIds.peopleDbName(tenantId);
+        String leaveDb = TenantIds.leaveDbName(tenantId);
+        String timeWorkDb = TenantIds.timeWorkDbName(tenantId);
+
+        String peopleJdbc = provisioner.createAndMigrate(peopleDb, properties.getProvision().getPeople());
+        String leaveJdbc = provisioner.createAndMigrate(leaveDb, properties.getProvision().getLeave());
+        String timeWorkJdbc = provisioner.createAndMigrate(timeWorkDb, properties.getProvision().getTimeWork());
+
+        // Source of truth for cutover: legacy hrms_* DB if still present with data.
+        String legacyJdbc = resolveLegacyHrmsJdbc(tenantId, peopleJdbc);
+        boolean clonedFromLegacy = false;
+        if (legacyJdbc != null && isEmployeeTableEmpty(peopleJdbc) && !isEmployeeTableEmpty(legacyJdbc)) {
+            PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+            databaseCloner.cloneAllTables(
+                    legacyJdbc, peopleJdbc, people.getUsername(), people.getPassword());
+            clonedFromLegacy = true;
+            log.info("Copied legacy {} → {}", legacyJdbc, peopleJdbc);
+        }
+
+        // Seed leave/timework only while People still holds domain rows (post-clone, pre-purge).
+        // Never re-seed from a purged People DB — that would wipe satellite SoT.
+        boolean leaveNeedsSeed = isTableEmpty(leaveJdbc, "leave_type")
+                && !isTableEmpty(peopleJdbc, "leave_type");
+        boolean timeWorkNeedsSeed = isTableEmpty(timeWorkJdbc, "attendance_record")
+                && !isTableEmpty(peopleJdbc, "attendance_record");
+        // Fresh tenants may have leave_type catalog but empty attendance — also seed when
+        // people still has leave_application (or we just cloned the monolith dump).
+        boolean peopleStillHoldsLeaveSoT = !isTableEmpty(peopleJdbc, "leave_application")
+                || !isTableEmpty(peopleJdbc, "leave_type");
+        boolean peopleStillHoldsTimeSoT = !isTableEmpty(peopleJdbc, "attendance_record")
+                || !isTableEmpty(peopleJdbc, "work_schedule");
+        if (clonedFromLegacy
+                || (leaveNeedsSeed && peopleStillHoldsLeaveSoT)
+                || (timeWorkNeedsSeed && peopleStillHoldsTimeSoT)) {
+            if (!isEmployeeTableEmpty(peopleJdbc)) {
+                distributeDomainData(peopleJdbc, leaveJdbc, timeWorkJdbc);
+            }
+        }
+        // Always split settings + audit ownership + strip Leave/Time&Work SoT from People.
+        distributeSettingsOwnership(peopleJdbc, leaveJdbc, timeWorkJdbc);
+        TenantRouting payrollRoutingRow = repository.findByServiceNameAndTenantId(SERVICE_PAYROLL, tenantId).orElse(null);
+        TenantRouting filesRoutingRow = repository.findByServiceNameAndTenantId(SERVICE_FILE, tenantId).orElse(null);
+        TenantRouting notifRoutingRow = repository.findByServiceNameAndTenantId(SERVICE_NOTIFICATION, tenantId).orElse(null);
+        TenantRouting reportRoutingRow = repository.findByServiceNameAndTenantId(SERVICE_REPORT, tenantId).orElse(null);
+        partitionAuditOwnership(
+                peopleJdbc, leaveJdbc, timeWorkJdbc,
+                payrollRoutingRow == null ? null : payrollRoutingRow.getJdbcUrl(),
+                filesRoutingRow == null ? null : filesRoutingRow.getJdbcUrl(),
+                notifRoutingRow == null ? null : notifRoutingRow.getJdbcUrl(),
+                reportRoutingRow == null ? null : reportRoutingRow.getJdbcUrl());
+        purgeForeignTablesFromPeople(peopleJdbc);
+
+        ensureOneRouting(SERVICE_PEOPLE, tenantId, peopleJdbc, properties.getProvision().getPeople(), version, now);
+        ensureOneRouting(SERVICE_LEAVE, tenantId, leaveJdbc, properties.getProvision().getLeave(), version, now);
+        ensureOneRouting(SERVICE_TIME_WORK, tenantId, timeWorkJdbc, properties.getProvision().getTimeWork(), version, now);
+        // Point legacy "hrms" alias at People DB (never leave shared hrms_* as live SoT).
+        ensureOneRouting(SERVICE_HRMS, tenantId, peopleJdbc, properties.getProvision().getPeople(), version, now);
+
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("peopleDb", peopleDb);
+        out.put("leaveDb", leaveDb);
+        out.put("timeWorkDb", timeWorkDb);
+        out.put("peopleJdbc", peopleJdbc);
+        out.put("leaveJdbc", leaveJdbc);
+        out.put("timeWorkJdbc", timeWorkJdbc);
+        out.put("clonedFromLegacyHrms", clonedFromLegacy);
+        out.put("legacySourceJdbc", legacyJdbc == null ? "" : legacyJdbc);
+        return out;
+    }
+
+    /**
+     * Prefer explicit hrms routing when it still points at {@code hrms_*}; otherwise synthesize
+     * jdbc from TenantIds on the people Postgres host.
+     * <p>Always rewrite host/port to the current provision target so Docker registry can reach
+     * DBs that were previously registered with {@code 127.0.0.1:5433}.
+     */
+    private String resolveLegacyHrmsJdbc(String tenantId, String peopleJdbc) {
+        PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+        String dbName = TenantIds.hrmsDbName(tenantId);
+        var legacyHrms = repository.findByServiceNameAndTenantId(SERVICE_HRMS, tenantId);
+        if (legacyHrms.isPresent()) {
+            String jdbc = legacyHrms.get().getJdbcUrl();
+            if (jdbc != null && jdbc.contains("/hrms_")) {
+                dbName = jdbc.substring(jdbc.lastIndexOf('/') + 1);
+                String rewritten = rewriteJdbcToProvisionHost(jdbc, people);
+                if (!isEmployeeTableEmpty(rewritten)) {
+                    return rewritten;
+                }
+            }
+        }
+        String candidate = "jdbc:postgresql://" + people.getHost() + ":" + people.getPort() + "/" + dbName;
+        if (!isEmployeeTableEmpty(candidate)) {
+            return candidate;
+        }
+        return null;
+    }
+
+    /** Map any jdbc URL onto the people provision host/port, keeping the database name. */
+    private static String rewriteJdbcToProvisionHost(String jdbcUrl, PlatformProperties.DbTarget target) {
+        if (jdbcUrl == null || jdbcUrl.isBlank()) {
+            return jdbcUrl;
+        }
+        int slash = jdbcUrl.lastIndexOf('/');
+        String dbName = slash >= 0 ? jdbcUrl.substring(slash + 1) : jdbcUrl;
+        return "jdbc:postgresql://" + target.getHost() + ":" + target.getPort() + "/" + dbName;
+    }
+
+    private boolean isEmployeeTableEmpty(String jdbcUrl) {
+        return isTableEmpty(jdbcUrl, "employee");
+    }
+
+    /** True when table is missing or has zero rows. */
+    private boolean isTableEmpty(String jdbcUrl, String table) {
+        PlatformProperties.DbTarget people = properties.getProvision().getPeople();
+        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(
+                jdbcUrl, people.getUsername(), people.getPassword());
+             java.sql.Statement st = conn.createStatement();
+             java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM \"" + table + "\"")) {
+            return rs.next() && rs.getLong(1) == 0L;
+        } catch (Exception e) {
+            // Table missing / not ready → treat as empty so clone can populate.
+            return true;
+        }
     }
 
     /**

@@ -1,0 +1,24 @@
+# Activate with SPRING_PROFILES_ACTIVE=prod
+# Requires strong secrets; demo/OIDC-ready login stays at gateway (DEMO_AUTH can stay for now).
+platform:
+  security:
+    require-gateway: true
+  messaging:
+    enabled: true
+  tenancy:
+    mode: ${PLATFORM_TENANCY_MODE:FIXED}
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    root: INFO
+    com.platform: INFO

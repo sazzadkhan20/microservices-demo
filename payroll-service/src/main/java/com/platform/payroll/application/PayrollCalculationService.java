@@ -87,10 +87,21 @@ public class PayrollCalculationService {
         Payslip existing = payslipRepository
                 .findByEmployeeIdAndPeriodLabel(employee.id(), request.periodLabel())
                 .orElse(null);
-        if (existing != null && STATUS_FINALIZED.equalsIgnoreCase(statusOf(existing))) {
-            throw new IllegalStateException(
-                    "Payslip already FINALIZED for employee=" + employee.id()
-                            + " period=" + request.periodLabel() + " — reopen before recalculating");
+        if (existing != null) {
+            String st = statusOf(existing);
+            if (STATUS_FINALIZED.equalsIgnoreCase(st)) {
+                throw new IllegalStateException(
+                        "Payslip already FINALIZED for employee=" + employee.id()
+                                + " period=" + request.periodLabel() + " — reopen before recalculating");
+            }
+            // PAY-04 — do not clobber in-flight finalize/reopen
+            if ("FINALIZING".equalsIgnoreCase(st)
+                    || "REOPENING".equalsIgnoreCase(st)
+                    || "ACTION_REQUIRED".equalsIgnoreCase(st)) {
+                throw new IllegalStateException(
+                        "Payslip status " + st + " blocks recalculation for employee="
+                                + employee.id() + " period=" + request.periodLabel());
+            }
         }
 
         PayrollConfigEntity config = configLoader.loadOrDefault();
@@ -163,8 +174,18 @@ public class PayrollCalculationService {
             result = monthlyPayrollEngine.calculateMonthly(config, baseSalary, facts, adjustment);
         }
 
-        // Build rich details (FR-PAY-15)
+        // Build rich details (FR-PAY-15). PAY-03 — preserve prior finals across recalculation.
         Map<String, Object> details = new LinkedHashMap<>(result.details());
+        if (existing != null && existing.getDetailsJson() != null) {
+            Object prior = existing.getDetailsJson().get("priorFinals");
+            if (prior != null) {
+                details.put("priorFinals", prior);
+            }
+            Object retained = existing.getDetailsJson().get("retainedFinal");
+            if (retained != null) {
+                details.put("retainedFinal", retained);
+            }
+        }
         details.put("employeeCode", employee.employeeCode());
         details.put("employeeName", employee.fullName());
         details.put("currency", currency);
@@ -286,7 +307,7 @@ public class PayrollCalculationService {
         return out;
     }
 
-    // ---------------------- finalize (legacy sync fallback when messaging disabled) ----------------------
+    // ---------------------- finalize (legacy sync; unused from API — PAY-09) ----------------------
 
     @Transactional
     public CalculatePayrollResponse finalizeLegacySync(Long payslipId, boolean confirm) {

@@ -61,6 +61,14 @@ subprojects {
     tasks.withType(Test).configureEach {
         useJUnitPlatform()
     }
+
+    afterEvaluate {
+        if (pluginManager.hasPlugin('org.springframework.boot')) {
+            dependencies {
+                implementation 'io.micrometer:micrometer-registry-prometheus'
+            }
+        }
+    }
 }
 
 // Convenience: build everything from the root

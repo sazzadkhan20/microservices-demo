@@ -21,6 +21,7 @@ public class EmployeeView {
     private String preferredName;
     private String jobTitle;
     private Long locationId;
+    private String locationTimeZone;
     private Long teamId;
     private String employmentType;
     private LocalDate startDate;
@@ -58,6 +59,8 @@ public class EmployeeView {
     public void setJobTitle(String jobTitle) { this.jobTitle = jobTitle; }
     public Long getLocationId() { return locationId; }
     public void setLocationId(Long locationId) { this.locationId = locationId; }
+    public String getLocationTimeZone() { return locationTimeZone; }
+    public void setLocationTimeZone(String locationTimeZone) { this.locationTimeZone = locationTimeZone; }
     public Long getTeamId() { return teamId; }
     public void setTeamId(Long teamId) { this.teamId = teamId; }
     public String getEmploymentType() { return employmentType; }

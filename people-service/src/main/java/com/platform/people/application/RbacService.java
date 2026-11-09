@@ -1,10 +1,12 @@
 package com.platform.people.application;
 
 import com.platform.common.security.AuthContext;
+import com.platform.people.domain.Employee;
 import com.platform.people.domain.rbac.AppPermission;
 import com.platform.people.domain.rbac.AppRole;
 import com.platform.people.domain.rbac.AppRolePermission;
 import com.platform.people.domain.rbac.AppUserRole;
+import com.platform.people.infrastructure.persistence.EmployeeRepository;
 import com.platform.people.infrastructure.persistence.rbac.AppPermissionRepository;
 import com.platform.people.infrastructure.persistence.rbac.AppRolePermissionRepository;
 import com.platform.people.infrastructure.persistence.rbac.AppRoleRepository;
@@ -78,16 +80,19 @@ public class RbacService {
     private final AppRoleRepository roleRepository;
     private final AppRolePermissionRepository rolePermissionRepository;
     private final AppPermissionRepository permissionRepository;
+    private final EmployeeRepository employeeRepository;
 
     public RbacService(
             AppUserRoleRepository userRoleRepository,
             AppRoleRepository roleRepository,
             AppRolePermissionRepository rolePermissionRepository,
-            AppPermissionRepository permissionRepository) {
+            AppPermissionRepository permissionRepository,
+            EmployeeRepository employeeRepository) {
         this.userRoleRepository = userRoleRepository;
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.permissionRepository = permissionRepository;
+        this.employeeRepository = employeeRepository;
     }
 
     @Transactional(readOnly = true)
@@ -122,6 +127,14 @@ public class RbacService {
 
     @Transactional(readOnly = true)
     public Set<String> permissionKeysFor(Long employeeId) {
+        // SEC-08 — inactive / offboarded employees get no permissions
+        if (employeeId == null) {
+            return Set.of();
+        }
+        Employee emp = employeeRepository.findById(employeeId).orElse(null);
+        if (emp == null || !emp.isActive()) {
+            return Set.of();
+        }
         List<AppRole> roles = rolesFor(employeeId);
         if (roles.isEmpty()) {
             return Set.of();

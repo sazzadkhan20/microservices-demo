@@ -35,6 +35,7 @@ public class LocationController {
     }
 
     @GetMapping
+    @RequiresPermission(feature = "org", action = "view")
     @Operation(summary = "List locations (paginated, searchable)")
     public PageResponse<Location> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);

@@ -12,8 +12,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -74,18 +76,44 @@ public class HrmsGatewayClient {
     }
 
     /**
-     * Page of attendance rows for an employee.
-     * {@code actorEmployeeId} is used for HRMS auth/scope; {@code targetEmployeeId} is the data subject.
+     * All attendance rows for an employee in {@code [from, to]}, paging through Time&amp;Work (max 100/page).
+     * {@code actorEmployeeId} is used for auth/scope; {@code targetEmployeeId} is the data subject.
      */
-    public List<JsonNode> attendanceForEmployee(Long actorEmployeeId, Long targetEmployeeId, int page, int size) {
-        JsonNode pageJson = getJson(
-                timeWorkBaseUrl,
-                "/api/attendance/employee/" + targetEmployeeId,
-                actorEmployeeId,
-                Map.of("page", String.valueOf(page), "size", String.valueOf(size), "sort", "workDate,asc"));
+    public List<JsonNode> attendanceForEmployee(Long actorEmployeeId, Long targetEmployeeId,
+                                                LocalDate from, LocalDate to) {
         List<JsonNode> rows = new ArrayList<>();
-        if (pageJson != null && pageJson.has("content") && pageJson.get("content").isArray()) {
+        int page = 1;
+        final int size = 100;
+        final int maxPages = 50;
+        while (page <= maxPages) {
+            Map<String, String> query = new LinkedHashMap<>();
+            query.put("page", String.valueOf(page));
+            query.put("size", String.valueOf(size));
+            query.put("sort", "workDate,asc");
+            if (from != null) {
+                query.put("from", from.toString());
+            }
+            if (to != null) {
+                query.put("to", to.toString());
+            }
+            JsonNode pageJson = getJson(
+                    timeWorkBaseUrl,
+                    "/api/attendance/employee/" + targetEmployeeId,
+                    actorEmployeeId,
+                    query);
+            if (pageJson == null || !pageJson.has("content") || !pageJson.get("content").isArray()) {
+                break;
+            }
+            int before = rows.size();
             pageJson.get("content").forEach(rows::add);
+            if (rows.size() == before) {
+                break;
+            }
+            int totalPages = pageJson.path("totalPages").asInt(page);
+            if (page >= totalPages) {
+                break;
+            }
+            page++;
         }
         return rows;
     }

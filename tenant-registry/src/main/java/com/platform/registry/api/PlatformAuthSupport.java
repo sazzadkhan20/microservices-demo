@@ -1,5 +1,6 @@
 package com.platform.registry.api;
 
+import com.platform.common.security.SecretMatcher;
 import com.platform.registry.config.PlatformProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -19,14 +20,14 @@ public class PlatformAuthSupport {
 
     public void requireAdmin(String provided) {
         String expected = properties.getSecurity().getAdminKey();
-        if (provided == null || expected == null || !provided.equals(expected)) {
+        if (!SecretMatcher.matches(provided, expected)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid or missing " + ADMIN_HEADER);
         }
     }
 
     public void requireService(String provided) {
         String expected = properties.getSecurity().getServiceKey();
-        if (provided == null || expected == null || !provided.equals(expected)) {
+        if (!SecretMatcher.matches(provided, expected)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid or missing " + SERVICE_HEADER);
         }
     }

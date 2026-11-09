@@ -7,3 +7,7 @@ databaseChangeLog:
       file: db/tenant-changelog/payroll/changes/003-architecture-outbox-finalize.yaml
   - include:
       file: db/tenant-changelog/payroll/changes/004-payroll-audit-log.yaml
+  - include:
+      file: db/tenant-changelog/payroll/changes/005-payslip-row-version.yaml
+  - include:
+      file: db/tenant-changelog/payroll/changes/006-finalize-initiated-by.yaml

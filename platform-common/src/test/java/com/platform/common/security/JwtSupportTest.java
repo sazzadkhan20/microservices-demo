@@ -17,6 +17,8 @@ class JwtSupportTest {
         Claims c = jwt.parseAndValidate(token);
         assertEquals("qii_creative", jwt.requireTenantId(c));
         assertEquals(1L, jwt.employeeIdOrNull(c));
+        assertEquals("emp-1", c.getSubject());
+        org.junit.jupiter.api.Assertions.assertFalse(jwt.requireJti(c).isBlank());
     }
 
     @Test

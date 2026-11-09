@@ -1,6 +1,7 @@
 package com.platform.leave.api.rest;
 
 import com.platform.leave.extension.engine.LeaveCalcEngine;
+import com.platform.leave.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,6 +22,7 @@ public class LeavePolicyController {
     }
 
     @GetMapping
+    @RequiresPermission(feature = "leave", action = "view")
     @Operation(summary = "Current tenant leave policy + coverage rules from DB config")
     public Map<String, Object> get() {
         return leaveCalcEngine.currentPolicyView();

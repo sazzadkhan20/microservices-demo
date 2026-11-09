@@ -14,6 +14,14 @@ import java.time.Instant;
 @Table(name = "leave_balance_ledger")
 public class LeaveBalanceLedger {
 
+    public static final String SOURCE_ADJUST = "ADJUST";
+    public static final String SOURCE_APPROVE = "APPROVE";
+    public static final String SOURCE_CANCEL = "CANCEL";
+    public static final String SOURCE_QUOTA = "QUOTA";
+    public static final String SOURCE_CARRY = "CARRY";
+    public static final String SOURCE_OPENING = "OPENING";
+    public static final String SOURCE_COVER = "COVER";
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -38,6 +46,15 @@ public class LeaveBalanceLedger {
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
+
+    @Column(name = "operation_key", length = 160)
+    private String operationKey;
+
+    @Column(name = "source_type", length = 32)
+    private String sourceType;
+
+    @Column(name = "source_id", length = 64)
+    private String sourceId;
 
     public Long getId() {
         return id;
@@ -97,5 +114,29 @@ public class LeaveBalanceLedger {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getOperationKey() {
+        return operationKey;
+    }
+
+    public void setOperationKey(String operationKey) {
+        this.operationKey = operationKey;
+    }
+
+    public String getSourceType() {
+        return sourceType;
+    }
+
+    public void setSourceType(String sourceType) {
+        this.sourceType = sourceType;
+    }
+
+    public String getSourceId() {
+        return sourceId;
+    }
+
+    public void setSourceId(String sourceId) {
+        this.sourceId = sourceId;
     }
 }

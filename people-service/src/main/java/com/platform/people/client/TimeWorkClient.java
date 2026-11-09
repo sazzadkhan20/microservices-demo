@@ -1,6 +1,7 @@
 package com.platform.people.client;
 
 import com.platform.common.constants.PlatformHeaders;
+import com.platform.common.security.InternalCalls;
 import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,11 +18,14 @@ public class TimeWorkClient {
     private static final Logger log = LoggerFactory.getLogger(TimeWorkClient.class);
 
     private final RestClient client;
+    private final String internalKey;
 
     public TimeWorkClient(
             RestClient.Builder builder,
             @Value("${platform.time-work-base-url:http://127.0.0.1:8087}") String baseUrl,
-            @Value("${platform.security.service-key}") String serviceKey) {
+            @Value("${platform.security.service-key}") String serviceKey,
+            @Value("${platform.security.internal-key}") String internalKey) {
+        this.internalKey = internalKey;
         this.client = builder
                 .baseUrl(baseUrl.replaceAll("/$", ""))
                 .defaultHeader(PlatformHeaders.SERVICE_KEY, serviceKey)
@@ -40,6 +44,7 @@ public class TimeWorkClient {
             client.post()
                     .uri("/api/internal/work-schedules/sync-from-pattern")
                     .header(PlatformHeaders.TENANT_ID, tenant())
+                    .header(InternalCalls.HEADER, internalKey)
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();
@@ -56,12 +61,13 @@ public class TimeWorkClient {
                             .queryParam("period", period)
                             .build(employeeId))
                     .header(PlatformHeaders.TENANT_ID, tenant())
+                    .header(InternalCalls.HEADER, internalKey)
                     .retrieve()
                     .body(Map.class);
             return body == null ? Map.of() : (Map<String, Object>) body;
         } catch (Exception e) {
             log.warn("Attendance facts fetch failed: {}", e.getMessage());
-            return Map.of();
+            throw new IllegalStateException("Time&Work service unavailable for payroll facts", e);
         }
     }
 

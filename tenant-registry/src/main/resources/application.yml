@@ -27,6 +27,7 @@ spring:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
 
 # Admin JDBC used to CREATE DATABASE on HRMS / Payroll Postgres hosts.
 platform:
@@ -119,7 +120,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       probes:

@@ -17,4 +17,13 @@ public record RoutingPayload(
     public boolean isActive() {
         return "ACTIVE".equalsIgnoreCase(status);
     }
+
+    /** JDBC password is never stored in Redis (SEC-05); present only on Registry L3 responses. */
+    public boolean hasPassword() {
+        return password != null && !password.isBlank();
+    }
+
+    public RoutingPayload withoutPassword() {
+        return new RoutingPayload(jdbcUrl, username, null, status, version);
+    }
 }

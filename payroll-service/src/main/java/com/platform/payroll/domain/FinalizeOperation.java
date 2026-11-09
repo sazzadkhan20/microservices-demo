@@ -20,6 +20,8 @@ public class FinalizeOperation {
     public static final String STATUS_WAITING_LEAVE = "WAITING_LEAVE";
     public static final String STATUS_SUCCEEDED = "SUCCEEDED";
     public static final String STATUS_FAILED = "FAILED";
+    /** Leave cover rejected / timed out — human resolution required (guide §6). */
+    public static final String STATUS_ACTION_REQUIRED = "ACTION_REQUIRED";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -54,6 +56,10 @@ public class FinalizeOperation {
 
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
+
+    /** PAY-15 — actor who started finalize/reopen (AuthContext is null on consumer thread). */
+    @Column(name = "initiated_by_employee_id")
+    private Long initiatedByEmployeeId;
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
@@ -146,6 +152,14 @@ public class FinalizeOperation {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public Long getInitiatedByEmployeeId() {
+        return initiatedByEmployeeId;
+    }
+
+    public void setInitiatedByEmployeeId(Long initiatedByEmployeeId) {
+        this.initiatedByEmployeeId = initiatedByEmployeeId;
     }
 
     public Instant getCreatedAt() {

@@ -42,6 +42,7 @@ public class OrgController {
     }
 
     @GetMapping("/chart")
+    @RequiresPermission(feature = "org", action = "view")
     @Operation(summary = "People org chart drawn from reporting lines (as-of date; default today)")
     public List<Map<String, Object>> chart(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf,
@@ -51,6 +52,7 @@ public class OrgController {
     }
 
     @GetMapping("/departments")
+    @RequiresPermission(feature = "org", action = "view")
     @Operation(summary = "List departments")
     public List<DepartmentResponse> departments() {
         return departmentRepository.findAll().stream().map(DepartmentResponse::from).toList();
@@ -71,12 +73,14 @@ public class OrgController {
     }
 
     @GetMapping("/designations")
+    @RequiresPermission(feature = "org", action = "view")
     @Operation(summary = "List designations (approverRole links to leave approval chain)")
     public List<DesignationResponse> designations() {
         return designationRepository.findAll().stream().map(DesignationResponse::from).toList();
     }
 
     @GetMapping("/tree")
+    @RequiresPermission(feature = "org", action = "view")
     @Operation(summary = "Org tree: departments with nested teams")
     public List<Map<String, Object>> tree() {
         List<Team> teams = teamRepository.findAll();

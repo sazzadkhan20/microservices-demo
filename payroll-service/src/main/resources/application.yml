@@ -45,6 +45,7 @@ spring:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
 
 # gRPC client → HRMS
 grpc:
@@ -64,6 +65,10 @@ platform:
     enabled: ${PLATFORM_MESSAGING_ENABLED:true}
     outbox-poll-ms: 1000
     finalize-wait-seconds: 25
+  payroll:
+    finalize-warn-minutes: ${PAYROLL_FINALIZE_WARN_MINUTES:5}
+    finalize-action-required-minutes: ${PAYROLL_FINALIZE_ACTION_REQUIRED_MINUTES:30}
+    finalize-recovery-interval-ms: ${PAYROLL_FINALIZE_RECOVERY_INTERVAL_MS:60000}
   tenancy:
     mode: ${PLATFORM_TENANCY_MODE:DYNAMIC}
     fixed-tenant-id: ${PLATFORM_FIXED_TENANT_ID:}
@@ -85,6 +90,7 @@ platform:
     maximum-pool-size: 5
     minimum-idle: 1
     max-lifetime-ms: 1800000
+    password: ${PAYROLL_PG_PASSWORD:${PLATFORM_DB_PASSWORD:}}
   cache:
     l1-max-size: 50
     l1-expire-after-access-minutes: 5
@@ -103,7 +109,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics,prometheus
   health:
     livenessstate:
       enabled: true

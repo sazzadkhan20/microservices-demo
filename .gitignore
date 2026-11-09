@@ -25,6 +25,15 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Audit / smoke / local DB artifacts (SEC-17 / DB-11)
+.tmp*/
+.tmp-smoke/
+.tmp-enrich/
+data/
+**/data/*.mv.db
+file-service/data/
+notification-service/data/
+
 # Generated proto (rebuilt by Gradle)
 **/generated/
 **/build/generated/

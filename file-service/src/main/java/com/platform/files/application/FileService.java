@@ -137,6 +137,16 @@ public class FileService {
         assertMagicMatches(contentType, bytes);
         assertDocumentStructure(contentType, bytes);
 
+        Long actorId = null;
+        if (uploadedBy != null && !uploadedBy.isBlank()) {
+            try {
+                actorId = Long.parseLong(uploadedBy.trim());
+            } catch (NumberFormatException ignored) {
+                // non-numeric uploader identity is not a valid employee actor
+            }
+        }
+        assertCanUpload(actorId, subjectEmployeeId, classification);
+
         String normalized = TenantIds.normalize(tenantId);
         String bucket = TenantIds.filesBucket(normalized);
         String objectUuid = UUID.randomUUID().toString();
@@ -488,9 +498,33 @@ public class FileService {
         return SCAN_RELEASED.equals(status) || SCAN_CLEAN.equals(status);
     }
 
+    private void assertCanUpload(Long actorId, Long subjectEmployeeId, String classification) {
+        if (actorId == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Employee identity required");
+        }
+        String c = normalizeClassification(classification);
+        if (isSensitiveClassification(c) && !hasPermission(actorId, "documents", "create")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Forbidden: documents:create required to upload " + c + " files");
+        }
+        if (subjectEmployeeId != null && !subjectEmployeeId.equals(actorId)
+                && !hasPermission(actorId, "employees", "edit")
+                && !hasPermission(actorId, "documents", "create")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Forbidden: cannot upload documents for another employee");
+        }
+    }
+
+    private static boolean isSensitiveClassification(String classification) {
+        return "CONFIDENTIAL".equals(classification)
+                || "HR_ONLY".equals(classification)
+                || "SENSITIVE".equals(classification);
+    }
+
     private void assertCanAccess(FileObject fo, Long requesterEmployeeId, boolean forDownload) {
+        // DOC-02: null identity is deny (no "trusted legacy" bypass).
         if (requesterEmployeeId == null) {
-            return; // trusted internal / legacy
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Employee identity required");
         }
         if (isOwner(fo, requesterEmployeeId)) {
             return;
@@ -498,17 +532,31 @@ public class FileService {
         if (fo.getEmployeeId() != null && fo.getEmployeeId().equals(requesterEmployeeId)) {
             return;
         }
-        // DOC01: authorized HR / documents viewers may access permitted employee documents.
         String classification = fo.getClassification() == null ? "GENERAL" : fo.getClassification();
-        if ("PUBLIC".equalsIgnoreCase(classification) && canViewDocuments(requesterEmployeeId)) {
+        // DOC-01: employees:view alone must NOT unlock all documents.
+        if ("PUBLIC".equalsIgnoreCase(classification) && hasPermission(requesterEmployeeId, "documents", "view")) {
             return;
         }
-        if (canViewDocuments(requesterEmployeeId)) {
+        if (isHrDocumentsViewer(requesterEmployeeId, classification)) {
             return;
         }
         throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                 forDownload ? "Forbidden: file belongs to another user"
                         : "Forbidden: cannot view another user's file metadata");
+    }
+
+    /** HR / confidential document access requires documents:view (not employees:view). */
+    private boolean isHrDocumentsViewer(Long employeeId, String classification) {
+        if (!hasPermission(employeeId, "documents", "view")) {
+            return false;
+        }
+        String c = classification == null ? "GENERAL" : classification.toUpperCase();
+        // Sensitive classifications need documents:view; PUBLIC already handled above.
+        return switch (c) {
+            case "CONFIDENTIAL", "HR_ONLY", "SENSITIVE", "PAYROLL" ->
+                    hasPermission(employeeId, "documents", "view");
+            default -> hasPermission(employeeId, "documents", "view");
+        };
     }
 
     private boolean isOwner(FileObject fo, Long requesterEmployeeId) {
@@ -520,8 +568,7 @@ public class FileService {
     }
 
     private boolean canViewDocuments(Long employeeId) {
-        return hasPermission(employeeId, "documents", "view")
-                || hasPermission(employeeId, "employees", "view");
+        return hasPermission(employeeId, "documents", "view");
     }
 
     private boolean canManageDocuments(Long employeeId) {

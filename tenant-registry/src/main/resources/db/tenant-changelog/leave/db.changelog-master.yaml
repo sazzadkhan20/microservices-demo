@@ -48,3 +48,5 @@ databaseChangeLog:
       file: db/tenant-changelog/leave/changes/003-rename-settings-to-leave-settings.yaml
   - include:
       file: db/tenant-changelog/leave/changes/004-rename-audit-log.yaml
+  - include:
+      file: db/tenant-changelog/leave/changes/005-leave-balance-integrity.yaml

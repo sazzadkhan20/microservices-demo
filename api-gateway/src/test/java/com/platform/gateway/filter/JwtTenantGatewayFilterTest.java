@@ -3,6 +3,7 @@ package com.platform.gateway.filter;
 import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.JwtSupport;
 import com.platform.gateway.config.GatewayProperties;
+import com.platform.gateway.session.SessionRevocationStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -18,12 +19,16 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class JwtTenantGatewayFilterTest {
 
     private static final String SECRET = "unit-test-jwt-secret-0123456789abcdef";
     private static final String SERVICE_KEY = "svc-key";
     private static final String DEMO_KEY = "demo-key";
+    private static final String ADMIN_KEY = "admin-key";
 
     private JwtSupport jwt;
     private GatewayProperties props;
@@ -39,10 +44,13 @@ class JwtTenantGatewayFilterTest {
         jwt = new JwtSupport(SECRET);
         props = new GatewayProperties();
         props.getSecurity().setServiceKey(SERVICE_KEY);
+        props.getSecurity().setAdminKey(ADMIN_KEY);
         props.getDemoAuth().setEnabled(true);
         props.getDemoAuth().setKey(DEMO_KEY);
         props.setPublicPaths(java.util.List.of("/actuator/**", "/docs/*/v3/api-docs", "/docs/*/v3/api-docs/**"));
-        filter = new JwtTenantGatewayFilter(jwt, props);
+        SessionRevocationStore revocation = mock(SessionRevocationStore.class);
+        when(revocation.isRevoked(any(), any(), any())).thenReturn(Mono.just(false));
+        filter = new JwtTenantGatewayFilter(jwt, props, revocation);
     }
 
     private MockServerWebExchange run(MockServerHttpRequest.BaseBuilder<?> req) {
@@ -138,6 +146,26 @@ class JwtTenantGatewayFilterTest {
         var ex = run(MockServerHttpRequest.get("/docs/registry/api/registry/routing/hrms/x"));
         assertEquals(HttpStatus.UNAUTHORIZED, ex.getResponse().getStatusCode());
         assertNull(forwarded.get());
+    }
+
+    @Test
+    void registryControlPlaneRequiresAdminKeyEvenWithJwt() {
+        String token = jwt.issueToken("e-7", "qii_creative", 7L, 60);
+        var ex = run(MockServerHttpRequest.post("/api/registry/provision")
+                .header("Authorization", "Bearer " + token));
+        assertEquals(HttpStatus.UNAUTHORIZED, ex.getResponse().getStatusCode());
+        assertNull(forwarded.get());
+    }
+
+    @Test
+    void registryControlPlaneForwardsWhenAdminKeyMatches() {
+        run(MockServerHttpRequest.post("/api/registry/provision")
+                .header(PlatformHeaders.ADMIN_KEY, ADMIN_KEY)
+                .header(PlatformHeaders.SERVICE_KEY, "spoofed"));
+        ServerHttpRequest r = forwarded.get();
+        assertEquals(SERVICE_KEY, r.getHeaders().getFirst(PlatformHeaders.SERVICE_KEY));
+        assertEquals(ADMIN_KEY, r.getHeaders().getFirst(PlatformHeaders.ADMIN_KEY));
+        assertNull(r.getHeaders().getFirst(PlatformHeaders.TENANT_ID));
     }
 
     @Test

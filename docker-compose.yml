@@ -13,8 +13,14 @@
 services:
   redis:
     image: redis:7
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # Guide §1/§7 — durable broker with publisher confirms + consumer acks (management UI :15672)
   # Required infra (same as Redis/Postgres). Apps default to 127.0.0.1:5672 when run from IDE.
@@ -121,6 +127,7 @@ services:
       REGISTRY_DB_USER: ${PLATFORM_DB_USER}
       REGISTRY_DB_PASSWORD: ${PLATFORM_DB_PASSWORD}
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_PORT: 6379
       HRMS_PG_ADMIN_URL: jdbc:postgresql://postgres-hrms:5432/postgres
       HRMS_PG_HOST: postgres-hrms
@@ -189,6 +196,7 @@ services:
       - "9081:9081"
     environment:
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
@@ -220,6 +228,7 @@ services:
       - "8086:8086"
     environment:
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
@@ -254,6 +263,7 @@ services:
       - "8087:8087"
     environment:
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
@@ -288,6 +298,7 @@ services:
       - "8082:8082"
     environment:
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REDIS_PORT: 6379
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
@@ -328,6 +339,7 @@ services:
     environment:
       # JDBC resolved per-tenant via registry routing → notif_<tenantId> on postgres-platform
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
@@ -363,6 +375,7 @@ services:
       PEOPLE_BASE_URL: http://people-service:8081
       HRMS_BASE_URL: http://people-service:8081
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
@@ -397,6 +410,7 @@ services:
       HRMS_BASE_URL: http://people-service:8081
       TIME_WORK_BASE_URL: http://time-work-service:8087
       REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       REGISTRY_BASE_URL: http://tenant-registry:8080
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
@@ -461,10 +475,13 @@ services:
       NOTIF_URI: http://notification-service:8083
       FILES_URI: http://file-service:8084
       REPORTS_URI: http://report-service:8085
-      DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-true}
+      DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-false}
       DEMO_AUTH_KEY: ${DEMO_AUTH_KEY}
       JWT_SECRET: ${JWT_SECRET}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     depends_on:
       - tenant-registry
       - people-service

@@ -1,0 +1,23 @@
+.git
+.github
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+.tmp*
+.tmp-smoke
+.tmp-enrich
+**/node_modules
+**/build
+**/.gradle
+**/data/*.mv.db
+**/*.iml
+frontend/qii-hrms/.next
+frontend/qii-hrms/node_modules
+docs
+*.md
+!README.md
+agent-transcripts
+HRMS_Microservices_Developer_Guide.pdf
+Qii HRMS v1 Software Requirements Specification.pdf

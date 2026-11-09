@@ -43,6 +43,13 @@ class PageQueryTest {
     }
 
     @Test
+    void copies_from_to_range_params() {
+        PageQuery q = PageQuery.fromParams(Map.of("from", "2026-03-01", "to", "2026-03-31"));
+        assertEquals("2026-03-01", q.filters().get("from"));
+        assertEquals("2026-03-31", q.filters().get("to"));
+    }
+
+    @Test
     void page_response_total_pages() {
         PageResponse<String> r = PageResponse.of(java.util.List.of("a", "b"), PageQuery.fromParams(Map.of("size", "2")), 5);
         assertEquals(3, r.totalPages());

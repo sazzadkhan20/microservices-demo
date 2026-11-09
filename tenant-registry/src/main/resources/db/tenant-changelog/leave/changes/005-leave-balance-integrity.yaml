@@ -1,0 +1,76 @@
+databaseChangeLog:
+  # LV-04 / DB-06 — ledger provenance + non-negative balance (existing tenants stay up).
+  - changeSet:
+      id: leave-005-ledger-provenance-columns
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: leave_balance_ledger
+        - not:
+            - columnExists:
+                tableName: leave_balance_ledger
+                columnName: operation_key
+      changes:
+        - addColumn:
+            tableName: leave_balance_ledger
+            columns:
+              - column:
+                  name: operation_key
+                  type: VARCHAR(160)
+              - column:
+                  name: source_type
+                  type: VARCHAR(32)
+              - column:
+                  name: source_id
+                  type: VARCHAR(64)
+
+  - changeSet:
+      id: leave-005-ledger-operation-key-unique
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: leave_balance_ledger
+        - not:
+            - indexExists:
+                tableName: leave_balance_ledger
+                indexName: uk_leave_balance_ledger_operation_key
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              CREATE UNIQUE INDEX IF NOT EXISTS uk_leave_balance_ledger_operation_key
+                ON leave_balance_ledger (operation_key)
+                WHERE operation_key IS NOT NULL;
+
+  - changeSet:
+      id: leave-005-balance-days-nonneg-check
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: leave_balance
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              DO $$
+              BEGIN
+                IF EXISTS (
+                  SELECT 1 FROM pg_constraint WHERE conname = 'chk_leave_balance_days_nonneg'
+                ) THEN
+                  RETURN;
+                END IF;
+                -- Skip when historical negatives exist: NOT VALID still checks later UPDATEs,
+                -- and JPA would fail saving those rows. Clean tenants get the CHECK.
+                IF EXISTS (
+                  SELECT 1 FROM leave_balance WHERE balance_days < 0
+                ) THEN
+                  RAISE NOTICE 'Skipping chk_leave_balance_days_nonneg: negative balances present';
+                  RETURN;
+                END IF;
+                ALTER TABLE leave_balance
+                  ADD CONSTRAINT chk_leave_balance_days_nonneg
+                  CHECK (balance_days >= 0) NOT VALID;
+              END $$;

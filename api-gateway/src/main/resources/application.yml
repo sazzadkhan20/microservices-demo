@@ -4,14 +4,27 @@ server:
 spring:
   application:
     name: api-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
   cloud:
     gateway:
       # Allow Swagger UI Try-it-out even if browser host differs slightly
+      # SEC-12: never reflect arbitrary Origin. Empty = no CORS (BFF is server-to-server).
+      # Set GATEWAY_CORS_ORIGINS=http://localhost:3000 for local browser→gateway debugging.
       globalcors:
         cors-configurations:
           '[/**]':
-            allowedOriginPatterns: "*"
-            allowedMethods: "*"
+            allowedOrigins: ${GATEWAY_CORS_ORIGINS:}
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
             allowedHeaders: "*"
             allowCredentials: false
       # NOTE: Do NOT use default-filter RemoveRequestHeader=X-Tenant-ID here.
@@ -155,10 +168,12 @@ platform:
     # Stamped by the gateway as X-Service-Key on every proxied request; services reject requests without it.
     # Clients can never set it (gateway strips and overwrites).
     service-key: ${PLATFORM_SERVICE_KEY}
+    admin-key: ${PLATFORM_ADMIN_KEY:}
   # Account picker (POST /api/registry/token, GET /hrms/api/auth/accounts) is NOT open:
   # callers must send X-Demo-Auth-Key (the Next.js BFF does, server-side). Set enabled=false to disable entirely.
   demo-auth:
-    enabled: ${DEMO_AUTH_ENABLED:true}
+    # SEC-02: default OFF; enable only for local/demo (prod guard refuses true).
+    enabled: ${DEMO_AUTH_ENABLED:false}
     # Distinct from PLATFORM_SERVICE_KEY so the account-picker secret cannot bypass the gateway.
     key: ${DEMO_AUTH_KEY}
   # JWT not required for these (swagger assets + OpenAPI JSON + health). No service key is forwarded.
@@ -205,7 +220,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics,prometheus
   health:
     livenessstate:
       enabled: true

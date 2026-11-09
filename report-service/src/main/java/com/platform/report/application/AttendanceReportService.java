@@ -62,7 +62,7 @@ public class AttendanceReportService {
         LocalDate from = ym.atDay(1);
         LocalDate to = ym.atEndOfMonth();
 
-        List<JsonNode> rows = hrms.attendanceForEmployee(actor, target, 1, 500);
+        List<JsonNode> rows = hrms.attendanceForEmployee(actor, target, from, to);
         Map<LocalDate, JsonNode> byDate = new HashMap<>();
         for (JsonNode row : rows) {
             LocalDate d = parseDate(row);

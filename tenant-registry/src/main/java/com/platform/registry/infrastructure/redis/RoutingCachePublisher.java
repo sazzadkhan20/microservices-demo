@@ -31,10 +31,11 @@ public class RoutingCachePublisher {
     }
 
     public void publishRouting(TenantRouting routing) {
+        // SEC-05: never persist JDBC passwords in Redis; services fetch secrets from Registry L3.
         RoutingPayload payload = new RoutingPayload(
                 routing.getJdbcUrl(),
                 routing.getUsername(),
-                routing.getPassword(),
+                null,
                 routing.getStatus(),
                 routing.getVersion()
         );

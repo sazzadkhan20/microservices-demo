@@ -19,8 +19,8 @@ import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -47,6 +47,7 @@ public class LeaveCoverCommandListener {
     private final ObjectProvider<OutboxRelay> outboxRelay;
     private final LeaveCoverService leaveCoverService;
     private final LeaveOperationRepository leaveOperationRepository;
+    private final LeaveCoverCommandHandler commandHandler;
 
     public LeaveCoverCommandListener(
             ObjectMapper objectMapper,
@@ -54,13 +55,15 @@ public class LeaveCoverCommandListener {
             OutboxWriter outboxWriter,
             ObjectProvider<OutboxRelay> outboxRelay,
             LeaveCoverService leaveCoverService,
-            LeaveOperationRepository leaveOperationRepository) {
+            LeaveOperationRepository leaveOperationRepository,
+            @Lazy LeaveCoverCommandHandler commandHandler) {
         this.objectMapper = objectMapper;
         this.inboxGuard = inboxGuard;
         this.outboxWriter = outboxWriter;
         this.outboxRelay = outboxRelay;
         this.leaveCoverService = leaveCoverService;
         this.leaveOperationRepository = leaveOperationRepository;
+        this.commandHandler = commandHandler;
     }
 
     @RabbitListener(queues = PlatformQueues.PAYROLL_LEAVE_COVER_Q)
@@ -78,15 +81,15 @@ public class LeaveCoverCommandListener {
         TenantBoundRunner.run(tenantId, () -> {
             CorrelationContext.set(correlationId.isBlank() ? eventId : correlationId);
             try {
-                handle(envelope);
+                commandHandler.handle(envelope);
             } finally {
                 CorrelationContext.clear();
             }
         });
     }
 
-    @Transactional
-    protected void handle(Map<String, Object> envelope) {
+    /** Invoked only via {@link LeaveCoverCommandHandler} so the transaction proxy applies. */
+    void handleInTransaction(Map<String, Object> envelope) {
         String eventId = str(envelope.get("eventId"));
         String eventType = str(envelope.get("eventType"));
         // Guide §6: duplicate commands must return the recorded result (re-emit via outbox).
@@ -173,7 +176,8 @@ public class LeaveCoverCommandListener {
         op.setCreatedAt(Instant.now());
 
         try {
-            leaveCoverService.applyLeaveCover(employeeId, periodLabel, consumed, reverse);
+            leaveCoverService.applyLeaveCover(
+                    employeeId, periodLabel, consumed, reverse, operationKey, operationId);
             op.setStatus(LeaveOperation.STATUS_SUCCEEDED);
             resultPayload.put("success", true);
             resultPayload.put("status", LeaveOperation.STATUS_SUCCEEDED);

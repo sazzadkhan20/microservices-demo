@@ -285,6 +285,14 @@ public class AttendanceService {
                             || statusFilter.equalsIgnoreCase(r.getStatusLabel())
             ).toList();
         }
+        LocalDate fromDate = parseIsoDate(query.filters().get("from"));
+        LocalDate toDate = parseIsoDate(query.filters().get("to"));
+        if (fromDate != null) {
+            all = all.stream().filter(r -> !r.getWorkDate().isBefore(fromDate)).toList();
+        }
+        if (toDate != null) {
+            all = all.stream().filter(r -> !r.getWorkDate().isAfter(toDate)).toList();
+        }
         long total = all.size();
         int from = Math.min(query.offset(), all.size());
         int to = Math.min(from + query.size(), all.size());
@@ -584,10 +592,11 @@ public class AttendanceService {
         return resolveZone(emp, null);
     }
 
-    private ZoneId resolveZone(EmployeeView emp, String clientTimeZone) {
-        if (clientTimeZone != null && !clientTimeZone.isBlank()) {
+    private ZoneId resolveZone(EmployeeView emp, @SuppressWarnings("unused") String clientTimeZone) {
+        // TW-02: client TZ is ignored; lateness / work date use location then tenant zone.
+        if (emp != null && emp.getLocationTimeZone() != null && !emp.getLocationTimeZone().isBlank()) {
             try {
-                return ZoneId.of(clientTimeZone.trim());
+                return ZoneId.of(emp.getLocationTimeZone().trim());
             } catch (Exception ignored) { /* fall through */ }
         }
         Map<String, Object> settings = tenantSettingsRepository.findAll().stream()
@@ -877,6 +886,18 @@ public class AttendanceService {
             return Boolean.parseBoolean(String.valueOf(v).trim());
         }
         return def;
+    }
+
+    private static LocalDate parseIsoDate(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            String s = raw.trim();
+            return LocalDate.parse(s.length() > 10 ? s.substring(0, 10) : s);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static String trim(String s, int max) {

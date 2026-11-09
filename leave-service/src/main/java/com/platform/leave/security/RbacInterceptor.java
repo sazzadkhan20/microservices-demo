@@ -2,6 +2,7 @@ package com.platform.leave.security;
 
 import com.platform.common.security.AuthContext;
 import com.platform.common.security.InternalCalls;
+import com.platform.common.security.PublicEndpoint;
 import com.platform.leave.client.people.PeopleAuthzClient;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -35,6 +36,16 @@ public class RbacInterceptor implements HandlerInterceptor {
             need = hm.getBeanType().getAnnotation(RequiresPermission.class);
         }
         if (need == null) {
+            PublicEndpoint pub = hm.getMethodAnnotation(PublicEndpoint.class);
+            if (pub == null) {
+                pub = hm.getBeanType().getAnnotation(PublicEndpoint.class);
+            }
+            if (pub == null) {
+                response.setStatus(HttpStatus.FORBIDDEN.value());
+                response.setContentType("application/json");
+                response.getWriter().write("{\"error\":\"Forbidden: endpoint is not permission-mapped\"}");
+                return false;
+            }
             return true;
         }
         if (need.allowInternal()

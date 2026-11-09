@@ -25,7 +25,8 @@ public class DotEnvEnvironmentPostProcessor implements EnvironmentPostProcessor,
 
     @Override
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
-        if (isDisabled(environment)) {
+        // SEC-17: never auto-load .env in production; require local profile or explicit enable.
+        if (isDisabled(environment) || !isDotEnvAllowed(environment)) {
             return;
         }
         if (environment.getPropertySources().contains(PROPERTY_SOURCE_NAME)) {
@@ -82,6 +83,44 @@ public class DotEnvEnvironmentPostProcessor implements EnvironmentPostProcessor,
     private static boolean isDisabled(ConfigurableEnvironment environment) {
         String flag = environment.getProperty(DISABLE_FLAG, System.getenv().getOrDefault(DISABLE_FLAG, "false"));
         return "1".equals(flag) || "true".equalsIgnoreCase(flag);
+    }
+
+    private static boolean isDotEnvAllowed(ConfigurableEnvironment environment) {
+        String platformEnv = firstNonBlank(
+                environment.getProperty("PLATFORM_ENV"),
+                System.getenv("PLATFORM_ENV"));
+        if (platformEnv != null
+                && ("prod".equalsIgnoreCase(platformEnv) || "production".equalsIgnoreCase(platformEnv))) {
+            return false;
+        }
+        for (String p : environment.getActiveProfiles()) {
+            if ("prod".equalsIgnoreCase(p) || "production".equalsIgnoreCase(p)) {
+                return false;
+            }
+        }
+        String enable = firstNonBlank(
+                environment.getProperty("PLATFORM_DOTENV_ENABLED"),
+                System.getenv("PLATFORM_DOTENV_ENABLED"));
+        if ("1".equals(enable) || "true".equalsIgnoreCase(enable)) {
+            return true;
+        }
+        for (String p : environment.getActiveProfiles()) {
+            if ("local".equalsIgnoreCase(p) || "dev".equalsIgnoreCase(p)) {
+                return true;
+            }
+        }
+        // IDE bootRun often has no profile — allow only when not explicitly prod.
+        return environment.getActiveProfiles().length == 0;
+    }
+
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) {
+            return a;
+        }
+        if (b != null && !b.isBlank()) {
+            return b;
+        }
+        return null;
     }
 
     @Override

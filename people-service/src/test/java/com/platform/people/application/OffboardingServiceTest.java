@@ -6,6 +6,7 @@ import com.platform.people.domain.rbac.AppRole;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
 import com.platform.people.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.people.client.LeaveClient;
+import com.platform.people.client.SessionRevokeClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,6 +40,7 @@ class OffboardingServiceTest {
 
     @Mock EmployeeRepository employeeRepository;
     @Mock LeaveClient leaveClient;
+    @Mock SessionRevokeClient sessionRevokeClient;
     @Mock TenantSettingsRepository tenantSettingsRepository;
     @Mock RbacService rbacService;
     @Mock ReportingLineService reportingLineService;

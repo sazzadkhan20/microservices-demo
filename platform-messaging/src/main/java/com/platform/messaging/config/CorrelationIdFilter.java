@@ -1,6 +1,7 @@
 package com.platform.messaging.config;
 
 import com.platform.common.constants.PlatformHeaders;
+import com.platform.common.correlation.CorrelationIds;
 import com.platform.messaging.correlation.CorrelationContext;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -12,7 +13,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.UUID;
 
 /**
  * Propagates / generates X-Correlation-ID for every HTTP request (guide observability).
@@ -27,9 +27,7 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
         String incoming = request.getHeader(PlatformHeaders.CORRELATION_ID);
-        String correlationId = (incoming == null || incoming.isBlank())
-                ? UUID.randomUUID().toString()
-                : incoming.trim();
+        String correlationId = CorrelationIds.sanitizeOrCreate(incoming);
         try {
             CorrelationContext.set(correlationId);
             response.setHeader(PlatformHeaders.CORRELATION_ID, correlationId);

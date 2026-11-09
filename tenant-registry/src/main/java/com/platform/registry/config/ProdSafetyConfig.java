@@ -24,8 +24,13 @@ public class ProdSafetyConfig implements ApplicationRunner {
     @Value("${platform.jwt.secret:}")
     private String jwtSecret;
 
+    @Value("${platform.security.require-gateway:true}")
+    private boolean requireGateway;
+
     @Override
     public void run(ApplicationArguments args) {
         ProdSecretsGuard.assertSafe(profiles, serviceKey, internalKey, adminKey, jwtSecret);
+        ProdSecretsGuard.assertAuthFlags(profiles, System.getenv("PLATFORM_ENV"),
+                false, requireGateway);
     }
 }

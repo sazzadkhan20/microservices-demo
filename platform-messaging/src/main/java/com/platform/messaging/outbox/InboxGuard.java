@@ -26,7 +26,8 @@ public class InboxGuard {
     }
 
     /**
-     * @return empty if already processed; otherwise result of handler after inbox insert
+     * Claim-first idempotency (MSG-02): insert inbox row before handler so concurrent
+     * duplicates cannot both execute side effects. Returns empty if already claimed.
      */
     @Transactional
     public Optional<Map<String, Object>> processOnce(
@@ -41,19 +42,22 @@ public class InboxGuard {
         if (repository.existsByEventId(eventId)) {
             return Optional.empty();
         }
-        Map<String, Object> result = handler.get();
-        MessageInbox row = new MessageInbox();
-        row.setEventId(eventId);
-        row.setEventType(eventType == null ? "" : eventType);
-        row.setConsumerName(consumerName);
-        row.setPayloadJson(payload == null ? Map.of() : payload);
-        row.setProcessedAt(Instant.now());
-        row.setResultJson(result);
+        MessageInbox claim = new MessageInbox();
+        claim.setEventId(eventId);
+        claim.setEventType(eventType == null ? "" : eventType);
+        claim.setConsumerName(consumerName == null ? "" : consumerName);
+        claim.setPayloadJson(payload == null ? Map.of() : payload);
+        claim.setProcessedAt(Instant.now());
+        claim.setResultJson(Map.of("status", "CLAIMED"));
         try {
-            repository.saveAndFlush(row);
+            repository.saveAndFlush(claim);
         } catch (DataIntegrityViolationException dup) {
             return Optional.empty();
         }
+        Map<String, Object> result = handler.get();
+        claim.setResultJson(result == null ? Map.of() : result);
+        claim.setProcessedAt(Instant.now());
+        repository.save(claim);
         return Optional.ofNullable(result);
     }
 }

@@ -20,8 +20,28 @@ const tokenSchema = z.object({
   expiresInSeconds: Number(t.expiresInSeconds ?? t.expiresIn ?? config.defaultSessionSeconds) || config.defaultSessionSeconds,
 }));
 
-/** Account-picker login → Registry JWT → httpOnly cookie. */
+/** Reject cross-origin login (guide §4 CSRF control alongside SameSite=Lax). */
+function isCrossOriginMutation(req: NextRequest): boolean {
+  const origin = req.headers.get("origin");
+  if (!origin) return false;
+  try {
+    const originHost = new URL(origin).host;
+    const hosts = [req.headers.get("x-forwarded-host"), req.headers.get("host"), req.nextUrl.host]
+      .filter(Boolean)
+      .map((h) => String(h).split(",")[0].trim());
+    return !hosts.includes(originHost);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Account-picker login → Registry JWT (jti) → httpOnly cookie.
+ * OIDC deferred; cookie is never exposed to browser JS. Session rotates on each login.
+ */
 export async function POST(req: NextRequest) {
+  if (isCrossOriginMutation(req)) return jsonError(403, "Cross-origin request blocked");
+
   let json: unknown;
   try {
     json = await req.json();
@@ -48,6 +68,7 @@ export async function POST(req: NextRequest) {
     if (!me.success) return jsonError(502, "Unexpected /me response");
 
     const res = NextResponse.json({ me: me.data });
+    // Rotate session cookie on every successful login (guide §4).
     setSessionCookie(res, token.accessToken, token.expiresInSeconds);
     return res;
   } catch (err) {

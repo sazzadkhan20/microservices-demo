@@ -52,6 +52,7 @@ public class PeopleEmployeeGateway {
         e.setPreferredName(str(m.get("preferredName")));
         e.setJobTitle(str(m.get("jobTitle")));
         e.setLocationId(asLong(m.get("locationId")));
+        e.setLocationTimeZone(str(m.get("locationTimeZone")));
         e.setTeamId(asLong(m.get("teamId")));
         e.setEmploymentType(str(m.get("employmentType")));
         e.setStartDate(asDate(m.get("startDate")));

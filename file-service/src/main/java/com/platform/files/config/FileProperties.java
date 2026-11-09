@@ -67,6 +67,8 @@ public class FileProperties {
         private int maximumPoolSize = 5;
         private int minimumIdle = 1;
         private long maxLifetimeMs = 1_800_000L;
+        /** SEC-05 — service-local JDBC secret (not stored in Redis). */
+        private String password = "";
 
         public int getMaximumPoolSize() {
             return maximumPoolSize;
@@ -90,6 +92,14 @@ public class FileProperties {
 
         public void setMaxLifetimeMs(long maxLifetimeMs) {
             this.maxLifetimeMs = maxLifetimeMs;
+        }
+
+        public String getPassword() {
+            return password;
+        }
+
+        public void setPassword(String password) {
+            this.password = password;
         }
     }
 

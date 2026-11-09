@@ -774,7 +774,8 @@ public class LeaveApplicationService {
                         app.getEmployeeId(),
                         app.getLeaveTypeCode(),
                         app.getStartDate().getYear(),
-                        app.getWorkingDaysCounted());
+                        app.getWorkingDaysCounted(),
+                        app.getId());
             }
         } else {
             app.setStatus(LeaveApplication.STATUS_APPROVED);
@@ -898,7 +899,8 @@ public class LeaveApplicationService {
                 app.getEmployeeId(),
                 app.getLeaveTypeCode(),
                 app.getStartDate().getYear(),
-                app.getWorkingDaysCounted());
+                app.getWorkingDaysCounted(),
+                app.getId());
         app.setBalanceDeducted(true);
     }
 

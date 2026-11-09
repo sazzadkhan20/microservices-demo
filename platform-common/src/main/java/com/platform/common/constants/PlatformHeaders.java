@@ -20,6 +20,8 @@ public final class PlatformHeaders {
      * requests without a matching value.
      */
     public static final String SERVICE_KEY = "X-Service-Key";
+    /** Control-plane admin secret (provision / tenant list / session revoke). */
+    public static final String ADMIN_KEY = "X-Platform-Admin-Key";
     /** Shared secret for the demo account-picker endpoints (token mint / account list). */
     public static final String DEMO_AUTH_KEY = "X-Demo-Auth-Key";
     public static final String GRPC_SERVICE_KEY = "x-service-key";

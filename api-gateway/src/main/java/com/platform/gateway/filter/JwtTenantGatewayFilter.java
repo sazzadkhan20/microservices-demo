@@ -4,6 +4,7 @@ import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.JwtSupport;
 import com.platform.common.security.SecretMatcher;
 import com.platform.gateway.config.GatewayProperties;
+import com.platform.gateway.session.SessionRevocationStore;
 import io.jsonwebtoken.Claims;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,11 +37,16 @@ public class JwtTenantGatewayFilter implements GlobalFilter, Ordered {
 
     private final JwtSupport jwtSupport;
     private final GatewayProperties properties;
+    private final SessionRevocationStore revocationStore;
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
 
-    public JwtTenantGatewayFilter(JwtSupport jwtSupport, GatewayProperties properties) {
+    public JwtTenantGatewayFilter(
+            JwtSupport jwtSupport,
+            GatewayProperties properties,
+            SessionRevocationStore revocationStore) {
         this.jwtSupport = jwtSupport;
         this.properties = properties;
+        this.revocationStore = revocationStore;
     }
 
     @Override
@@ -69,12 +75,22 @@ public class JwtTenantGatewayFilter implements GlobalFilter, Ordered {
             return chain.filter(exchange.mutate().request(publicRequest).build());
         }
 
-        // Platform control-plane: admin key is validated by tenant-registry (not JWT)
-        String adminKey = exchange.getRequest().getHeaders().getFirst("X-Platform-Admin-Key");
-        if (adminKey != null && !adminKey.isBlank() && isRegistryControlPlane(path)) {
+        // SEC-04: registry control-plane requires a valid admin key at the edge (constant-time).
+        // Never stamp X-Service-Key unless the key matches; JWT alone is not enough.
+        if (isRegistryControlPlane(path)) {
+            return handleAdminControlPlane(exchange, chain, path);
+        }
+
+        String adminKey = exchange.getRequest().getHeaders().getFirst(PlatformHeaders.ADMIN_KEY);
+        if (adminKey != null && !adminKey.isBlank() && isSessionAdminPath(path)) {
+            if (!SecretMatcher.matches(adminKey, properties.getSecurity().getAdminKey())) {
+                log.warn("Admin key rejected for path {}", path);
+                return reject(exchange, HttpStatus.UNAUTHORIZED);
+            }
             ServerHttpRequest scrubbed = exchange.getRequest().mutate()
                     .headers(GatewayHeaders::stripTrustHeaders)
                     .header(PlatformHeaders.SERVICE_KEY, properties.getSecurity().getServiceKey())
+                    .header(PlatformHeaders.ADMIN_KEY, adminKey)
                     .build();
             return chain.filter(exchange.mutate().request(scrubbed).build());
         }
@@ -89,18 +105,29 @@ public class JwtTenantGatewayFilter implements GlobalFilter, Ordered {
             Claims claims = jwtSupport.parseAndValidate(token);
             String tenantId = jwtSupport.requireTenantId(claims);
             Long employeeId = jwtSupport.employeeIdOrNull(claims);
+            String jti = jwtSupport.requireJti(claims);
 
-            ServerHttpRequest.Builder builder = exchange.getRequest().mutate()
-                    .headers(GatewayHeaders::stripTrustHeaders)
-                    .header(PlatformHeaders.TENANT_ID, tenantId)
-                    .header(PlatformHeaders.SERVICE_KEY, properties.getSecurity().getServiceKey());
-            if (employeeId != null) {
-                builder.header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId));
-            }
-            ServerHttpRequest request = builder.build();
-
-            log.debug("Injected tenant={} employee={} path={}", tenantId, employeeId, path);
-            return chain.filter(exchange.mutate().request(request).build());
+            return revocationStore.isRevoked(jti, tenantId, employeeId)
+                    .onErrorResume(err -> {
+                        log.error("Session revocation store unavailable — denying request: {}", err.getMessage());
+                        return Mono.just(true);
+                    })
+                    .flatMap(revoked -> {
+                        if (Boolean.TRUE.equals(revoked)) {
+                            log.warn("Revoked session jti={} emp={} path={}", jti, employeeId, path);
+                            return reject(exchange, HttpStatus.UNAUTHORIZED);
+                        }
+                        ServerHttpRequest.Builder builder = exchange.getRequest().mutate()
+                                .headers(GatewayHeaders::stripTrustHeaders)
+                                .header(PlatformHeaders.TENANT_ID, tenantId)
+                                .header(PlatformHeaders.SERVICE_KEY, properties.getSecurity().getServiceKey());
+                        if (employeeId != null) {
+                            builder.header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId));
+                        }
+                        ServerHttpRequest request = builder.build();
+                        log.debug("Injected tenant={} employee={} path={}", tenantId, employeeId, path);
+                        return chain.filter(exchange.mutate().request(request).build());
+                    });
         } catch (Exception ex) {
             log.warn("JWT rejected for path {}: {}", path, ex.getMessage());
             return reject(exchange, HttpStatus.UNAUTHORIZED);
@@ -132,6 +159,20 @@ public class JwtTenantGatewayFilter implements GlobalFilter, Ordered {
             }
         }
         return chain.filter(exchange.mutate().request(builder.build()).build());
+    }
+
+    private Mono<Void> handleAdminControlPlane(ServerWebExchange exchange, GatewayFilterChain chain, String path) {
+        String provided = exchange.getRequest().getHeaders().getFirst(PlatformHeaders.ADMIN_KEY);
+        if (!SecretMatcher.matches(provided, properties.getSecurity().getAdminKey())) {
+            log.warn("Admin key rejected for path {}", path);
+            return reject(exchange, HttpStatus.UNAUTHORIZED);
+        }
+        ServerHttpRequest scrubbed = exchange.getRequest().mutate()
+                .headers(GatewayHeaders::stripTrustHeaders)
+                .header(PlatformHeaders.SERVICE_KEY, properties.getSecurity().getServiceKey())
+                .header(PlatformHeaders.ADMIN_KEY, provided)
+                .build();
+        return chain.filter(exchange.mutate().request(scrubbed).build());
     }
 
     private static Mono<Void> reject(ServerWebExchange exchange, HttpStatus status) {
@@ -187,6 +228,10 @@ public class JwtTenantGatewayFilter implements GlobalFilter, Ordered {
                 || pathMatcher.match("/registry/provision", path)
                 || pathMatcher.match("/registry/tenants", path)
                 || pathMatcher.match("/registry/tenants/**", path);
+    }
+
+    private boolean isSessionAdminPath(String path) {
+        return pathMatcher.match("/api/session/revoke-employee/**", path);
     }
 
     @Override

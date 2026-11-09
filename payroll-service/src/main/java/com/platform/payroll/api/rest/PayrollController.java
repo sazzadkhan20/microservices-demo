@@ -92,32 +92,46 @@ public class PayrollController {
     @PostMapping("/payslips/{id}/finalize")
     @RequiresPermission(feature = "payroll", action = "run")
     @Operation(summary = "Finalize (lock) a draft payslip — payroll:run. Body: {confirm:true} required. "
-            + "Returns 202 when wait=false (poll GET /operations/{operationId}); default wait=true completes inline for Qii tests.")
+            + "Returns 202 by default (poll GET /operations/{operationId}); wait=true blocks briefly for tests.")
     public ResponseEntity<CalculatePayrollResponse> finalize(
             @PathVariable Long id,
-            @RequestParam(defaultValue = "true") boolean wait,
+            @RequestParam(defaultValue = "false") boolean wait,
             @RequestBody(required = false) Map<String, Object> body) {
         boolean confirm = body != null && Boolean.parseBoolean(String.valueOf(body.getOrDefault("confirm", "false")));
         CalculatePayrollResponse resp = finalizeService.finalize(id, confirm, wait);
         Object opStatus = resp.details() == null ? null : resp.details().get("operationStatus");
         if (!wait && opStatus != null && !"SUCCEEDED".equals(String.valueOf(opStatus))) {
-            return ResponseEntity.accepted().body(resp);
+            return acceptedWithOperation(resp);
         }
         return ResponseEntity.ok(resp);
     }
 
     @PostMapping("/payslips/{id}/reopen")
     @RequiresPermission(feature = "payroll", action = "run")
-    @Operation(summary = "Reopen a finalized payslip for recalculation — payroll:run")
+    @Operation(summary = "Reopen a finalized payslip for recalculation — payroll:run. "
+            + "Retains prior final snapshot; returns 202 by default.")
     public ResponseEntity<CalculatePayrollResponse> reopen(
             @PathVariable Long id,
-            @RequestParam(defaultValue = "true") boolean wait) {
+            @RequestParam(defaultValue = "false") boolean wait) {
         CalculatePayrollResponse resp = finalizeService.reopen(id, wait);
         Object opStatus = resp.details() == null ? null : resp.details().get("operationStatus");
         if (!wait && opStatus != null && !"SUCCEEDED".equals(String.valueOf(opStatus))) {
-            return ResponseEntity.accepted().body(resp);
+            return acceptedWithOperation(resp);
         }
         return ResponseEntity.ok(resp);
+    }
+
+    /** PAY-12 — 202 + Location to poll status. */
+    private static ResponseEntity<CalculatePayrollResponse> acceptedWithOperation(CalculatePayrollResponse resp) {
+        Object operationId = resp.details() == null ? null : resp.details().get("operationId");
+        if (operationId == null || String.valueOf(operationId).isBlank()) {
+            return ResponseEntity.accepted().body(resp);
+        }
+        String loc = "/api/payroll/operations/" + operationId;
+        if (resp.details() != null) {
+            resp.details().putIfAbsent("statusUrl", loc);
+        }
+        return ResponseEntity.accepted().header(HttpHeaders.LOCATION, loc).body(resp);
     }
 
     @GetMapping("/operations/{operationId}")

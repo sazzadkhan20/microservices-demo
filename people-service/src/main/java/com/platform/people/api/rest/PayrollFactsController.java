@@ -6,6 +6,8 @@ import com.platform.people.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.people.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -126,10 +128,10 @@ public class PayrollFactsController {
     @PostMapping("/apply-leave-cover")
     @RequiresPermission(feature = "leave", action = "manage", allowInternal = true)
     @Operation(summary = "Retired — use RabbitMQ leave-cover command (leave-service)")
-    public Map<String, Object> applyLeaveCover(@RequestBody Map<String, Object> body) {
-        return Map.of(
+    public ResponseEntity<Map<String, Object>> applyLeaveCover(@RequestBody Map<String, Object> body) {
+        return ResponseEntity.status(HttpStatus.GONE).body(Map.of(
                 "status", "GONE",
                 "message", "Leave cover is handled by leave-service over RabbitMQ; People no longer mutates leave balances."
-        );
+        ));
     }
 }

@@ -11,14 +11,16 @@ import java.util.List;
 
 public interface MessageOutboxRepository extends JpaRepository<MessageOutbox, Long> {
 
+    /** MSG-01 — skip rows still in exponential backoff (published_at used as next_attempt_at while PENDING). */
     @Query(value = """
             SELECT * FROM message_outbox
             WHERE status = 'PENDING'
+              AND (published_at IS NULL OR published_at <= :now)
             ORDER BY created_at ASC
             LIMIT :batchSize
             FOR UPDATE SKIP LOCKED
             """, nativeQuery = true)
-    List<MessageOutbox> findPendingForUpdate(@Param("batchSize") int batchSize);
+    List<MessageOutbox> findPendingForUpdate(@Param("batchSize") int batchSize, @Param("now") Instant now);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """

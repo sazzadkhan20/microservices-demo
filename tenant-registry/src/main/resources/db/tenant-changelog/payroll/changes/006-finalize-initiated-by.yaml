@@ -1,0 +1,10 @@
+databaseChangeLog:
+  - changeSet:
+      id: payroll-006-finalize-initiated-by
+      author: platform
+      comment: "PAY-15 — persist initiating actor on finalize_operation"
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE finalize_operation
+                ADD COLUMN IF NOT EXISTS initiated_by_employee_id BIGINT NULL;

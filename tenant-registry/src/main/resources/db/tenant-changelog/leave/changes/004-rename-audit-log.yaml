@@ -5,6 +5,7 @@ databaseChangeLog:
       author: platform
       changes:
         - sql:
+            splitStatements: false
             sql: |
               DO $$
               BEGIN

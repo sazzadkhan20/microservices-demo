@@ -1,0 +1,21 @@
+# Activate with SPRING_PROFILES_ACTIVE=prod
+# SEC-13: do not expose Swagger / OpenAPI on the public edge.
+platform:
+  public-paths:
+    - /actuator/health
+    - /actuator/health/**
+    - /actuator/info
+    - /api/registry/health-info
+    - /registry/health-info
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus

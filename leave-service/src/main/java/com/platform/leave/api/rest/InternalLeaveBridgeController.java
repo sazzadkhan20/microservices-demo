@@ -1,9 +1,15 @@
 package com.platform.leave.api.rest;
 
+import com.platform.common.security.InternalCalls;
+import com.platform.common.security.PublicEndpoint;
 import com.platform.leave.domain.LeaveApplication;
 import com.platform.leave.domain.LeaveApproval;
+import com.platform.leave.domain.LeaveBalance;
 import com.platform.leave.infrastructure.persistence.LeaveApplicationRepository;
 import com.platform.leave.infrastructure.persistence.LeaveApprovalRepository;
+import com.platform.leave.infrastructure.persistence.LeaveBalanceRepository;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -13,7 +19,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,44 +29,90 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * S2S bridge for People / Time&amp;Work (service-key). No cross-DB access.
+ * S2S bridge for People / Payroll (requires X-Internal-Key — SEC-06).
  */
 @RestController
 @RequestMapping("/api/internal")
+@PublicEndpoint(reason = "S2S; gated by InternalApiInterceptor (X-Internal-Key)")
 public class InternalLeaveBridgeController {
 
     private final LeaveApplicationRepository applicationRepository;
     private final LeaveApprovalRepository approvalRepository;
+    private final LeaveBalanceRepository balanceRepository;
+    private final String internalKey;
 
     public InternalLeaveBridgeController(
             LeaveApplicationRepository applicationRepository,
-            LeaveApprovalRepository approvalRepository) {
+            LeaveApprovalRepository approvalRepository,
+            LeaveBalanceRepository balanceRepository,
+            @Value("${platform.security.internal-key}") String internalKey) {
         this.applicationRepository = applicationRepository;
         this.approvalRepository = approvalRepository;
+        this.balanceRepository = balanceRepository;
+        this.internalKey = internalKey;
     }
 
     @GetMapping("/approvals/pending-for/{employeeId}")
-    public Map<String, Object> pendingFor(@PathVariable Long employeeId) {
+    public Map<String, Object> pendingFor(@PathVariable Long employeeId, HttpServletRequest request) {
+        requireInternal(request);
         return Map.of("pending", hasPendingApprovals(employeeId));
     }
 
     @PostMapping("/approvals/reassign")
-    public Map<String, Object> reassign(@RequestBody Map<String, Object> body) {
+    public Map<String, Object> reassign(@RequestBody Map<String, Object> body, HttpServletRequest request) {
+        requireInternal(request);
         Long leavingId = asLong(body.get("leavingId"));
         Long newApproverId = asLong(body.get("newApproverId"));
         int updated = reassignPendingApprovals(leavingId, newApproverId);
         return Map.of("updated", updated);
     }
 
+    /** PAY-01 / LV-05 — real period leave facts (not a stub). */
     @GetMapping("/leave-facts/{employeeId}")
     public Map<String, Object> leaveFacts(
             @PathVariable Long employeeId,
-            @RequestParam String period) {
+            @RequestParam String period,
+            HttpServletRequest request) {
+        requireInternal(request);
+        YearMonth ym = YearMonth.parse(period.substring(0, Math.min(7, period.length())));
+        LocalDate from = ym.atDay(1);
+        LocalDate to = ym.atEndOfMonth();
+
+        BigDecimal leaveDays = BigDecimal.ZERO;
+        BigDecimal unpaidLeaveDays = BigDecimal.ZERO;
+        Map<String, BigDecimal> consumedByType = new LinkedHashMap<>();
+        for (LeaveApplication a : applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId)) {
+            if (!LeaveApplication.STATUS_APPROVED.equalsIgnoreCase(a.getStatus())) {
+                continue;
+            }
+            if (a.getStartDate() == null || a.getEndDate() == null) {
+                continue;
+            }
+            if (a.getEndDate().isBefore(from) || a.getStartDate().isAfter(to)) {
+                continue;
+            }
+            BigDecimal days = a.getWorkingDaysCounted() == null ? BigDecimal.ZERO : a.getWorkingDaysCounted();
+            leaveDays = leaveDays.add(days);
+            if (!a.isPaid()) {
+                unpaidLeaveDays = unpaidLeaveDays.add(days);
+            }
+            String type = a.getLeaveTypeCode() == null ? "UNKNOWN" : a.getLeaveTypeCode().toUpperCase(Locale.ROOT);
+            consumedByType.merge(type, days, BigDecimal::add);
+        }
+
+        Map<String, BigDecimal> leaveBalances = new LinkedHashMap<>();
+        for (LeaveBalance bal : balanceRepository.findByEmployeeIdAndYear(employeeId, ym.getYear())) {
+            String type = bal.getLeaveTypeCode() == null ? "UNKNOWN" : bal.getLeaveTypeCode().toUpperCase(Locale.ROOT);
+            leaveBalances.put(type, bal.getBalanceDays() == null ? BigDecimal.ZERO : bal.getBalanceDays());
+        }
+
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("employeeId", employeeId);
         out.put("period", period);
-        out.put("leaveDays", 0);
-        out.put("consumedByType", Map.of());
+        out.put("leaveDays", leaveDays);
+        out.put("unpaidLeaveDays", unpaidLeaveDays);
+        out.put("consumedByType", consumedByType);
+        out.put("leaveBalances", leaveBalances);
         return out;
     }
 
@@ -66,7 +120,9 @@ public class InternalLeaveBridgeController {
     public List<Map<String, Object>> approvedLeave(
             @PathVariable Long employeeId,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
-            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            HttpServletRequest request) {
+        requireInternal(request);
         List<Map<String, Object>> out = new ArrayList<>();
         for (LeaveApplication a : applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId)) {
             if (!LeaveApplication.STATUS_APPROVED.equalsIgnoreCase(a.getStatus())) {
@@ -80,13 +136,22 @@ public class InternalLeaveBridgeController {
             }
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", a.getId());
+            row.put("leaveTypeCode", a.getLeaveTypeCode());
             row.put("startDate", a.getStartDate().toString());
             row.put("endDate", a.getEndDate().toString());
             row.put("workingDaysCounted", a.getWorkingDaysCounted());
+            row.put("paid", a.isPaid());
             row.put("status", a.getStatus());
             out.add(row);
         }
         return out;
+    }
+
+    private void requireInternal(HttpServletRequest request) {
+        if (!InternalCalls.isTrusted(request.getHeader(InternalCalls.HEADER), internalKey)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.UNAUTHORIZED, "X-Internal-Key required");
+        }
     }
 
     private boolean hasPendingApprovals(Long leavingId) {
@@ -129,13 +194,17 @@ public class InternalLeaveBridgeController {
         return n;
     }
 
-    private static Long asLong(Object v) {
-        if (v == null) {
+    private static Long asLong(Object o) {
+        if (o == null) {
             return null;
         }
-        if (v instanceof Number n) {
+        if (o instanceof Number n) {
             return n.longValue();
         }
-        return Long.parseLong(String.valueOf(v));
+        try {
+            return Long.parseLong(String.valueOf(o));
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

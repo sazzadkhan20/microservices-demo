@@ -4,9 +4,11 @@ import com.platform.common.security.InternalCalls;
 import com.platform.people.application.RbacService;
 import com.platform.people.domain.Designation;
 import com.platform.people.domain.Employee;
+import com.platform.people.domain.Location;
 import com.platform.people.domain.Team;
 import com.platform.people.infrastructure.persistence.DesignationRepository;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
+import com.platform.people.infrastructure.persistence.LocationRepository;
 import com.platform.people.infrastructure.persistence.TeamRepository;
 import com.platform.people.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Hidden;
@@ -37,6 +39,7 @@ public class InternalEmployeeDirectoryController {
     private final EmployeeRepository employeeRepository;
     private final DesignationRepository designationRepository;
     private final TeamRepository teamRepository;
+    private final LocationRepository locationRepository;
     private final RbacService rbacService;
     private final String internalKey;
 
@@ -44,11 +47,13 @@ public class InternalEmployeeDirectoryController {
             EmployeeRepository employeeRepository,
             DesignationRepository designationRepository,
             TeamRepository teamRepository,
+            LocationRepository locationRepository,
             RbacService rbacService,
             @Value("${platform.security.internal-key}") String internalKey) {
         this.employeeRepository = employeeRepository;
         this.designationRepository = designationRepository;
         this.teamRepository = teamRepository;
+        this.locationRepository = locationRepository;
         this.rbacService = rbacService;
         this.internalKey = internalKey;
     }
@@ -115,6 +120,11 @@ public class InternalEmployeeDirectoryController {
         m.put("preferredName", e.getPreferredName());
         m.put("jobTitle", e.getJobTitle());
         m.put("locationId", e.getLocationId());
+        if (e.getLocationId() != null) {
+            locationRepository.findById(e.getLocationId())
+                    .map(Location::getTimeZone)
+                    .ifPresent(tz -> m.put("locationTimeZone", tz));
+        }
         m.put("teamId", e.getTeamId());
         m.put("employmentType", e.getEmploymentType());
         m.put("startDate", e.getStartDate() == null ? null : e.getStartDate().toString());

@@ -15,6 +15,9 @@ import com.platform.leave.infrastructure.persistence.LeaveBalanceLedgerRepositor
 import com.platform.leave.infrastructure.persistence.LeaveBalanceRepository;
 import com.platform.leave.infrastructure.persistence.LeaveCategoryRepository;
 import com.platform.leave.infrastructure.persistence.LeaveTypeRepository;
+import jakarta.persistence.EntityManager;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,6 +29,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 /**
  * HR-managed leave balances (add/deduct). Shared across tenants — rules are data.
@@ -40,6 +45,7 @@ public class LeaveBalanceService {
     private final DataScopeService dataScopeService;
     private final LeaveApplicationRepository leaveApplicationRepository;
     private final LeaveCategoryRepository leaveCategoryRepository;
+    private final EntityManager entityManager;
 
     /** Holds that have not yet deducted balance (PENDING_CANCEL already deducted — exclude). */
     private static final Set<String> PENDING_STATUSES = Set.of(
@@ -48,6 +54,8 @@ public class LeaveBalanceService {
             LeaveApplication.STATUS_SUBMITTED
     );
 
+    private static final int OPTIMISTIC_ATTEMPTS = 3;
+
     public LeaveBalanceService(
             LeaveBalanceRepository balanceRepository,
             LeaveBalanceLedgerRepository ledgerRepository,
@@ -55,7 +63,8 @@ public class LeaveBalanceService {
             PeopleEmployeeGateway employeeRepository,
             DataScopeService dataScopeService,
             LeaveApplicationRepository leaveApplicationRepository,
-            LeaveCategoryRepository leaveCategoryRepository) {
+            LeaveCategoryRepository leaveCategoryRepository,
+            EntityManager entityManager) {
         this.balanceRepository = balanceRepository;
         this.ledgerRepository = ledgerRepository;
         this.leaveTypeRepository = leaveTypeRepository;
@@ -63,6 +72,7 @@ public class LeaveBalanceService {
         this.dataScopeService = dataScopeService;
         this.leaveApplicationRepository = leaveApplicationRepository;
         this.leaveCategoryRepository = leaveCategoryRepository;
+        this.entityManager = entityManager;
     }
 
     @Transactional(readOnly = true)
@@ -102,15 +112,17 @@ public class LeaveBalanceService {
         balance.setUpdatedAt(now);
         balanceRepository.save(balance);
 
-        LeaveBalanceLedger ledger = new LeaveBalanceLedger();
-        ledger.setEmployeeId(employee.getId());
-        ledger.setLeaveTypeCode(type.getCode());
-        ledger.setYear(year);
-        ledger.setDeltaDays(request.deltaDays());
-        ledger.setReason(request.reason());
-        ledger.setActorEmployeeId(request.actorEmployeeId());
-        ledger.setCreatedAt(now);
-        ledgerRepository.save(ledger);
+        writeLedger(
+                employee.getId(),
+                type.getCode(),
+                year,
+                request.deltaDays(),
+                request.reason(),
+                request.actorEmployeeId(),
+                now,
+                UUID.randomUUID().toString(),
+                LeaveBalanceLedger.SOURCE_ADJUST,
+                request.employeeId() == null ? null : String.valueOf(request.employeeId()));
 
         return LeaveBalanceResponse.from(balance);
     }
@@ -146,32 +158,54 @@ public class LeaveBalanceService {
     }
 
     /**
-     * FR-LV-18 — restore balance on cancel-approved.
+     * FR-LV-18 / LV-01 — restore exactly what was previously deducted for this application
+     * (look up the approve ledger row by source), never invent balance from thin air.
      */
     @Transactional
-    public void restoreOnCancel(Long employeeId, String leaveTypeCode, int year, BigDecimal days) {
+    public void restoreOnCancel(Long employeeId, String leaveTypeCode, int year, BigDecimal days, Long applicationId) {
         if (days == null || days.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        String opKey = applicationId != null
+                ? "CANCEL:" + applicationId
+                : UUID.randomUUID().toString();
+        if (ledgerRepository.findByOperationKey(opKey).isPresent()) {
+            return;
+        }
+        String sourceId = applicationId == null ? null : String.valueOf(applicationId);
+        // Prefer restoring the absolute value of the approve ledger row for this application (LV-01).
+        BigDecimal restore = ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId).stream()
+                .filter(l -> leaveTypeCode.equalsIgnoreCase(l.getLeaveTypeCode()) && l.getYear() == year)
+                .filter(l -> l.getDeltaDays() != null && l.getDeltaDays().compareTo(BigDecimal.ZERO) < 0)
+                .filter(l -> matchesApproveSource(l, sourceId))
+                .map(l -> l.getDeltaDays().abs())
+                .findFirst()
+                .orElse(days)
+                .min(days);
+        if (restore.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
         LeaveBalance balance = getOrCreate(employeeId, leaveTypeCode, year);
         Instant now = Instant.now();
-        balance.setBalanceDays(balance.getBalanceDays().add(days));
+        balance.setBalanceDays(balance.getBalanceDays().add(restore));
         balance.setUpdatedAt(now);
         balanceRepository.save(balance);
 
-        LeaveBalanceLedger ledger = new LeaveBalanceLedger();
-        ledger.setEmployeeId(employeeId);
-        ledger.setLeaveTypeCode(leaveTypeCode);
-        ledger.setYear(year);
-        ledger.setDeltaDays(days);
-        ledger.setReason("Leave cancel restore");
-        ledger.setActorEmployeeId(AuthContext.getEmployeeId());
-        ledger.setCreatedAt(now);
-        ledgerRepository.save(ledger);
+        writeLedger(
+                employeeId,
+                leaveTypeCode,
+                year,
+                restore,
+                "Leave cancel restore",
+                AuthContext.getEmployeeId(),
+                now,
+                opKey,
+                LeaveBalanceLedger.SOURCE_CANCEL,
+                sourceId);
     }
 
     /**
-     * FR-LV-11 / carry: cascade a quota change to all existing balances for the current year.
+     * FR-LV-11 / LV-01 — cascade quota without clamp/ledger mismatch; reject if any balance would go negative.
      */
     @Transactional
     public int cascadeQuotaDelta(String leaveTypeCode, BigDecimal delta, int year) {
@@ -181,52 +215,74 @@ public class LeaveBalanceService {
         List<LeaveBalance> balances = balanceRepository.findAll().stream()
                 .filter(b -> leaveTypeCode.equalsIgnoreCase(b.getLeaveTypeCode()) && b.getYear() == year)
                 .toList();
-        Instant now = Instant.now();
         for (LeaveBalance b : balances) {
             BigDecimal next = b.getBalanceDays().add(delta);
             if (next.compareTo(BigDecimal.ZERO) < 0) {
-                next = BigDecimal.ZERO;
+                throw new IllegalStateException(
+                        "Quota change would make balance negative for employee " + b.getEmployeeId()
+                                + " type " + leaveTypeCode + " year " + year);
             }
+        }
+        Instant now = Instant.now();
+        for (LeaveBalance b : balances) {
+            BigDecimal next = b.getBalanceDays().add(delta);
             b.setBalanceDays(next);
             b.setUpdatedAt(now);
             balanceRepository.save(b);
 
-            LeaveBalanceLedger ledger = new LeaveBalanceLedger();
-            ledger.setEmployeeId(b.getEmployeeId());
-            ledger.setLeaveTypeCode(leaveTypeCode);
-            ledger.setYear(year);
-            ledger.setDeltaDays(delta);
-            ledger.setReason("Quota change");
-            ledger.setActorEmployeeId(AuthContext.getEmployeeId());
-            ledger.setCreatedAt(now);
-            ledgerRepository.save(ledger);
+            writeLedger(
+                    b.getEmployeeId(),
+                    leaveTypeCode,
+                    year,
+                    delta,
+                    "Quota change",
+                    AuthContext.getEmployeeId(),
+                    now,
+                    UUID.randomUUID().toString(),
+                    LeaveBalanceLedger.SOURCE_QUOTA,
+                    leaveTypeCode);
         }
         return balances.size();
     }
 
+    /** LV-01 — reject approval when balance is insufficient (no silent partial deduct). */
     @Transactional
-    public void deductOnApprove(Long employeeId, String leaveTypeCode, int year, BigDecimal days) {
+    public void deductOnApprove(Long employeeId, String leaveTypeCode, int year, BigDecimal days, Long applicationId) {
         if (days == null || days.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
-        LeaveBalance balance = getOrCreate(employeeId, leaveTypeCode, year);
-        BigDecimal deduct = days.min(balance.getBalanceDays());
-        if (deduct.compareTo(BigDecimal.ZERO) <= 0) {
+        String opKey = applicationId != null
+                ? "APPROVE:" + applicationId
+                : UUID.randomUUID().toString();
+        if (ledgerRepository.findByOperationKey(opKey).isPresent()) {
             return;
         }
-        Instant now = Instant.now();
-        balance.setBalanceDays(balance.getBalanceDays().subtract(deduct));
-        balance.setUpdatedAt(now);
-        balanceRepository.save(balance);
+        String sourceId = applicationId == null ? null : String.valueOf(applicationId);
+        withOptimisticRetry(() -> {
+            LeaveBalance balance = getOrCreate(employeeId, leaveTypeCode, year);
+            if (balance.getBalanceDays().compareTo(days) < 0) {
+                throw new IllegalStateException(
+                        "Insufficient leave balance for " + leaveTypeCode + ": have "
+                                + balance.getBalanceDays() + ", need " + days);
+            }
+            Instant now = Instant.now();
+            balance.setBalanceDays(balance.getBalanceDays().subtract(days));
+            balance.setUpdatedAt(now);
+            balanceRepository.saveAndFlush(balance);
 
-        LeaveBalanceLedger ledger = new LeaveBalanceLedger();
-        ledger.setEmployeeId(employeeId);
-        ledger.setLeaveTypeCode(leaveTypeCode);
-        ledger.setYear(year);
-        ledger.setDeltaDays(deduct.negate());
-        ledger.setReason("Leave approved deduction");
-        ledger.setCreatedAt(now);
-        ledgerRepository.save(ledger);
+            writeLedger(
+                    employeeId,
+                    leaveTypeCode,
+                    year,
+                    days.negate(),
+                    "Leave approved deduction",
+                    AuthContext.getEmployeeId(),
+                    now,
+                    opKey,
+                    LeaveBalanceLedger.SOURCE_APPROVE,
+                    sourceId);
+            return null;
+        });
     }
 
     /**
@@ -288,20 +344,26 @@ public class LeaveBalanceService {
                 continue;
             }
             Long employeeId = ((Number) row.get("employeeId")).longValue();
+            String carryKey = "CARRY:" + employeeId + ":" + leaveTypeCode + ":" + fromYear + ":" + toYear;
+            if (ledgerRepository.findByOperationKey(carryKey).isPresent()) {
+                continue;
+            }
             LeaveBalance next = getOrCreate(employeeId, leaveTypeCode, toYear);
             next.setBalanceDays(next.getBalanceDays().add(carry));
             next.setUpdatedAt(now);
             balanceRepository.save(next);
 
-            LeaveBalanceLedger ledger = new LeaveBalanceLedger();
-            ledger.setEmployeeId(employeeId);
-            ledger.setLeaveTypeCode(leaveTypeCode);
-            ledger.setYear(toYear);
-            ledger.setDeltaDays(carry);
-            ledger.setReason("Year-end carry from " + fromYear);
-            ledger.setActorEmployeeId(AuthContext.getEmployeeId());
-            ledger.setCreatedAt(now);
-            ledgerRepository.save(ledger);
+            writeLedger(
+                    employeeId,
+                    leaveTypeCode,
+                    toYear,
+                    carry,
+                    "Year-end carry from " + fromYear,
+                    AuthContext.getEmployeeId(),
+                    now,
+                    carryKey,
+                    LeaveBalanceLedger.SOURCE_CARRY,
+                    String.valueOf(fromYear));
             created++;
         }
         return Map.of(
@@ -318,42 +380,151 @@ public class LeaveBalanceService {
      * Does not require an authenticated actor. Allows balance to go slightly negative
      * only when reversing a cover (delta positive) to avoid blocking reopen.
      */
+    /**
+     * LV-01 — ledger delta must match balance change exactly; never clamp while writing full delta.
+     * Insufficient balance on deduction is a business rejection (caller maps to FAILED cover).
+     */
     @Transactional
     public void adjustBySystem(Long employeeId, String leaveTypeCode,
-                               BigDecimal delta, String reason, int year) {
+                               BigDecimal delta, String reason, int year,
+                               String operationKey, String sourceType, String sourceId) {
         if (delta == null || delta.compareTo(BigDecimal.ZERO) == 0) {
+            return;
+        }
+        String opKey = (operationKey == null || operationKey.isBlank())
+                ? UUID.randomUUID().toString()
+                : operationKey;
+        if (ledgerRepository.findByOperationKey(opKey).isPresent()) {
             return;
         }
         LeaveBalance balance = getOrCreate(employeeId, leaveTypeCode, year);
         BigDecimal next = balance.getBalanceDays().add(delta);
         if (next.compareTo(BigDecimal.ZERO) < 0) {
-            next = BigDecimal.ZERO; // clamp to zero on deduction
+            throw new IllegalStateException(
+                    "Insufficient leave balance for system adjust " + leaveTypeCode
+                            + " employee " + employeeId + ": have " + balance.getBalanceDays()
+                            + ", delta " + delta);
         }
         Instant now = Instant.now();
         balance.setBalanceDays(next);
         balance.setUpdatedAt(now);
         balanceRepository.save(balance);
 
+        writeLedger(
+                employeeId,
+                leaveTypeCode,
+                year,
+                delta,
+                reason == null ? "system-adjust" : reason,
+                null,
+                now,
+                opKey,
+                sourceType == null ? LeaveBalanceLedger.SOURCE_ADJUST : sourceType,
+                sourceId);
+    }
+
+    private LeaveBalance getOrCreate(Long employeeId, String leaveTypeCode, int year) {
+        return withOptimisticRetry(() -> {
+            try {
+                return balanceRepository.findByEmployeeIdAndLeaveTypeCodeAndYear(employeeId, leaveTypeCode, year)
+                        .orElseGet(() -> insertZeroBalance(employeeId, leaveTypeCode, year));
+            } catch (DataIntegrityViolationException e) {
+                return balanceRepository.findByEmployeeIdAndLeaveTypeCodeAndYear(employeeId, leaveTypeCode, year)
+                        .orElseThrow(() -> e);
+            }
+        });
+    }
+
+    private LeaveBalance insertZeroBalance(Long employeeId, String leaveTypeCode, int year) {
+        LeaveBalance b = new LeaveBalance();
+        b.setEmployeeId(employeeId);
+        b.setLeaveTypeCode(leaveTypeCode);
+        b.setYear(year);
+        b.setBalanceDays(BigDecimal.ZERO);
+        b.setUpdatedAt(Instant.now());
+        return balanceRepository.saveAndFlush(b);
+    }
+
+    private void writeLedger(
+            Long employeeId,
+            String leaveTypeCode,
+            int year,
+            BigDecimal deltaDays,
+            String reason,
+            Long actorEmployeeId,
+            Instant createdAt,
+            String operationKey,
+            String sourceType,
+            String sourceId) {
         LeaveBalanceLedger ledger = new LeaveBalanceLedger();
         ledger.setEmployeeId(employeeId);
         ledger.setLeaveTypeCode(leaveTypeCode);
         ledger.setYear(year);
-        ledger.setDeltaDays(delta);
+        ledger.setDeltaDays(deltaDays);
         ledger.setReason(reason);
-        ledger.setCreatedAt(now);
+        ledger.setActorEmployeeId(actorEmployeeId);
+        ledger.setCreatedAt(createdAt);
+        ledger.setOperationKey(truncate(operationKey, 160));
+        ledger.setSourceType(truncate(sourceType, 32));
+        ledger.setSourceId(truncate(sourceId, 64));
         ledgerRepository.save(ledger);
     }
 
-    private LeaveBalance getOrCreate(Long employeeId, String leaveTypeCode, int year) {
-        return balanceRepository.findByEmployeeIdAndLeaveTypeCodeAndYear(employeeId, leaveTypeCode, year)
-                .orElseGet(() -> {
-                    LeaveBalance b = new LeaveBalance();
-                    b.setEmployeeId(employeeId);
-                    b.setLeaveTypeCode(leaveTypeCode);
-                    b.setYear(year);
-                    b.setBalanceDays(BigDecimal.ZERO);
-                    b.setUpdatedAt(Instant.now());
-                    return balanceRepository.save(b);
-                });
+    private static boolean matchesApproveSource(LeaveBalanceLedger ledger, String sourceId) {
+        if (LeaveBalanceLedger.SOURCE_APPROVE.equals(ledger.getSourceType())
+                && sourceId != null
+                && sourceId.equals(ledger.getSourceId())) {
+            return true;
+        }
+        return ledger.getReason() != null
+                && ledger.getReason().toLowerCase(java.util.Locale.ROOT).contains("approved");
+    }
+
+    private <T> T withOptimisticRetry(Supplier<T> action) {
+        ObjectOptimisticLockingFailureException last = null;
+        for (int attempt = 1; attempt <= OPTIMISTIC_ATTEMPTS; attempt++) {
+            try {
+                return action.get();
+            } catch (ObjectOptimisticLockingFailureException e) {
+                last = e;
+                if (attempt == OPTIMISTIC_ATTEMPTS) {
+                    break;
+                }
+                detachStaleBalance(e);
+                backoff(attempt);
+            }
+        }
+        throw last;
+    }
+
+    private void detachStaleBalance(ObjectOptimisticLockingFailureException e) {
+        Object id = e.getIdentifier();
+        if (id == null) {
+            return;
+        }
+        try {
+            LeaveBalance managed = entityManager.find(LeaveBalance.class, id);
+            if (managed != null) {
+                entityManager.detach(managed);
+            }
+        } catch (RuntimeException ignored) {
+            // session may already be inconsistent after a stale flush
+        }
+    }
+
+    private static void backoff(int attempt) {
+        try {
+            Thread.sleep(50L * attempt);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted during optimistic-lock retry", ie);
+        }
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null || value.length() <= max) {
+            return value;
+        }
+        return value.substring(0, max);
     }
 }

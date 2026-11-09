@@ -47,6 +47,8 @@ public final class PageQuery {
                 filters.put(k.substring("filter.".length()), v);
             }
         });
+        copyIfPresent(allParams, filters, "from");
+        copyIfPresent(allParams, filters, "to");
         return new PageQuery(page, size, sort, q, filters);
     }
 
@@ -98,6 +100,13 @@ public final class PageQuery {
 
         public String fieldLower() {
             return field.toLowerCase(Locale.ROOT);
+        }
+    }
+
+    private static void copyIfPresent(Map<String, String> allParams, Map<String, String> filters, String key) {
+        String v = allParams.get(key);
+        if (v != null && !v.isBlank() && !filters.containsKey(key)) {
+            filters.put(key, v.trim());
         }
     }
 

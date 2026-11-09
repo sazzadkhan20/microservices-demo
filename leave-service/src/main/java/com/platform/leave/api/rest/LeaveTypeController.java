@@ -6,6 +6,7 @@ import com.platform.leave.domain.LeaveCategory;
 import com.platform.leave.domain.LeaveType;
 import com.platform.leave.infrastructure.persistence.LeaveCategoryRepository;
 import com.platform.leave.infrastructure.persistence.LeaveTypeRepository;
+import com.platform.leave.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,6 +42,7 @@ public class LeaveTypeController {
     }
 
     @GetMapping
+    @RequiresPermission(feature = "leave", action = "view")
     @Operation(summary = "List requestable leave types",
             description = "Active leave categories (synced to leave_type). Orphan categories are repaired on read.")
     public List<LeaveTypeResponse> list() {

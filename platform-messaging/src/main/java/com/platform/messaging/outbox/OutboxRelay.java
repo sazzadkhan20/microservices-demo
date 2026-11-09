@@ -100,16 +100,16 @@ public class OutboxRelay {
                 Math.max(30L, properties.getPublishConfirmTimeoutMs() / 1000L * 6L));
         repository.reclaimStalePublishing(claimLeaseExpiry);
 
-        List<MessageOutbox> batch = repository.findPendingForUpdate(properties.getOutboxBatchSize());
+        Instant now = Instant.now();
+        List<MessageOutbox> batch = repository.findPendingForUpdate(properties.getOutboxBatchSize(), now);
         if (batch == null || batch.isEmpty()) {
             return List.of();
         }
-        Instant claimedAt = Instant.now();
         List<Long> ids = new ArrayList<>(batch.size());
         for (MessageOutbox row : batch) {
             row.setStatus(MessageOutbox.PUBLISHING);
             // Lease marker until confirm — cleared/replaced on success or failure.
-            row.setPublishedAt(claimedAt);
+            row.setPublishedAt(now);
             row.setLastError(null);
             repository.save(row);
             ids.add(row.getId());
@@ -147,14 +147,32 @@ public class OutboxRelay {
         if (row == null || !MessageOutbox.PUBLISHING.equals(row.getStatus())) {
             return;
         }
-        row.setAttempts(row.getAttempts() + 1);
+        int attempts = row.getAttempts() + 1;
+        row.setAttempts(attempts);
         row.setLastError(truncate(error, 2000));
-        if (row.getAttempts() >= properties.getOutboxMaxAttempts()) {
+        if (attempts >= properties.getOutboxMaxAttempts()) {
             row.setStatus(MessageOutbox.FAILED);
+            row.setPublishedAt(null);
         } else {
+            // MSG-01 — exponential backoff with jitter; published_at = next attempt time while PENDING
             row.setStatus(MessageOutbox.PENDING);
+            row.setPublishedAt(Instant.now().plusMillis(backoffMs(attempts)));
         }
         repository.save(row);
+    }
+
+    /** Cap ~15 min; base 1s * 2^(attempt-1) with ±20% jitter. */
+    public static long backoffMs(int attempt) {
+        return backoffMs(attempt, Math.random());
+    }
+
+    /** {@code rand} in [0,1]: 0 → −20%, 0.5 → 0%, 1 → +20%. */
+    public static long backoffMs(int attempt, double rand) {
+        int n = Math.max(1, Math.min(attempt, 12));
+        long base = Math.min(900_000L, (1L << (n - 1)) * 1000L);
+        double unit = Math.min(1.0, Math.max(0.0, rand));
+        long jitter = (long) (base * 0.2 * (unit * 2 - 1));
+        return Math.max(500L, base + jitter);
     }
 
     private void awaitBrokerConfirm(CorrelationData correlation, String eventId) throws Exception {

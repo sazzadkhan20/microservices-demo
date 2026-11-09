@@ -201,13 +201,28 @@ export function jsonError(status: number, message: string) {
   return NextResponse.json({ status, message }, { status });
 }
 
-/** Reject cross-origin state-changing requests (defence in depth on top of SameSite=Lax). */
+/**
+ * SEC-11 — reject cross-origin and origin-less state-changing requests
+ * (defence in depth on top of SameSite=Lax + CSRF token where issued).
+ */
 function isCrossOriginMutation(req: NextRequest): boolean {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return false;
   const origin = req.headers.get("origin");
-  if (!origin) return false;
+  const referer = req.headers.get("referer");
+  if (!origin && !referer) {
+    // Missing both Origin and Referer on a mutation — treat as cross-site
+    return true;
+  }
+  const candidate = origin || (() => {
+    try {
+      return new URL(referer!).origin;
+    } catch {
+      return null;
+    }
+  })();
+  if (!candidate) return true;
   try {
-    const originHost = new URL(origin).host;
+    const originHost = new URL(candidate).host;
     const hosts = [req.headers.get("x-forwarded-host"), req.headers.get("host"), req.nextUrl.host]
       .filter(Boolean)
       .map((h) => String(h).split(",")[0].trim());

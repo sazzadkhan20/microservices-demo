@@ -1,0 +1,9 @@
+databaseChangeLog:
+  - changeSet:
+      id: payroll-005-payslip-row-version
+      author: platform
+      comment: "PAY-04 — optimistic locking column for payslip concurrency"
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE payslip ADD COLUMN IF NOT EXISTS row_version BIGINT NOT NULL DEFAULT 0;

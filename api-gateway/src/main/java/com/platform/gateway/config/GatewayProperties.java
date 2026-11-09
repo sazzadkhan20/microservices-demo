@@ -60,6 +60,7 @@ public class GatewayProperties {
     /** Shared secret the gateway stamps on every proxied request (header X-Service-Key). */
     public static class Security {
         private String serviceKey;
+        private String adminKey;
 
         public String getServiceKey() {
             return serviceKey;
@@ -67,6 +68,14 @@ public class GatewayProperties {
 
         public void setServiceKey(String serviceKey) {
             this.serviceKey = serviceKey;
+        }
+
+        public String getAdminKey() {
+            return adminKey;
+        }
+
+        public void setAdminKey(String adminKey) {
+            this.adminKey = adminKey;
         }
     }
 

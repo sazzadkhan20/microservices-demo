@@ -43,6 +43,7 @@ public class TeamController {
     }
 
     @GetMapping
+    @RequiresPermission(feature = "org", action = "view")
     @Operation(summary = "List teams (paginated, searchable)")
     public PageResponse<Team> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);

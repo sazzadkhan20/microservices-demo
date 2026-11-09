@@ -2,9 +2,11 @@ package com.platform.leave.application;
 
 import com.platform.leave.client.people.EmployeeView;
 import com.platform.leave.domain.LeaveBalance;
+import com.platform.leave.domain.LeaveBalanceLedger;
 import com.platform.leave.domain.LeaveCategory;
 import com.platform.leave.domain.LeaveType;
 import com.platform.leave.client.people.PeopleEmployeeGateway;
+import com.platform.leave.infrastructure.persistence.LeaveBalanceLedgerRepository;
 import com.platform.leave.infrastructure.persistence.LeaveBalanceRepository;
 import com.platform.leave.infrastructure.persistence.LeaveCategoryRepository;
 import com.platform.leave.infrastructure.persistence.LeaveTypeRepository;
@@ -26,16 +28,19 @@ public class LeaveCategorySyncService {
     private final LeaveTypeRepository leaveTypeRepository;
     private final LeaveCategoryRepository leaveCategoryRepository;
     private final LeaveBalanceRepository leaveBalanceRepository;
+    private final LeaveBalanceLedgerRepository leaveBalanceLedgerRepository;
     private final PeopleEmployeeGateway employeeRepository;
 
     public LeaveCategorySyncService(
             LeaveTypeRepository leaveTypeRepository,
             LeaveCategoryRepository leaveCategoryRepository,
             LeaveBalanceRepository leaveBalanceRepository,
+            LeaveBalanceLedgerRepository leaveBalanceLedgerRepository,
             PeopleEmployeeGateway employeeRepository) {
         this.leaveTypeRepository = leaveTypeRepository;
         this.leaveCategoryRepository = leaveCategoryRepository;
         this.leaveBalanceRepository = leaveBalanceRepository;
+        this.leaveBalanceLedgerRepository = leaveBalanceLedgerRepository;
         this.employeeRepository = employeeRepository;
     }
 
@@ -107,6 +112,21 @@ public class LeaveCategorySyncService {
             b.setBalanceDays(quota);
             b.setUpdatedAt(now);
             leaveBalanceRepository.save(b);
+
+            // LV-01 — opening quota must have a matching ledger row
+            if (quota != null && quota.compareTo(BigDecimal.ZERO) != 0) {
+                LeaveBalanceLedger ledger = new LeaveBalanceLedger();
+                ledger.setEmployeeId(e.getId());
+                ledger.setLeaveTypeCode(leaveTypeCode);
+                ledger.setYear(year);
+                ledger.setDeltaDays(quota);
+                ledger.setReason("Opening quota");
+                ledger.setCreatedAt(now);
+                ledger.setOperationKey("OPENING:" + e.getId() + ":" + leaveTypeCode + ":" + year);
+                ledger.setSourceType(LeaveBalanceLedger.SOURCE_OPENING);
+                ledger.setSourceId(leaveTypeCode);
+                leaveBalanceLedgerRepository.save(ledger);
+            }
         }
     }
 }

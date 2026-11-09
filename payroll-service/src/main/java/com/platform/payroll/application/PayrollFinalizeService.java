@@ -50,6 +50,7 @@ public class PayrollFinalizeService {
     public static final String STATUS_FINALIZED = PayrollCalculationService.STATUS_FINALIZED;
     public static final String STATUS_FINALIZING = "FINALIZING";
     public static final String STATUS_REOPENING = "REOPENING";
+    public static final String STATUS_ACTION_REQUIRED = "ACTION_REQUIRED";
 
     private final PayslipRepository payslipRepository;
     private final FinalizeOperationRepository operationRepository;
@@ -90,7 +91,8 @@ public class PayrollFinalizeService {
             throw new IllegalArgumentException("Pass confirm=true to finalize a payslip");
         }
         if (!messagingEnabled) {
-            return calculationService.finalizeLegacySync(payslipId, confirm);
+            throw new IllegalStateException(
+                    "Payroll finalize requires platform.messaging.enabled=true; the legacy sync path is retired");
         }
         FinalizeOperation op = startFinalize(payslipId);
         drainOutboxSoon();
@@ -102,7 +104,8 @@ public class PayrollFinalizeService {
 
     public CalculatePayrollResponse reopen(Long payslipId, boolean wait) {
         if (!messagingEnabled) {
-            return calculationService.reopenLegacySync(payslipId);
+            throw new IllegalStateException(
+                    "Payroll reopen requires platform.messaging.enabled=true; the legacy sync path is retired");
         }
         FinalizeOperation op = startReopen(payslipId);
         drainOutboxSoon();
@@ -170,6 +173,7 @@ public class PayrollFinalizeService {
         op.setRevision(revision);
         op.setAction(FinalizeOperation.ACTION_FINALIZE);
         op.setCorrelationId(correlationId);
+        op.setInitiatedByEmployeeId(AuthContext.getEmployeeId());
         op.setCreatedAt(Instant.now());
         op.setUpdatedAt(Instant.now());
 
@@ -240,6 +244,7 @@ public class PayrollFinalizeService {
         op.setRevision(revision);
         op.setAction(FinalizeOperation.ACTION_REOPEN);
         op.setCorrelationId(correlationId);
+        op.setInitiatedByEmployeeId(AuthContext.getEmployeeId());
         op.setCreatedAt(Instant.now());
         op.setUpdatedAt(Instant.now());
 
@@ -247,6 +252,8 @@ public class PayrollFinalizeService {
         boolean coverApplied = Boolean.TRUE.equals(details.get("leaveCoverApplied"));
         Map<String, BigDecimal> consumedByType = extractConsumedByType(details);
 
+        // Guide §6: retain the original final; only open a new editable revision after reversal confirms.
+        details.put("retainedFinal", retainedFinalSnapshot(payslip, details, revision));
         payslip.setStatus(STATUS_REOPENING);
         details.put("status", STATUS_REOPENING);
         details.put("operationId", operationId);
@@ -301,6 +308,25 @@ public class PayrollFinalizeService {
         Payslip payslip = payslipRepository.findById(op.getPayslipId())
                 .orElseThrow(() -> new IllegalStateException("Payslip missing for op " + operationId));
 
+        // PAY-05 — ignore stale results (wrong operation / revision / status)
+        if (payslip.getOperationId() == null || !payslip.getOperationId().equals(operationId)) {
+            log.warn("Ignoring stale leave-cover result op={} payslipOp={}",
+                    operationId, payslip.getOperationId());
+            return;
+        }
+        if (op.getRevision() > 0 && payslip.getRevision() != op.getRevision()) {
+            log.warn("Ignoring stale leave-cover result op={} opRev={} payslipRev={}",
+                    operationId, op.getRevision(), payslip.getRevision());
+            return;
+        }
+        String pst = payslip.getStatus() == null ? "" : payslip.getStatus();
+        if (!"FINALIZING".equalsIgnoreCase(pst)
+                && !"REOPENING".equalsIgnoreCase(pst)
+                && !"ACTION_REQUIRED".equalsIgnoreCase(pst)) {
+            log.warn("Ignoring leave-cover result for payslip status={} op={}", pst, operationId);
+            return;
+        }
+
         if (!success) {
             failOperation(op, payslip, error.isBlank() ? "Leave cover failed" : error);
             return;
@@ -322,9 +348,11 @@ public class PayrollFinalizeService {
         if (leaveCoverApplied) {
             details.put("leaveCoverApplied", true);
         }
+        Long actor = op.getInitiatedByEmployeeId() != null
+                ? op.getInitiatedByEmployeeId() : AuthContext.getEmployeeId();
         details.put("status", STATUS_FINALIZED);
         details.put("finalizedAt", Instant.now().toString());
-        details.put("finalizedBy", AuthContext.getEmployeeId());
+        details.put("finalizedBy", actor);
         details.put("notificationSentToEmployeeId", payslip.getEmployeeId());
         payslip.setDetailsJson(details);
         payslip.setStatus(STATUS_FINALIZED);
@@ -337,7 +365,7 @@ public class PayrollFinalizeService {
         op.setCompletedAt(Instant.now());
         op.setErrorMessage(null);
 
-        auditService.record(AuthContext.getEmployeeId(), "FINALIZE", "Payslip",
+        auditService.record(actor, "FINALIZE", "Payslip",
                 String.valueOf(payslip.getId()), null, Map.of(
                         "periodLabel", payslip.getPeriodLabel(),
                         "employeeId", payslip.getEmployeeId(),
@@ -349,12 +377,25 @@ public class PayrollFinalizeService {
 
     private void completeReopenLocal(Payslip payslip, FinalizeOperation op) {
         Map<String, Object> details = new HashMap<>(payslip.getDetailsJson() == null ? Map.of() : payslip.getDetailsJson());
+        Object retained = details.get("retainedFinal");
+        if (retained != null) {
+            // Keep an append-only history of prior finals for audit / restore drills.
+            @SuppressWarnings("unchecked")
+            java.util.List<Object> history = details.get("priorFinals") instanceof java.util.List<?> list
+                    ? new java.util.ArrayList<>((java.util.List<Object>) list)
+                    : new java.util.ArrayList<>();
+            history.add(retained);
+            details.put("priorFinals", history);
+        }
         details.remove("leaveCoverApplied");
+        details.remove("retainedFinal");
+        Long actor = op.getInitiatedByEmployeeId() != null
+                ? op.getInitiatedByEmployeeId() : AuthContext.getEmployeeId();
         details.put("status", STATUS_DRAFT);
         details.remove("finalizedAt");
         details.remove("finalizedBy");
         details.put("reopenedAt", Instant.now().toString());
-        details.put("reopenedBy", AuthContext.getEmployeeId());
+        details.put("reopenedBy", actor);
         payslip.setDetailsJson(details);
         payslip.setStatus(STATUS_DRAFT);
         payslip.setRevision(payslip.getRevision() + 1);
@@ -366,7 +407,7 @@ public class PayrollFinalizeService {
         op.setCompletedAt(Instant.now());
         op.setErrorMessage(null);
 
-        auditService.record(AuthContext.getEmployeeId(), "REOPEN", "Payslip",
+        auditService.record(actor, "REOPEN", "Payslip",
                 String.valueOf(payslip.getId()), STATUS_FINALIZED, Map.of(
                         "periodLabel", payslip.getPeriodLabel(),
                         "employeeId", payslip.getEmployeeId(),
@@ -375,20 +416,42 @@ public class PayrollFinalizeService {
     }
 
     private void failOperation(FinalizeOperation op, Payslip payslip, String error) {
-        op.setStatus(FinalizeOperation.STATUS_FAILED);
+        // Guide §6: failed leave cover → ACTION_REQUIRED (not silent draft). Reopen failure restores final.
+        boolean finalizeAction = FinalizeOperation.ACTION_FINALIZE.equals(op.getAction());
+        op.setStatus(finalizeAction
+                ? FinalizeOperation.STATUS_ACTION_REQUIRED
+                : FinalizeOperation.STATUS_FAILED);
         op.setErrorMessage(error);
         op.setUpdatedAt(Instant.now());
         op.setCompletedAt(Instant.now());
         operationRepository.save(op);
 
         Map<String, Object> details = new HashMap<>(payslip.getDetailsJson() == null ? Map.of() : payslip.getDetailsJson());
-        String rollback = FinalizeOperation.ACTION_FINALIZE.equals(op.getAction()) ? STATUS_DRAFT : STATUS_FINALIZED;
-        payslip.setStatus(rollback);
-        details.put("status", rollback);
+        if (finalizeAction) {
+            payslip.setStatus(STATUS_ACTION_REQUIRED);
+            details.put("status", STATUS_ACTION_REQUIRED);
+        } else {
+            payslip.setStatus(STATUS_FINALIZED);
+            details.put("status", STATUS_FINALIZED);
+            details.remove("retainedFinal");
+        }
         details.put("finalizeError", error);
         payslip.setDetailsJson(details);
         payslipRepository.save(payslip);
         log.warn("Finalize/reopen failed op={} payslip={}: {}", op.getOperationId(), payslip.getId(), error);
+    }
+
+    private static Map<String, Object> retainedFinalSnapshot(Payslip payslip, Map<String, Object> details, long revision) {
+        Map<String, Object> snap = new LinkedHashMap<>();
+        snap.put("revision", revision);
+        snap.put("status", STATUS_FINALIZED);
+        snap.put("grossAmount", payslip.getGrossAmount());
+        snap.put("deductionAmount", payslip.getDeductionAmount());
+        snap.put("netAmount", payslip.getNetAmount());
+        snap.put("finalizedAt", details.get("finalizedAt"));
+        snap.put("finalizedBy", details.get("finalizedBy"));
+        snap.put("retainedAt", Instant.now().toString());
+        return snap;
     }
 
     private void enqueueNotification(Payslip payslip, PayrollConfigEntity config, FinalizeOperation op) {

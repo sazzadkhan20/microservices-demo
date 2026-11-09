@@ -7,6 +7,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -57,6 +58,11 @@ public class Payslip {
 
     @Column(nullable = false)
     private long revision = 1L;
+
+    /** PAY-04 — optimistic concurrency for competing calculate/finalize. */
+    @Version
+    @Column(name = "row_version")
+    private Long rowVersion;
 
     @Column(nullable = false, length = 32)
     private String status = "DRAFT";
@@ -153,6 +159,14 @@ public class Payslip {
 
     public void setRevision(long revision) {
         this.revision = revision;
+    }
+
+    public Long getRowVersion() {
+        return rowVersion;
+    }
+
+    public void setRowVersion(Long rowVersion) {
+        this.rowVersion = rowVersion;
     }
 
     public String getStatus() {

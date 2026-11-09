@@ -1,6 +1,7 @@
 package com.platform.people.client;
 
 import com.platform.common.constants.PlatformHeaders;
+import com.platform.common.security.InternalCalls;
 import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,11 +17,14 @@ public class LeaveClient {
     private static final Logger log = LoggerFactory.getLogger(LeaveClient.class);
 
     private final RestClient client;
+    private final String internalKey;
 
     public LeaveClient(
             RestClient.Builder builder,
             @Value("${platform.leave-base-url:http://127.0.0.1:8086}") String baseUrl,
-            @Value("${platform.security.service-key}") String serviceKey) {
+            @Value("${platform.security.service-key}") String serviceKey,
+            @Value("${platform.security.internal-key}") String internalKey) {
+        this.internalKey = internalKey;
         this.client = builder
                 .baseUrl(baseUrl.replaceAll("/$", ""))
                 .defaultHeader(PlatformHeaders.SERVICE_KEY, serviceKey)
@@ -32,6 +36,7 @@ public class LeaveClient {
             Map<?, ?> body = client.get()
                     .uri("/api/internal/approvals/pending-for/{id}", leavingEmployeeId)
                     .header(PlatformHeaders.TENANT_ID, tenant())
+                    .header(InternalCalls.HEADER, internalKey)
                     .retrieve()
                     .body(Map.class);
             return body != null && Boolean.TRUE.equals(body.get("pending"));
@@ -46,6 +51,7 @@ public class LeaveClient {
             client.post()
                     .uri("/api/internal/approvals/reassign")
                     .header(PlatformHeaders.TENANT_ID, tenant())
+                    .header(InternalCalls.HEADER, internalKey)
                     .body(Map.of("leavingId", leavingId, "newApproverId", newApproverId))
                     .retrieve()
                     .toBodilessEntity();
@@ -63,12 +69,14 @@ public class LeaveClient {
                             .queryParam("period", period)
                             .build(employeeId))
                     .header(PlatformHeaders.TENANT_ID, tenant())
+                    .header(InternalCalls.HEADER, internalKey)
                     .retrieve()
                     .body(Map.class);
             return body == null ? Map.of() : (Map<String, Object>) body;
         } catch (Exception e) {
             log.warn("Leave facts fetch failed: {}", e.getMessage());
-            return Map.of();
+            // PAY-01: fail closed — caller must not invent zeros
+            throw new IllegalStateException("Leave service unavailable for payroll facts", e);
         }
     }
 

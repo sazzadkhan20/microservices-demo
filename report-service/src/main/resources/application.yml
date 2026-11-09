@@ -45,6 +45,7 @@ spring:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
 
 platform:
   service-name: report
@@ -53,6 +54,7 @@ platform:
   security:
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
     service-key: ${PLATFORM_SERVICE_KEY}
+    internal-key: ${PLATFORM_INTERNAL_KEY}
   registry:
     base-url: ${REGISTRY_BASE_URL:http://127.0.0.1:8080}
     service-key: ${PLATFORM_SERVICE_KEY}
@@ -60,6 +62,7 @@ platform:
     maximum-pool-size: 5
     minimum-idle: 1
     max-lifetime-ms: 1800000
+    password: ${REPORT_PG_PASSWORD:${PLATFORM_DB_PASSWORD:}}
   cache:
     l1-max-size: 50
     l1-expire-after-access-minutes: 5
@@ -82,7 +85,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics,prometheus
   health:
     livenessstate:
       enabled: true

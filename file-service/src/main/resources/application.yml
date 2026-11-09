@@ -46,6 +46,7 @@ spring:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
   servlet:
     multipart:
       max-file-size: 10MB
@@ -67,6 +68,8 @@ platform:
     maximum-pool-size: 5
     minimum-idle: 1
     max-lifetime-ms: 1800000
+    # SEC-05 — Redis routing is passwordless; use the service DB secret locally
+    password: ${FILES_PG_PASSWORD:${PLATFORM_DB_PASSWORD:}}
   cache:
     l1-max-size: 50
     l1-expire-after-access-minutes: 5
@@ -102,7 +105,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics,prometheus
   health:
     livenessstate:
       enabled: true

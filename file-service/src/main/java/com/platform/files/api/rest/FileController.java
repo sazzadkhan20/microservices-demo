@@ -6,6 +6,7 @@ import com.platform.files.api.dto.DownloadUrlResponse;
 import com.platform.files.api.dto.FileMetadataResponse;
 import com.platform.files.api.dto.FileUploadResponse;
 import com.platform.files.application.FileService;
+import com.platform.files.security.RequiresPermission;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -40,6 +41,7 @@ public class FileController {
      * Download stays locked until scan RELEASED (guide §8 / DOC01).
      */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @RequiresPermission(feature = "documents", action = "create")
     public ResponseEntity<FileUploadResponse> upload(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "classification", required = false) String classification,
@@ -55,6 +57,7 @@ public class FileController {
     }
 
     @GetMapping
+    @RequiresPermission(feature = "documents", action = "view")
     public ResponseEntity<?> list(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
@@ -65,6 +68,7 @@ public class FileController {
     }
 
     @GetMapping("/{id}")
+    @RequiresPermission(feature = "documents", action = "view")
     public ResponseEntity<FileMetadataResponse> metadata(@PathVariable Long id) {
         String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
@@ -76,13 +80,17 @@ public class FileController {
      * Issuance is audited separately from byte access.
      */
     @PostMapping("/{id}/download-url")
+    @RequiresPermission(feature = "documents", action = "view")
     public ResponseEntity<DownloadUrlResponse> downloadUrl(@PathVariable Long id) {
         String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
         return ResponseEntity.ok(service.issueDownloadUrl(tenantId, id, empId));
     }
 
-    /** Consume a short-lived token and stream bytes (audits actual access). */
+    /**
+     * Consume a short-lived token and stream bytes (audits actual access).
+     * Auth is the token itself — no session {@code @RequiresPermission}.
+     */
     @GetMapping("/{id}/content")
     public ResponseEntity<InputStreamResource> content(
             @PathVariable Long id,
@@ -97,6 +105,7 @@ public class FileController {
      * Prefer {@code POST /{id}/download-url} then {@code GET /{id}/content}.
      */
     @GetMapping("/{id}/download")
+    @RequiresPermission(feature = "documents", action = "view")
     public ResponseEntity<InputStreamResource> download(@PathVariable Long id) throws IOException {
         String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
@@ -106,6 +115,7 @@ public class FileController {
     }
 
     @DeleteMapping("/{id}")
+    @RequiresPermission(feature = "documents", action = "delete")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable Long id) throws IOException {
         String tenantId = TenantContext.getTenantId();

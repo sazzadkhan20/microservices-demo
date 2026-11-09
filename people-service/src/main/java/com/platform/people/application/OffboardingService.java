@@ -7,8 +7,11 @@ import com.platform.people.infrastructure.persistence.EmployeeRepository;
 import com.platform.people.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.people.domain.TenantSettings;
 import com.platform.people.client.LeaveClient;
+import com.platform.people.client.SessionRevokeClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -27,6 +30,7 @@ public class OffboardingService {
 
     private final EmployeeRepository employeeRepository;
     private final LeaveClient leaveClient;
+    private final SessionRevokeClient sessionRevokeClient;
     private final TenantSettingsRepository tenantSettingsRepository;
     private final RbacService rbacService;
     private final ReportingLineService reportingLineService;
@@ -36,6 +40,7 @@ public class OffboardingService {
     public OffboardingService(
             EmployeeRepository employeeRepository,
             LeaveClient leaveClient,
+            SessionRevokeClient sessionRevokeClient,
             TenantSettingsRepository tenantSettingsRepository,
             RbacService rbacService,
             ReportingLineService reportingLineService,
@@ -43,6 +48,7 @@ public class OffboardingService {
             EmployeeRulesService rulesService) {
         this.employeeRepository = employeeRepository;
         this.leaveClient = leaveClient;
+        this.sessionRevokeClient = sessionRevokeClient;
         this.tenantSettingsRepository = tenantSettingsRepository;
         this.rbacService = rbacService;
         this.reportingLineService = reportingLineService;
@@ -115,6 +121,21 @@ public class OffboardingService {
         employee.setStatus(newStatus.trim());
         employee.setActive(!rulesService.isInactive(newStatus, rules));
         employee.setUpdatedAt(Instant.now());
+
+        // SEC-08 — revoke sessions after commit (TTL ≥ JWT TTL); avoid remote call in DB txn
+        if (!employee.isActive()) {
+            Long revokeId = employee.getId();
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        sessionRevokeClient.revokeEmployee(revokeId);
+                    }
+                });
+            } else {
+                sessionRevokeClient.revokeEmployee(revokeId);
+            }
+        }
     }
 
     private void assertNotLastProtectedHolder(Long employeeId) {

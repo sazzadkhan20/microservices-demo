@@ -21,8 +21,16 @@ public class ProdSafetyConfig implements ApplicationRunner {
     @Value("${platform.demo-auth.key:}")
     private String demoAuthKey;
 
+    @Value("${platform.demo-auth.enabled:false}")
+    private boolean demoAuthEnabled;
+
+    @Value("${platform.security.require-gateway:true}")
+    private boolean requireGateway;
+
     @Override
     public void run(ApplicationArguments args) {
         ProdSecretsGuard.assertSafe(profiles, serviceKey, jwtSecret, demoAuthKey);
+        ProdSecretsGuard.assertAuthFlags(profiles, System.getenv("PLATFORM_ENV"),
+                demoAuthEnabled, requireGateway);
     }
 }

@@ -3,6 +3,7 @@ package com.platform.report.infrastructure.multitenancy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.constants.RedisKeys;
 import com.platform.common.redis.RoutingPayload;
+import com.platform.common.tenant.TenantDbCredentials;
 import com.platform.common.tenant.TenantPoolLifecycle;
 import com.platform.report.config.ReportProperties;
 import com.zaxxer.hikari.HikariConfig;
@@ -10,6 +11,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -31,15 +33,18 @@ public class TenantDataSourceManager {
     private final ReportProperties properties;
     private final RestClient registryClient;
     private final TenantPoolLifecycle pools = new TenantPoolLifecycle();
+    private final String localDbPassword;
 
     public TenantDataSourceManager(
             StringRedisTemplate redis,
             ObjectMapper objectMapper,
             ReportProperties properties,
-            RestClient.Builder restClientBuilder) {
+            RestClient.Builder restClientBuilder,
+            @Value("${platform.datasource.password:}") String localDbPassword) {
         this.redis = redis;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.localDbPassword = localDbPassword == null ? "" : localDbPassword;
         this.registryClient = restClientBuilder.baseUrl(properties.getRegistry().getBaseUrl()).build();
     }
 
@@ -78,7 +83,7 @@ public class TenantDataSourceManager {
         config.setPoolName("report-" + tenantId);
         config.setJdbcUrl(payload.jdbcUrl());
         config.setUsername(payload.username());
-        config.setPassword(payload.password());
+        config.setPassword(TenantDbCredentials.resolvePassword(payload.password(), localDbPassword));
         config.setMaximumPoolSize(properties.getDatasource().getMaximumPoolSize());
         config.setMinimumIdle(properties.getDatasource().getMinimumIdle());
         config.setMaxLifetime(properties.getDatasource().getMaxLifetimeMs());
@@ -87,11 +92,14 @@ public class TenantDataSourceManager {
     }
 
     private RoutingPayload loadPayload(String tenantId) {
-        String json = redis.opsForValue().get(RedisKeys.routingKey(properties.getServiceName(), tenantId));
-        if (json != null) {
-            return read(json);
+        RoutingPayload cached = readFromRedisSafe(tenantId);
+        if (cached != null && cached.isActive()
+                && cached.jdbcUrl() != null && !cached.jdbcUrl().isBlank()
+                && cached.username() != null && !cached.username().isBlank()
+                && (cached.hasPassword() || !localDbPassword.isBlank())) {
+            return cached;
         }
-        log.warn("Redis L2 miss for tenant {} — falling back to Registry L3", tenantId);
+        log.warn("Redis L2 miss/incomplete for tenant {} — falling back to Registry L3", tenantId);
         InternalRouting body = registryClient.get()
                 .uri("/api/registry/internal/routing/{service}/{tenantId}", properties.getServiceName(), tenantId)
                 .header("X-Service-Key", properties.getRegistry().getServiceKey())
@@ -105,12 +113,27 @@ public class TenantDataSourceManager {
         try {
             redis.opsForValue().set(
                     RedisKeys.routingKey(properties.getServiceName(), tenantId),
-                    objectMapper.writeValueAsString(payload),
+                    objectMapper.writeValueAsString(payload.withoutPassword()),
                     Duration.ofHours(24));
         } catch (Exception ignored) {
             // best-effort
         }
         return payload;
+    }
+
+
+    private RoutingPayload readFromRedisSafe(String tenantId) {
+        try {
+            String json = redis.opsForValue().get(RedisKeys.routingKey(properties.getServiceName(), tenantId));
+            if (json == null || json.isBlank()) {
+                return null;
+            }
+            return read(json);
+        } catch (Exception e) {
+            log.warn("Redis L2 unavailable for tenant {} — falling back to Registry L3: {}",
+                    tenantId, e.getMessage());
+            return null;
+        }
     }
 
     private RoutingPayload read(String json) {

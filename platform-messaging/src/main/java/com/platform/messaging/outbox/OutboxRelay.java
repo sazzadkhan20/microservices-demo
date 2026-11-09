@@ -2,7 +2,6 @@ package com.platform.messaging.outbox;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.messaging.PlatformQueues;
-import com.platform.common.tenant.TenantContext;
 import com.platform.messaging.config.MessagingProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,15 +55,16 @@ public class OutboxRelay {
 
     @Scheduled(fixedDelayString = "${platform.messaging.outbox-poll-ms:1000}")
     public void publishPending() {
-        String tenantHint = TenantContext.getTenantId();
-        // Multi-tenant: services drive via TenantOutboxScheduler with TenantContext bound.
-        if (tenantHint == null || tenantHint.isBlank()) {
-            return;
+        try {
+            drainBatch();
+        } catch (Exception e) {
+            // Transient pool/DB blips (stale TCP after sleep, brief Postgres restart) must not escalate
+            // into Spring's scheduled-task ERROR spam — next poll retries.
+            log.warn("Outbox relay skipped (transient): {}", e.getMessage());
         }
-        drainBatch();
     }
 
-    /** Called by service-level tenant iterators with TenantContext already set. */
+    /** Drains one batch; also called after commit to publish without waiting for the next poll. */
     public int drainBatch() {
         List<Long> claimedIds = transactionTemplate.execute(status -> claimBatch());
         if (claimedIds == null || claimedIds.isEmpty()) {
@@ -124,7 +124,6 @@ public class OutboxRelay {
         props.setContentType(MessageProperties.CONTENT_TYPE_JSON);
         props.setContentEncoding("UTF-8");
         props.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
-        props.setHeader("tenantId", snapshot.getTenantId());
         props.setHeader("eventType", snapshot.getEventType());
         props.setHeader("aggregateId", snapshot.getAggregateId());
         return new Message(body, props);

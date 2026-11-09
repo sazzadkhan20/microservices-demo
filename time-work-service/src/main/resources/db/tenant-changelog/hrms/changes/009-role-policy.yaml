@@ -1,0 +1,71 @@
+databaseChangeLog:
+  # Config-driven role policy — reusable across businesses without hard-coding role codes.
+  # Business packs set these flags at seed time; runtime services honour flags, not names.
+  - changeSet:
+      id: hrms-009-role-policy-flags
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: app_role
+        - not:
+            - columnExists:
+                tableName: app_role
+                columnName: protect_from_offboard
+      changes:
+        - addColumn:
+            tableName: app_role
+            columns:
+              - column:
+                  name: protect_from_offboard
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints: { nullable: false }
+                  remarks: "Holders cannot be Inactive/Resigned/Terminated"
+              - column:
+                  name: immutable_permissions
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints: { nullable: false }
+                  remarks: "Permission matrix cannot be replaced via API"
+              - column:
+                  name: grants_wildcard
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints: { nullable: false }
+                  remarks: "Holders receive *:* shortcut and ALL data scope"
+              - column:
+                  name: min_holders
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints: { nullable: false }
+                  remarks: "Cannot unassign if active holders would fall below this"
+              - column:
+                  name: assignable_by
+                  type: VARCHAR(512)
+                  remarks: "Comma-separated role codes allowed to assign this role; blank = any caller with roles:assign"
+
+  - changeSet:
+      id: hrms-009-seed-qii-style-defaults
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: app_role
+        - columnExists:
+            tableName: app_role
+            columnName: protect_from_offboard
+      changes:
+        # Best-effort defaults when a SUPERADMIN-coded role already exists (Qii / retail packs).
+        # Other businesses can set any role code with these flags via seed/config.
+        - sql:
+            sql: >
+              UPDATE app_role SET
+                protect_from_offboard = TRUE,
+                immutable_permissions = TRUE,
+                grants_wildcard = TRUE,
+                min_holders = 1,
+                assignable_by = code
+              WHERE UPPER(code) = 'SUPERADMIN'
+                AND protect_from_offboard = FALSE
+                AND grants_wildcard = FALSE;

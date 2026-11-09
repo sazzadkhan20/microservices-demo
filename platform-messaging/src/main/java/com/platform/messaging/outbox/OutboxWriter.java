@@ -1,7 +1,6 @@
 package com.platform.messaging.outbox;
 
 import com.platform.common.messaging.PlatformEvent;
-import com.platform.common.tenant.TenantContext;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,14 +29,6 @@ public class OutboxWriter {
         if (routingKey == null || routingKey.isBlank()) {
             throw new IllegalArgumentException("routingKey required");
         }
-        String tenant = event.tenantId();
-        if (tenant == null || tenant.isBlank()) {
-            tenant = TenantContext.getTenantId();
-        }
-        if (tenant == null || tenant.isBlank()) {
-            throw new IllegalStateException("tenantId required for outbox write");
-        }
-
         Map<String, Object> envelope = new LinkedHashMap<>();
         envelope.put("eventId", event.eventId());
         envelope.put("eventType", event.eventType());
@@ -46,7 +37,6 @@ public class OutboxWriter {
         envelope.put("aggregateVersion", event.aggregateVersion());
         envelope.put("occurredAt", event.occurredAt() == null ? Instant.now().toString() : event.occurredAt().toString());
         envelope.put("correlationId", event.correlationId());
-        envelope.put("tenantId", tenant);
         envelope.put("payload", event.payload() == null ? Map.of() : event.payload());
 
         MessageOutbox row = new MessageOutbox();
@@ -56,7 +46,6 @@ public class OutboxWriter {
         row.setAggregateId(event.aggregateId());
         row.setAggregateVersion(event.aggregateVersion());
         row.setCorrelationId(event.correlationId());
-        row.setTenantId(tenant);
         row.setPayloadJson(envelope);
         row.setStatus(MessageOutbox.PENDING);
         row.setAttempts(0);

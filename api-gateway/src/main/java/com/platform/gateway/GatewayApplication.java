@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
  * Sole public entry point.
- * Verifies JWT, extracts tenant_id, injects X-Tenant-ID, strips client spoofing.
+ * Verifies the session JWT, injects the trusted X-Employee-ID, strips client spoofing.
  */
 @SpringBootApplication
 public class GatewayApplication {

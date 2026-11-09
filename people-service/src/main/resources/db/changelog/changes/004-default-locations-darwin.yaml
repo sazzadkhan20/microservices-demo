@@ -1,0 +1,43 @@
+databaseChangeLog:
+  # Qii defaults: Bangladesh (Dhaka) + Australia (Darwin). Replace legacy Sydney row in place (id=2).
+  - changeSet:
+      id: people-004-default-locations-darwin
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: location
+      changes:
+        - sql:
+            sql: |
+              UPDATE location
+                 SET code = 'BD-DHK',
+                     name = 'Dhaka',
+                     country = 'Bangladesh',
+                     time_zone = 'Asia/Dhaka',
+                     default_currency = 'BDT'
+               WHERE id = 1;
+              UPDATE location
+                 SET code = 'AU-DRW',
+                     name = 'Darwin',
+                     country = 'Australia',
+                     time_zone = 'Australia/Darwin',
+                     default_currency = 'AUD'
+               WHERE id = 2
+                  OR code = 'AU-SYD'
+                  OR time_zone = 'Australia/Sydney'
+                  OR lower(name) LIKE '%sydney%';
+              INSERT INTO location (code, name, country, time_zone, default_currency)
+              SELECT 'BD-DHK', 'Dhaka', 'Bangladesh', 'Asia/Dhaka', 'BDT'
+               WHERE NOT EXISTS (SELECT 1 FROM location WHERE code = 'BD-DHK' OR id = 1);
+              INSERT INTO location (code, name, country, time_zone, default_currency)
+              SELECT 'AU-DRW', 'Darwin', 'Australia', 'Australia/Darwin', 'AUD'
+               WHERE NOT EXISTS (SELECT 1 FROM location WHERE code = 'AU-DRW' OR id = 2);
+              -- AU staff use Darwin TZ for check-in / holiday day boundaries.
+              UPDATE employee
+                 SET location_id = 2
+               WHERE location_id IS DISTINCT FROM 2
+                 AND (
+                   pay_currency = 'AUD'
+                   OR COALESCE(custom_fields->>'country', '') = 'AU'
+                 );

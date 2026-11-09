@@ -4,7 +4,6 @@ import com.platform.common.messaging.EventTypes;
 import com.platform.common.messaging.PlatformEvent;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.common.security.AuthContext;
-import com.platform.common.tenant.TenantContext;
 import com.platform.messaging.config.MessagingProperties;
 import com.platform.messaging.correlation.CorrelationContext;
 import com.platform.messaging.outbox.OutboxRelay;
@@ -162,7 +161,6 @@ public class PayrollFinalizeService {
         });
 
         String correlationId = CorrelationContext.getOrCreate();
-        String tenantId = requireTenant();
 
         FinalizeOperation op = new FinalizeOperation();
         op.setOperationId(operationId);
@@ -210,7 +208,6 @@ public class PayrollFinalizeService {
                 String.valueOf(payslipId),
                 revision,
                 correlationId,
-                tenantId,
                 payload);
         outboxWriter.enqueue(event, PlatformQueues.PAYROLL_LEAVE_COVER_CMD);
         return op;
@@ -233,7 +230,6 @@ public class PayrollFinalizeService {
         String operationId = UUID.randomUUID().toString();
         String operationKey = "REOPEN:" + payslipId + ":r" + revision;
         String correlationId = CorrelationContext.getOrCreate();
-        String tenantId = requireTenant();
 
         FinalizeOperation op = new FinalizeOperation();
         op.setOperationId(operationId);
@@ -284,7 +280,6 @@ public class PayrollFinalizeService {
                 String.valueOf(payslipId),
                 revision,
                 correlationId,
-                tenantId,
                 payload);
         outboxWriter.enqueue(event, PlatformQueues.PAYROLL_LEAVE_COVER_CMD);
         return op;
@@ -469,7 +464,6 @@ public class PayrollFinalizeService {
                 payslip.getNetAmount(),
                 currency);
 
-        String tenantId = requireTenant();
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("employeeId", payslip.getEmployeeId());
         payload.put("title", "Payslip ready");
@@ -482,7 +476,6 @@ public class PayrollFinalizeService {
                 String.valueOf(payslip.getId()),
                 payslip.getRevision(),
                 op.getCorrelationId(),
-                tenantId,
                 payload);
         try {
             outboxWriter.enqueue(event, PlatformQueues.NOTIFICATION_CREATE);
@@ -578,14 +571,6 @@ public class PayrollFinalizeService {
         } catch (Exception e) {
             log.debug("Outbox drain: {}", e.getMessage());
         }
-    }
-
-    private static String requireTenant() {
-        String t = TenantContext.getTenantId();
-        if (t == null || t.isBlank()) {
-            throw new IllegalStateException("TenantContext required");
-        }
-        return t;
     }
 
     private static String effectiveStatus(Payslip p) {

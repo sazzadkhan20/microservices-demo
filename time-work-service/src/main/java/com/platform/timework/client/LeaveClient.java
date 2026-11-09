@@ -1,7 +1,6 @@
 package com.platform.timework.client;
 
 import com.platform.common.constants.PlatformHeaders;
-import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,7 +42,6 @@ public class LeaveClient {
                             .queryParam("from", day.toString())
                             .queryParam("to", day.toString())
                             .build(employeeId))
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .retrieve()
                     .body(new ParameterizedTypeReference<>() {});
             if (rows == null || rows.isEmpty()) {
@@ -81,10 +79,5 @@ public class LeaveClient {
             return BigDecimal.valueOf(n.doubleValue());
         }
         return new BigDecimal(String.valueOf(v));
-    }
-
-    private static String tenant() {
-        String t = TenantContext.getTenantId();
-        return t == null ? "" : t;
     }
 }

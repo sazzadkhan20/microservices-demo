@@ -1,12 +1,10 @@
 # Activate with SPRING_PROFILES_ACTIVE=prod
-# Requires strong secrets; demo/OIDC-ready login stays at gateway (DEMO_AUTH can stay for now).
+# Requires strong secrets and per-service DB credentials (PAYROLL_DB_*).
 platform:
   security:
     require-gateway: true
   messaging:
     enabled: true
-  tenancy:
-    mode: ${PLATFORM_TENANCY_MODE:FIXED}
 
 management:
   endpoint:

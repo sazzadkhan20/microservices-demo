@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.messaging.correlation.CorrelationContext;
 import com.platform.messaging.outbox.InboxGuard;
-import com.platform.messaging.tenant.TenantBoundRunner;
 import com.platform.payroll.application.PayrollFinalizeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,24 +44,21 @@ public class LeaveCoverResultListener {
         } catch (Exception e) {
             throw new IllegalArgumentException("Invalid leave-cover-result payload", e);
         }
-        String tenantId = String.valueOf(envelope.getOrDefault("tenantId", ""));
         String eventId = String.valueOf(envelope.getOrDefault("eventId", ""));
         String correlationId = String.valueOf(envelope.getOrDefault("correlationId", eventId));
-        TenantBoundRunner.run(tenantId, () -> {
-            CorrelationContext.set(correlationId);
-            try {
-                inboxGuard.processOnce(eventId,
-                        String.valueOf(envelope.getOrDefault("eventType", "")),
-                        CONSUMER,
-                        envelope,
-                        () -> {
-                            finalizeService.onLeaveCoverResult(envelope);
-                            return Map.of("ok", true);
-                        });
-            } finally {
-                CorrelationContext.clear();
-            }
-        });
+        CorrelationContext.set(correlationId);
+        try {
+            inboxGuard.processOnce(eventId,
+                    String.valueOf(envelope.getOrDefault("eventType", "")),
+                    CONSUMER,
+                    envelope,
+                    () -> {
+                        finalizeService.onLeaveCoverResult(envelope);
+                        return Map.of("ok", true);
+                    });
+        } finally {
+            CorrelationContext.clear();
+        }
         log.debug("Processed leave cover result eventId={}", eventId);
     }
 }

@@ -10,10 +10,10 @@ final class GatewayHeaders {
     }
 
     static void stripTrustHeaders(HttpHeaders headers) {
-        headers.remove(PlatformHeaders.TENANT_ID);
         headers.remove(PlatformHeaders.EMPLOYEE_ID);
         headers.remove(PlatformHeaders.SERVICE_KEY);
         headers.remove(PlatformHeaders.ADMIN_KEY);
         headers.remove(PlatformHeaders.DEMO_AUTH_KEY);
+        headers.remove(com.platform.common.security.InternalCalls.HEADER);
     }
 }

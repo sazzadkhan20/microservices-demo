@@ -10,7 +10,7 @@ import jakarta.validation.constraints.NotBlank;
  * @param title       short subject line
  * @param body        full notification body (max 2 000 chars)
  * @param category    optional free-form category tag (e.g. "LEAVE", "PAYROLL")
- * @param dedupeKey   optional idempotency key; duplicate (tenantId, dedupeKey) is ignored
+ * @param dedupeKey   optional idempotency key; duplicate dedupeKey is ignored
  * @param linkUrl     optional in-app path for click-through (e.g. /leave, /approvals)
  */
 public record CreateNotificationRequest(

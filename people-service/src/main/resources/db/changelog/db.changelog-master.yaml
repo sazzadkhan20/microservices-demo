@@ -1,0 +1,16 @@
+# Service-owned Liquibase changelog (single company, fixed DB connection).
+# Legacy changesets keep their original classpath paths (db/tenant-changelog/...)
+# so DATABASECHANGELOG history on existing databases still matches. Add new work under db/changelog/changes/.
+databaseChangeLog:
+  - include:
+      file: db/tenant-changelog/people/db.changelog-master.yaml
+  - include:
+      file: db/changelog/changes/001-single-company.yaml
+  - include:
+      file: db/changelog/changes/002-department-name-unique.yaml
+  - include:
+      file: db/changelog/changes/003-team-name-unique.yaml
+  - include:
+      file: db/changelog/changes/004-default-locations-darwin.yaml
+  - include:
+      file: db/changelog/changes/005-location-country-required.yaml

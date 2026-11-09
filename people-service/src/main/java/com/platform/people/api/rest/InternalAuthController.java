@@ -18,7 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Service-to-service auth checks (registry token mint). Not exposed through the gateway
+ * Service-to-service auth checks (gateway login token mint). Not exposed through the gateway
  * ({@code /internal/**} is blocked there); callers hit HRMS directly with service + internal keys.
  */
 @RestController

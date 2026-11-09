@@ -65,9 +65,9 @@ public class LocationController {
         Location loc = new Location();
         loc.setCode(code);
         loc.setName(requireText(body, "name"));
-        loc.setCountry(optionalText(body, "country"));
+        loc.setCountry(requireText(body, "country"));
         loc.setTimeZone(validTimeZone(requireText(body, "timeZone")));
-        loc.setDefaultCurrency(requireText(body, "defaultCurrency").toUpperCase(Locale.ROOT));
+        loc.setDefaultCurrency(requireCurrency(body));
         return locationRepository.save(loc);
     }
 
@@ -91,24 +91,36 @@ public class LocationController {
             loc.setName(requireText(body, "name"));
         }
         if (body.containsKey("country")) {
-            loc.setCountry(optionalText(body, "country"));
+            loc.setCountry(requireText(body, "country"));
         }
         if (body.containsKey("timeZone")) {
             loc.setTimeZone(validTimeZone(requireText(body, "timeZone")));
         }
         if (body.containsKey("defaultCurrency")) {
-            loc.setDefaultCurrency(requireText(body, "defaultCurrency").toUpperCase(Locale.ROOT));
+            loc.setDefaultCurrency(requireCurrency(body));
         }
         return locationRepository.save(loc);
     }
 
+    /**
+     * Accepts region-based IANA ids only (e.g. Asia/Dhaka). Raw offsets like +06:00 are rejected
+     * so check-in / holiday day boundaries stay deterministic per location.
+     */
     private static String validTimeZone(String tz) {
-        try {
-            ZoneId.of(tz);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid timeZone: " + tz);
+        String value = tz.trim();
+        if (!ZoneId.getAvailableZoneIds().contains(value)) {
+            throw new IllegalArgumentException(
+                    "Invalid timeZone '" + value + "' — use an IANA id such as Asia/Dhaka or Australia/Darwin");
         }
-        return tz;
+        return ZoneId.of(value).getId();
+    }
+
+    private static String requireCurrency(Map<String, Object> body) {
+        String currency = requireText(body, "defaultCurrency").toUpperCase(Locale.ROOT);
+        if (!currency.matches("[A-Z]{3}")) {
+            throw new IllegalArgumentException("defaultCurrency must be a 3-letter code");
+        }
+        return currency;
     }
 
     private static String requireText(Map<String, Object> body, String key) {

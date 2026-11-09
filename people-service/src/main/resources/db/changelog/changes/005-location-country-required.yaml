@@ -1,0 +1,19 @@
+databaseChangeLog:
+  # Location country is required (with time zone) for check-in / holiday calendars.
+  - changeSet:
+      id: people-005-location-country-required
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: location
+      changes:
+        - sql:
+            sql: |
+              UPDATE location
+                 SET country = 'Unknown'
+               WHERE country IS NULL OR btrim(country) = '';
+        - addNotNullConstraint:
+            tableName: location
+            columnName: country
+            columnDataType: VARCHAR(64)

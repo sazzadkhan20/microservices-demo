@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -51,8 +50,7 @@ public final class PeopleDirectoryClient {
         if (id == null) {
             return Optional.empty();
         }
-        String tenant = tenant();
-        String key = tenant + "|e|" + id;
+        String key = "e|" + id;
         Optional<Map<String, Object>> cached = cachedMap(empCache, key);
         if (cached.isPresent()) {
             return cached;
@@ -84,8 +82,7 @@ public final class PeopleDirectoryClient {
         if (employeeId == null) {
             return Map.of();
         }
-        String tenant = tenant();
-        String key = tenant + "|a|" + employeeId;
+        String key = "a|" + employeeId;
         Optional<Map<String, Object>> cached = cachedMap(authzCache, key);
         if (cached.isPresent()) {
             return cached.get();
@@ -99,10 +96,9 @@ public final class PeopleDirectoryClient {
 
     /** Drop cached People reads after {@code people.employee.upserted} (no local employee SoT). */
     public void invalidateEmployee(Long employeeId) {
-        String tenant = tenant();
         if (employeeId != null) {
-            empCache.remove(tenant + "|e|" + employeeId);
-            authzCache.remove(tenant + "|a|" + employeeId);
+            empCache.remove("e|" + employeeId);
+            authzCache.remove("a|" + employeeId);
         }
     }
 
@@ -146,22 +142,15 @@ public final class PeopleDirectoryClient {
     }
 
     private HttpResponse<String> send(String path) throws Exception {
-        String tenant = tenant();
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + path))
                 .timeout(Duration.ofSeconds(8))
-                .header(PlatformHeaders.TENANT_ID, tenant)
                 .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                 .header(InternalCalls.HEADER, internalKey)
                 .header("Accept", "application/json")
                 .GET()
                 .build();
         return http.send(request, HttpResponse.BodyHandlers.ofString());
-    }
-
-    private static String tenant() {
-        String t = TenantContext.getTenantId();
-        return t == null ? "" : t;
     }
 
     private Optional<Map<String, Object>> cachedMap(Map<String, CacheEntry> cache, String key) {

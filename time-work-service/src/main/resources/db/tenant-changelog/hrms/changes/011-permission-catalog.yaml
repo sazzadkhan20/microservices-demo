@@ -1,0 +1,190 @@
+databaseChangeLog:
+  # Prototype-aligned permission catalog: feature labels, scoped vs Yes, matrix visibility.
+  - changeSet:
+      id: hrms-011-permission-catalog-columns
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: app_permission
+        - not:
+            - columnExists:
+                tableName: app_permission
+                columnName: scoped
+      changes:
+        - addColumn:
+            tableName: app_permission
+            columns:
+              - column:
+                  name: scoped
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints: { nullable: false }
+                  remarks: "true = Own/Team/All; false = Yes (org-wide grant, stored as ALL)"
+              - column:
+                  name: label
+                  type: VARCHAR(128)
+                  remarks: "Human feature name for Roles matrix"
+              - column:
+                  name: sort_order
+                  type: INT
+                  defaultValueNumeric: 100
+                  constraints: { nullable: false }
+              - column:
+                  name: matrix_visible
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints: { nullable: false }
+                  remarks: "false = legacy coarse API keys hidden from Roles matrix UI"
+
+  - changeSet:
+      id: hrms-011-seed-prototype-permission-catalog
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: app_permission
+            columnName: scoped
+      changes:
+        # Hide legacy coarse / API-only keys from the Roles matrix UI.
+        - sql:
+            sql: >
+              UPDATE app_permission SET matrix_visible = FALSE, label = COALESCE(label, feature)
+              WHERE (feature, action) IN (
+                ('employees','view'),('employees','create'),('employees','edit'),
+                ('attendance','checkin'),('attendance','correct'),
+                ('leave','view'),('leave','request'),('leave','approve'),('leave','manage'),
+                ('roles','manage'),('roles','assign'),
+                ('payroll','run'),
+                ('notifications','view'),
+                ('settings','manage'),
+                ('org','view'),('org','manage')
+              );
+        # Upsert prototype catalog (feature, action, description, scoped, label, sort_order).
+        - sql:
+            sql: >
+              INSERT INTO app_permission (feature, action, description, scoped, label, sort_order, matrix_visible)
+              SELECT v.feature, v.action, v.description, v.scoped, v.label, v.sort_order, TRUE
+              FROM (VALUES
+                ('directory','view','View employee directory', TRUE, 'Employee directory', 10),
+                ('profile_personal','view','View personal profile', TRUE, 'Employee profile: personal', 20),
+                ('profile_personal','edit','Edit personal profile', TRUE, 'Employee profile: personal', 20),
+                ('profile_employment','view','View employment profile', TRUE, 'Employee profile: employment', 30),
+                ('profile_employment','create','Create employment records', TRUE, 'Employee profile: employment', 30),
+                ('profile_employment','edit','Edit employment profile', TRUE, 'Employee profile: employment', 30),
+                ('documents','view','View employee documents', TRUE, 'Employee documents', 40),
+                ('documents','create','Upload employee documents', TRUE, 'Employee documents', 40),
+                ('documents','delete','Delete employee documents', TRUE, 'Employee documents', 40),
+                ('hierarchy','view','View org hierarchy', FALSE, 'Org hierarchy', 50),
+                ('hierarchy','edit','Edit org hierarchy', FALSE, 'Org hierarchy', 50),
+                ('leave_setup','view','View leave categories', FALSE, 'Leave categories and quotas', 60),
+                ('leave_setup','create','Create leave categories', FALSE, 'Leave categories and quotas', 60),
+                ('leave_setup','edit','Edit leave categories', FALSE, 'Leave categories and quotas', 60),
+                ('leave_setup','delete','Delete leave categories', FALSE, 'Leave categories and quotas', 60),
+                ('leave_requests','view','View leave requests', TRUE, 'Leave requests', 70),
+                ('leave_requests','create','Create leave requests', TRUE, 'Leave requests', 70),
+                ('leave_requests','approve','Approve leave requests', TRUE, 'Leave requests', 70),
+                ('leave_balances','view','View leave balances', TRUE, 'Leave balances', 80),
+                ('leave_balances','edit','Edit leave balances', TRUE, 'Leave balances', 80),
+                ('attendance','view','View attendance records', TRUE, 'Attendance records', 90),
+                ('attendance','edit','Edit attendance / corrections', TRUE, 'Attendance records', 90),
+                ('attendance','export','Export attendance', TRUE, 'Attendance records', 90),
+                ('attendance_settings','view','View attendance settings', FALSE, 'Attendance settings', 100),
+                ('attendance_settings','edit','Edit attendance settings', FALSE, 'Attendance settings', 100),
+                ('holidays','view','View holiday calendars', FALSE, 'Holiday calendars', 110),
+                ('holidays','create','Create holidays', FALSE, 'Holiday calendars', 110),
+                ('holidays','edit','Edit holidays', FALSE, 'Holiday calendars', 110),
+                ('holidays','delete','Delete holidays', FALSE, 'Holiday calendars', 110),
+                ('checklists','view','View onboarding/offboarding', TRUE, 'Onboarding and offboarding', 120),
+                ('checklists','create','Create checklists', TRUE, 'Onboarding and offboarding', 120),
+                ('checklists','edit','Edit checklists', TRUE, 'Onboarding and offboarding', 120),
+                ('tasks','view','View tasks', TRUE, 'Tasks (until the project module)', 130),
+                ('tasks','create','Create tasks', TRUE, 'Tasks (until the project module)', 130),
+                ('tasks','edit','Edit tasks', TRUE, 'Tasks (until the project module)', 130),
+                ('worklogs','view','View work logs', TRUE, 'Work logs', 140),
+                ('worklogs','create','Create work logs', TRUE, 'Work logs', 140),
+                ('worklogs','edit','Edit work logs', TRUE, 'Work logs', 140),
+                ('salary','view','View salary and payslips', TRUE, 'Salary details and payslips', 150),
+                ('salary','edit','Edit salary', TRUE, 'Salary details and payslips', 150),
+                ('payroll','view','View payroll runs', FALSE, 'Payroll runs', 160),
+                ('payroll','create','Create payroll runs', FALSE, 'Payroll runs', 160),
+                ('payroll','approve','Approve payroll runs', FALSE, 'Payroll runs', 160),
+                ('payroll','export','Export payroll', FALSE, 'Payroll runs', 160),
+                ('emails','view','View monthly report emails', TRUE, 'Monthly report emails', 170),
+                ('emails','create','Send monthly report emails', TRUE, 'Monthly report emails', 170),
+                ('roles','view','View roles', FALSE, 'Roles and permissions', 180),
+                ('roles','create','Create roles', FALSE, 'Roles and permissions', 180),
+                ('roles','edit','Edit roles / assign people', FALSE, 'Roles and permissions', 180),
+                ('roles','delete','Delete roles', FALSE, 'Roles and permissions', 180),
+                ('reports','view','View reports', TRUE, 'Reports and HR dashboard', 190),
+                ('reports','export','Export reports', TRUE, 'Reports and HR dashboard', 190),
+                ('audit','view','View audit log', FALSE, 'Audit log', 200)
+              ) AS v(feature, action, description, scoped, label, sort_order)
+              WHERE NOT EXISTS (
+                SELECT 1 FROM app_permission p
+                WHERE p.feature = v.feature AND p.action = v.action
+              );
+        - sql:
+            sql: >
+              UPDATE app_permission p SET
+                scoped = v.scoped,
+                label = v.label,
+                sort_order = v.sort_order,
+                matrix_visible = TRUE,
+                description = COALESCE(NULLIF(p.description,''), v.description)
+              FROM (VALUES
+                ('directory','view', TRUE, 'Employee directory', 10, 'View employee directory'),
+                ('profile_personal','view', TRUE, 'Employee profile: personal', 20, 'View personal profile'),
+                ('profile_personal','edit', TRUE, 'Employee profile: personal', 20, 'Edit personal profile'),
+                ('profile_employment','view', TRUE, 'Employee profile: employment', 30, 'View employment profile'),
+                ('profile_employment','create', TRUE, 'Employee profile: employment', 30, 'Create employment records'),
+                ('profile_employment','edit', TRUE, 'Employee profile: employment', 30, 'Edit employment profile'),
+                ('documents','view', TRUE, 'Employee documents', 40, 'View employee documents'),
+                ('documents','create', TRUE, 'Employee documents', 40, 'Upload employee documents'),
+                ('documents','delete', TRUE, 'Employee documents', 40, 'Delete employee documents'),
+                ('hierarchy','view', FALSE, 'Org hierarchy', 50, 'View org hierarchy'),
+                ('hierarchy','edit', FALSE, 'Org hierarchy', 50, 'Edit org hierarchy'),
+                ('leave_setup','view', FALSE, 'Leave categories and quotas', 60, 'View leave categories'),
+                ('leave_setup','create', FALSE, 'Leave categories and quotas', 60, 'Create leave categories'),
+                ('leave_setup','edit', FALSE, 'Leave categories and quotas', 60, 'Edit leave categories'),
+                ('leave_setup','delete', FALSE, 'Leave categories and quotas', 60, 'Delete leave categories'),
+                ('leave_requests','view', TRUE, 'Leave requests', 70, 'View leave requests'),
+                ('leave_requests','create', TRUE, 'Leave requests', 70, 'Create leave requests'),
+                ('leave_requests','approve', TRUE, 'Leave requests', 70, 'Approve leave requests'),
+                ('leave_balances','view', TRUE, 'Leave balances', 80, 'View leave balances'),
+                ('leave_balances','edit', TRUE, 'Leave balances', 80, 'Edit leave balances'),
+                ('attendance','view', TRUE, 'Attendance records', 90, 'View attendance records'),
+                ('attendance','edit', TRUE, 'Attendance records', 90, 'Edit attendance / corrections'),
+                ('attendance','export', TRUE, 'Attendance records', 90, 'Export attendance'),
+                ('attendance_settings','view', FALSE, 'Attendance settings', 100, 'View attendance settings'),
+                ('attendance_settings','edit', FALSE, 'Attendance settings', 100, 'Edit attendance settings'),
+                ('holidays','view', FALSE, 'Holiday calendars', 110, 'View holiday calendars'),
+                ('holidays','create', FALSE, 'Holiday calendars', 110, 'Create holidays'),
+                ('holidays','edit', FALSE, 'Holiday calendars', 110, 'Edit holidays'),
+                ('holidays','delete', FALSE, 'Holiday calendars', 110, 'Delete holidays'),
+                ('checklists','view', TRUE, 'Onboarding and offboarding', 120, 'View onboarding/offboarding'),
+                ('checklists','create', TRUE, 'Onboarding and offboarding', 120, 'Create checklists'),
+                ('checklists','edit', TRUE, 'Onboarding and offboarding', 120, 'Edit checklists'),
+                ('tasks','view', TRUE, 'Tasks (until the project module)', 130, 'View tasks'),
+                ('tasks','create', TRUE, 'Tasks (until the project module)', 130, 'Create tasks'),
+                ('tasks','edit', TRUE, 'Tasks (until the project module)', 130, 'Edit tasks'),
+                ('worklogs','view', TRUE, 'Work logs', 140, 'View work logs'),
+                ('worklogs','create', TRUE, 'Work logs', 140, 'Create work logs'),
+                ('worklogs','edit', TRUE, 'Work logs', 140, 'Edit work logs'),
+                ('salary','view', TRUE, 'Salary details and payslips', 150, 'View salary and payslips'),
+                ('salary','edit', TRUE, 'Salary details and payslips', 150, 'Edit salary'),
+                ('payroll','view', FALSE, 'Payroll runs', 160, 'View payroll runs'),
+                ('payroll','create', FALSE, 'Payroll runs', 160, 'Create payroll runs'),
+                ('payroll','approve', FALSE, 'Payroll runs', 160, 'Approve payroll runs'),
+                ('payroll','export', FALSE, 'Payroll runs', 160, 'Export payroll'),
+                ('emails','view', TRUE, 'Monthly report emails', 170, 'View monthly report emails'),
+                ('emails','create', TRUE, 'Monthly report emails', 170, 'Send monthly report emails'),
+                ('roles','view', FALSE, 'Roles and permissions', 180, 'View roles'),
+                ('roles','create', FALSE, 'Roles and permissions', 180, 'Create roles'),
+                ('roles','edit', FALSE, 'Roles and permissions', 180, 'Edit roles / assign people'),
+                ('roles','delete', FALSE, 'Roles and permissions', 180, 'Delete roles'),
+                ('reports','view', TRUE, 'Reports and HR dashboard', 190, 'View reports'),
+                ('reports','export', TRUE, 'Reports and HR dashboard', 190, 'Export reports'),
+                ('audit','view', FALSE, 'Audit log', 200, 'View audit log')
+              ) AS v(feature, action, scoped, label, sort_order, description)
+              WHERE p.feature = v.feature AND p.action = v.action;

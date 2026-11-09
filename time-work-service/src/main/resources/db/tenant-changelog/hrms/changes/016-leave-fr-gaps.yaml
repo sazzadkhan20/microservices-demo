@@ -1,0 +1,107 @@
+databaseChangeLog:
+  - changeSet:
+      id: 016-leave-category-fr-gaps
+      author: platform
+      changes:
+        - addColumn:
+            tableName: leave_category
+            columns:
+              - column:
+                  name: applies_to
+                  type: jsonb
+              - column:
+                  name: pro_rata
+                  type: boolean
+                  defaultValueBoolean: false
+              - column:
+                  name: carry_mode
+                  type: varchar(16)
+                  defaultValue: 'NONE'
+              - column:
+                  name: carry_cap_days
+                  type: numeric(10,2)
+              - column:
+                  name: carry_expiry_date
+                  type: date
+
+  - changeSet:
+      id: 016-leave-application-fr-gaps
+      author: platform
+      changes:
+        - addColumn:
+            tableName: leave_application
+            columns:
+              - column:
+                  name: half_day_part
+                  type: varchar(16)
+                  defaultValue: 'FULL'
+              - column:
+                  name: attachment_ref
+                  type: varchar(512)
+              - column:
+                  name: team_clash_alert
+                  type: boolean
+                  defaultValueBoolean: false
+              - column:
+                  name: warnings
+                  type: jsonb
+                  defaultValue: '{}'
+
+  - changeSet:
+      id: 016-leave-approval-fr-gaps
+      author: platform
+      changes:
+        - addColumn:
+            tableName: leave_approval
+            columns:
+              - column:
+                  name: resolver
+                  type: varchar(64)
+              - column:
+                  name: named_employee_id
+                  type: bigint
+              - column:
+                  name: expected_approver_id
+                  type: bigint
+
+  - changeSet:
+      id: 016-leave-approval-delegate
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_approval_delegate
+            columns:
+              - column:
+                  name: id
+                  type: bigserial
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: employee_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: delegate_employee_id
+                  type: bigint
+                  constraints:
+                    nullable: false
+              - column:
+                  name: from_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: to_date
+                  type: date
+                  constraints:
+                    nullable: false
+              - column:
+                  name: active
+                  type: boolean
+                  defaultValueBoolean: true
+              - column:
+                  name: created_at
+                  type: timestamptz

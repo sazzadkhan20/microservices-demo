@@ -3,7 +3,7 @@
 # Does NOT stop Docker infra (Postgres/Redis/RabbitMQ/MinIO).
 set -euo pipefail
 
-PORTS=(8080 8081 8082 8083 8084 8085 8086 8087 8090 9081)
+PORTS=(8081 8082 8083 8084 8085 8086 8087 8090 9081)
 # Optional: include frontend with RELEASE_FRONTEND=1
 if [[ "${RELEASE_FRONTEND:-0}" == "1" ]]; then
   PORTS+=(3000)
@@ -47,3 +47,9 @@ for port in "${PORTS[@]}"; do
     echo "  free :$port"
   fi
 done
+
+echo ""
+echo "Ports released. Apps are STOPPED — gateway will return connection refused until they are restarted."
+echo "Restart missing modules:  bash scripts/start-apps-local.sh"
+echo "Or full Docker stack:     bash scripts/up-local.sh"
+echo "Health check:             bash scripts/check-local-stack.sh"

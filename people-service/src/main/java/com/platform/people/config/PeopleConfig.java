@@ -3,41 +3,21 @@ package com.platform.people.config;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.platform.people.infrastructure.multitenancy.TenantDataSourceManager;
-import com.platform.people.infrastructure.multitenancy.TenantRoutingDataSource;
-import com.platform.people.infrastructure.redis.RoutingInvalidateListener;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.client.RestClient;
 
 import javax.sql.DataSource;
 
-@Configuration
-@EnableConfigurationProperties(PeopleProperties.class)
-public class PeopleConfig {
 
-    @Bean
-    @Primary
-    public DataSource dataSource(TenantDataSourceManager manager) {
-        // Routing DS: every JDBC call uses TenantContext → correct tenant DB
-        return new TenantRoutingDataSource(manager);
-    }
+@Configuration
+public class PeopleConfig {
 
     @Bean
     public JdbcTemplate jdbcTemplate(DataSource dataSource) {
         return new JdbcTemplate(dataSource);
-    }
-
-    @Bean
-    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory factory) {
-        return new StringRedisTemplate(factory);
     }
 
     /**
@@ -57,15 +37,5 @@ public class PeopleConfig {
     @Bean
     public RestClient.Builder restClientBuilder() {
         return RestClient.builder();
-    }
-
-    @Bean
-    public RedisMessageListenerContainer redisMessageListenerContainer(
-            RedisConnectionFactory factory,
-            RoutingInvalidateListener listener) {
-        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
-        container.setConnectionFactory(factory);
-        container.addMessageListener(listener, new ChannelTopic(listener.channel()));
-        return container;
     }
 }

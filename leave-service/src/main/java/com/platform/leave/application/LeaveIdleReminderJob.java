@@ -4,7 +4,6 @@ import com.platform.leave.client.people.EmployeeView;
 import com.platform.leave.domain.LeaveApplication;
 import com.platform.leave.domain.LeaveApproval;
 import com.platform.leave.extension.config.TenantConfigLoader;
-import com.platform.leave.infrastructure.jobs.TenantJobRunner;
 import com.platform.leave.client.people.PeopleEmployeeGateway;
 import com.platform.leave.infrastructure.persistence.LeaveApplicationRepository;
 import com.platform.leave.infrastructure.persistence.LeaveApprovalRepository;
@@ -23,7 +22,7 @@ import java.util.stream.Collectors;
 import com.platform.leave.client.people.PeopleAuthzClient;
 
 /**
- * FR-LV-16 — daily idle approval reminder (per-tenant via {@link TenantJobRunner}).
+ * FR-LV-16 — daily idle approval reminder.
  */
 @Component
 public class LeaveIdleReminderJob {
@@ -36,7 +35,6 @@ public class LeaveIdleReminderJob {
     private final LeaveNotificationHook notificationHook;
     private final TenantConfigLoader configLoader;
     private final PeopleAuthzClient rbacService;
-    private final TenantJobRunner tenantJobRunner;
 
     public LeaveIdleReminderJob(
             LeaveApplicationRepository applicationRepository,
@@ -44,24 +42,26 @@ public class LeaveIdleReminderJob {
             PeopleEmployeeGateway employeeRepository,
             LeaveNotificationHook notificationHook,
             TenantConfigLoader configLoader,
-            PeopleAuthzClient rbacService,
-            TenantJobRunner tenantJobRunner) {
+            PeopleAuthzClient rbacService) {
         this.applicationRepository = applicationRepository;
         this.approvalRepository = approvalRepository;
         this.employeeRepository = employeeRepository;
         this.notificationHook = notificationHook;
         this.configLoader = configLoader;
         this.rbacService = rbacService;
-        this.tenantJobRunner = tenantJobRunner;
     }
 
     @Scheduled(cron = "0 0 8 * * *") // daily at 08:00
     public void run() {
-        tenantJobRunner.runForEachActiveTenant("LeaveIdleReminderJob", this::runForTenant);
+        try {
+            remindIdleApprovals();
+        } catch (Exception e) {
+            log.warn("LeaveIdleReminderJob failed: {}", e.getMessage(), e);
+        }
     }
 
     @Transactional(readOnly = true)
-    protected void runForTenant(String tenantId) {
+    public void remindIdleApprovals() {
         Map<String, Object> settings = configLoader.loadSettingsMap();
         Object reminderCfg = settings.get("leaveIdleReminder");
         boolean enabled = true;
@@ -110,10 +110,10 @@ public class LeaveIdleReminderJob {
                     }
                 }
             } catch (Exception ex) {
-                log.warn("Idle reminder failed for application {} tenant {}: {}",
-                        app.getId(), tenantId, ex.getMessage());
+                log.warn("Idle reminder failed for application {}: {}",
+                        app.getId(), ex.getMessage());
             }
         }
-        log.info("LeaveIdleReminderJob tenant={}: processed {} idle applications", tenantId, idle.size());
+        log.info("LeaveIdleReminderJob: processed {} idle applications", idle.size());
     }
 }

@@ -7,7 +7,6 @@ import java.time.Instant;
  */
 public record FileMetadataResponse(
         Long id,
-        String tenantId,
         String originalName,
         String contentType,
         long sizeBytes,

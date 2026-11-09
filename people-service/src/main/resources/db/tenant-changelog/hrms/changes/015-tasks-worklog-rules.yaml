@@ -1,0 +1,39 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-015-task-priority
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - columnExists:
+                tableName: work_task
+                columnName: priority
+      changes:
+        - addColumn:
+            tableName: work_task
+            columns:
+              - column:
+                  name: priority
+                  type: VARCHAR(16)
+                  remarks: "LOW|MEDIUM|HIGH — kept separate from external_ref (FR-TSK-04)"
+  - changeSet:
+      id: hrms-015-work-log-flag
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - not:
+            - columnExists:
+                tableName: work_log
+                columnName: flagged
+      changes:
+        - addColumn:
+            tableName: work_log
+            columns:
+              - column:
+                  name: flagged
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints: { nullable: false }
+              - column:
+                  name: flag_reason
+                  type: VARCHAR(256)

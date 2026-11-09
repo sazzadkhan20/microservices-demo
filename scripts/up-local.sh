@@ -35,8 +35,7 @@ for i in $(seq 1 60); do
   fi
 done
 
-echo "==> Provision / upgrade Qii Creative tenant..."
-bash "$ROOT/scripts/provision-qii.sh" || true
+echo "==> Qii data: existing databases are reused. Fresh environment? run: bash scripts/seed-qii-dev.sh load"
 
 echo ""
 echo "Ready:"

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Deep Qii business-logic / corner-case suite (gateway).
- * Covers multi-tenant isolation, leave chain, payroll locks, attendance,
- * files/notif/report tenant DBs, RBAC corners. Exit 1 on FAIL.
+ * Covers leave chain, payroll locks, attendance,
+ * files/notif/report services, RBAC corners. Exit 1 on FAIL.
  */
 import fs from 'fs';
 import path from 'path';
@@ -46,10 +46,10 @@ function check(id, pass, detail) {
 const demoH = () => ({ 'X-Demo-Auth-Key': DEMO });
 const auth = (tok) => ({ Authorization: `Bearer ${tok}` });
 
-async function mint(tenantId, employeeId) {
-  const r = await req('POST', `${GW}/api/registry/token`, {
+async function mint(employeeId) {
+  const r = await req('POST', `${GW}/api/auth/token`, {
     headers: demoH(),
-    body: { tenantId, employeeId },
+    body: { employeeId },
   });
   return r.json?.accessToken || r.json?.token || null;
 }
@@ -67,7 +67,7 @@ async function section(name, fn) {
 }
 
 async function main() {
-  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts?tenantId=qii_creative`, { headers: demoH() });
+  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts`, { headers: demoH() });
   const cast = accounts.json || [];
   const byRole = (role) => cast.find((a) => String(a.role || '').includes(role));
   const byName = (re) => cast.find((a) => re.test(String(a.name || a.fullName || '')));
@@ -76,52 +76,12 @@ async function main() {
   const idM = Number(byRole('MANAGER')?.employeeId || byName(/Lina/i)?.employeeId || 4);
   const idE = Number(byName(/Karim/i)?.employeeId || 9);
 
-  const tokA = await mint('qii_creative', idA);
-  const tokH = await mint('qii_creative', idH);
-  const tokM = await mint('qii_creative', idM);
-  const tokE = await mint('qii_creative', idE);
-  const tokTs = await mint('techshop_retail', 1);
-  check('cast-mint', !!(tokA && tokH && tokM && tokE && tokTs),
-    `A=${idA} H=${idH} M=${idM} E=${idE} techshop=${!!tokTs}`);
-
-  // ---- Multi-tenant isolation ----
-  await section('TENANT_ISOLATION', async () => {
-    const qii = await req('GET', `${GW}/hrms/api/employees?page=1&size=5`, { headers: auth(tokA) });
-    const ts = await req('GET', `${GW}/hrms/api/employees?page=1&size=5`, { headers: auth(tokTs) });
-    const qiiEmails = content(qii.json).map((e) => e.email || '').join(',');
-    const tsEmails = content(ts.json).map((e) => e.email || '').join(',');
-    check('qii-vs-techshop-employees',
-      qii.status === 200 && ts.status === 200 && !qiiEmails.includes('techshop') && content(ts.json).length >= 1,
-      `qiiN=${content(qii.json).length} tsN=${content(ts.json).length}`);
-
-    // Spoof header must not switch JWT tenant
-    const spoof = await req('GET', `${GW}/hrms/api/employees?page=1&size=3`, {
-      headers: { ...auth(tokA), 'X-Tenant-ID': 'techshop_retail' },
-    });
-    const leaked = JSON.stringify(spoof.json || {}).toLowerCase().includes('techshop');
-    check('jwt-tenant-wins-over-header', spoof.status === 200 && !leaked, `leaked=${leaked}`);
-
-    // Satellite DBs: files list must not cross tenants
-    const qFiles = await req('GET', `${GW}/files/api/files`, { headers: auth(tokA) });
-    const tFiles = await req('GET', `${GW}/files/api/files`, { headers: auth(tokTs) });
-    check('files-tenant-dbs',
-      qFiles.status === 200 && tFiles.status === 200,
-      `qiiFiles=${content(qFiles.json).length} tsFiles=${content(tFiles.json).length}`);
-
-    const qNotif = await req('GET', `${GW}/notifications/api/notifications?employeeId=${idA}`, { headers: auth(tokA) });
-    const tNotif = await req('GET', `${GW}/notifications/api/notifications?employeeId=1`, { headers: auth(tokTs) });
-    check('notif-tenant-dbs', qNotif.status === 200 && tNotif.status === 200,
-      `qii=${content(qNotif.json).length} ts=${content(tNotif.json).length}`);
-
-    // Registry routing rows for satellites
-    const routing = await req('GET', `${GW}/api/registry/tenants`, { headers: { 'X-Platform-Admin-Key': 'local-platform-admin-change-me' } });
-    const rows = Array.isArray(routing.json) ? routing.json : [];
-    const qiiSat = rows.filter((r) => r.tenantId === 'qii_creative' && ['file', 'notification', 'report'].includes(r.serviceName));
-    const allPerTenant = qiiSat.every((r) => /\/(files|notif|reports)_qii_creative/.test(String(r.jdbcUrl || '')));
-    check('satellite-routing-per-tenant',
-      routing.status === 200 && qiiSat.length === 3 && allPerTenant,
-      `rows=${qiiSat.length} urls=${qiiSat.map((r) => r.jdbcUrl).join(' | ')}`);
-  });
+  const tokA = await mint(idA);
+  const tokH = await mint(idH);
+  const tokM = await mint(idM);
+  const tokE = await mint(idE);
+  check('cast-mint', !!(tokA && tokH && tokM && tokE),
+    `A=${idA} H=${idH} M=${idM} E=${idE}`);
 
   // ---- Leave multi-step + reject + balance ----
   await section('LEAVE_CHAIN', async () => {
@@ -300,20 +260,6 @@ async function main() {
         check('reopen', true, 'skipped');
       }
     }
-
-    // TechShop payroll still works (reuse)
-    const tsCalc = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
-      headers: auth(tokTs),
-      body: {
-        employeeId: 1,
-        periodLabel: period,
-        useHrmsAttendance: false,
-        regularHours: 160,
-      },
-    });
-    check('techshop-payroll-reuse',
-      tsCalc.status === 200 || tsCalc.status === 201 || tsCalc.status === 403 || tsCalc.status === 404,
-      `status=${tsCalc.status} gross=${tsCalc.json?.grossAmount}`);
   });
 
   // ---- Files / reports / notif ----
@@ -322,7 +268,7 @@ async function main() {
     fd.append('file', new Blob(['%PDF-1.4 deep'], { type: 'application/pdf' }), `deep-${stamp}.pdf`);
     const up = await req('POST', `${GW}/files/api/files`, { headers: auth(tokA), formData: fd });
     const fileId = up.json?.id;
-    check('file-upload-tenant-db', up.status === 201 && !!fileId, `status=${up.status} id=${fileId}`);
+    check('file-upload', up.status === 201 && !!fileId, `status=${up.status} id=${fileId}`);
 
     if (fileId) {
       const dl = await req('GET', `${GW}/files/api/files/${fileId}/download`, {
@@ -331,12 +277,12 @@ async function main() {
       });
       check('file-download', dl.status === 200 && dl.buf.length > 0, `bytes=${dl.buf.length}`);
 
-      // Cross-tenant download blocked
+      // Cross-employee download blocked
       const cross = await req('GET', `${GW}/files/api/files/${fileId}/download`, {
-        headers: auth(tokTs),
+        headers: auth(tokE),
         raw: true,
       });
-      check('file-cross-tenant-blocked',
+      check('file-cross-employee-blocked',
         cross.status === 404 || cross.status === 403 || cross.status === 400,
         `status=${cross.status}`);
     }
@@ -403,7 +349,7 @@ async function main() {
 
   // ---- gRPC RBAC cold path (payroll permissions) ----
   await section('GRPC_RBAC', async () => {
-    // Burst payroll config reads — previously flaked with EntityManager / tenant TL race
+    // Burst payroll config reads — previously flaked with EntityManager
     let ok = 0;
     let last = 0;
     for (let i = 0; i < 8; i++) {

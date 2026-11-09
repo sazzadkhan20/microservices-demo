@@ -9,14 +9,11 @@ import java.util.Optional;
 
 public interface NotificationRepository extends JpaRepository<Notification, Long> {
 
-    Page<Notification> findByTenantIdAndEmployeeIdOrderByCreatedAtDesc(
-            String tenantId, Long employeeId, Pageable pageable);
+    Page<Notification> findByEmployeeIdOrderByCreatedAtDesc(Long employeeId, Pageable pageable);
 
-    long countByTenantIdAndEmployeeIdAndReadFlagFalse(String tenantId, Long employeeId);
+    long countByEmployeeIdAndReadFlagFalse(Long employeeId);
 
-    Optional<Notification> findByTenantIdAndDedupeKey(String tenantId, String dedupeKey);
+    Optional<Notification> findByDedupeKey(String dedupeKey);
 
-    boolean existsByTenantIdAndDedupeKey(String tenantId, String dedupeKey);
-
-    Optional<Notification> findByIdAndTenantId(Long id, String tenantId);
+    boolean existsByDedupeKey(String dedupeKey);
 }

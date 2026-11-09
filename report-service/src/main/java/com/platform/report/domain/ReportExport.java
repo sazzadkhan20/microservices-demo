@@ -10,7 +10,7 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 
 /**
- * Archived report metadata in the tenant's reports_* database (config-driven, per-tenant).
+ * Archived report metadata in the reports database.
  */
 @Entity
 @Table(name = "report_export")

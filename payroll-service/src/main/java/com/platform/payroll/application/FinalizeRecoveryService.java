@@ -3,7 +3,6 @@ package com.platform.payroll.application;
 import com.platform.common.messaging.EventTypes;
 import com.platform.common.messaging.PlatformEvent;
 import com.platform.common.messaging.PlatformQueues;
-import com.platform.common.tenant.TenantContext;
 import com.platform.messaging.outbox.OutboxRelay;
 import com.platform.messaging.outbox.OutboxWriter;
 import com.platform.payroll.domain.FinalizeOperation;
@@ -57,7 +56,7 @@ public class FinalizeRecoveryService {
     }
 
     @Transactional
-    public void reconcileTenant() {
+    public void reconcilePending() {
         Instant warnBefore = Instant.now().minus(warnAfterMinutes, ChronoUnit.MINUTES);
         Instant failBefore = Instant.now().minus(actionRequiredAfterMinutes, ChronoUnit.MINUTES);
         List<FinalizeOperation> stale = operationRepository.findStale(
@@ -65,8 +64,8 @@ public class FinalizeRecoveryService {
                 warnBefore);
         for (FinalizeOperation op : stale) {
             long ageMin = ChronoUnit.MINUTES.between(op.getCreatedAt(), Instant.now());
-            log.warn("Pending finalize/reopen ageMinutes={} op={} payslip={} status={} tenant={}",
-                    ageMin, op.getOperationId(), op.getPayslipId(), op.getStatus(), TenantContext.getTenantId());
+            log.warn("Pending finalize/reopen ageMinutes={} op={} payslip={} status={}",
+                    ageMin, op.getOperationId(), op.getPayslipId(), op.getStatus());
             if (FinalizeOperation.STATUS_WAITING_LEAVE.equals(op.getStatus())) {
                 replayLeaveCover(op);
             }
@@ -93,7 +92,6 @@ public class FinalizeRecoveryService {
         if (consumed.isEmpty()) {
             return;
         }
-        String tenantId = TenantContext.getTenantId();
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("operationId", op.getOperationId());
         payload.put("operationKey", op.getOperationKey());
@@ -110,7 +108,6 @@ public class FinalizeRecoveryService {
                 String.valueOf(op.getPayslipId()),
                 op.getRevision(),
                 op.getCorrelationId(),
-                tenantId,
                 payload);
         outboxWriter.enqueue(event, PlatformQueues.PAYROLL_LEAVE_COVER_CMD);
         op.setUpdatedAt(Instant.now());

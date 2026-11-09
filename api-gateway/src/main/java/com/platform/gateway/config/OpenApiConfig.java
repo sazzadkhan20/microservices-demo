@@ -9,8 +9,8 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Gateway Swagger uses Bearer JWT. Gateway verifies token and injects X-Tenant-ID.
- * Do not set X-Tenant-ID yourself when calling through the gateway.
+ * Gateway Swagger uses Bearer JWT. Gateway verifies the token and injects the trusted X-Employee-ID.
+ * Clients can never set X-Employee-ID / X-Service-Key themselves (the gateway strips them).
  */
 @Configuration
 public class OpenApiConfig {
@@ -22,11 +22,11 @@ public class OpenApiConfig {
                         .title("API Gateway")
                         .description("""
                                 Sole entry point. Flow:
-                                1) Select Registry → POST /api/registry/token (or /registry/token)
+                                1) Obtain a session token: POST /api/auth/token (demo only; X-Demo-Auth-Key)
                                 2) Authorize with Bearer <accessToken>
-                                3) Select HRMS or Payroll → Try it out
+                                3) Select a service from the dropdown → Try it out
                                 
-                                Gateway strips client X-Tenant-ID and injects tenant from JWT.
+                                Gateway strips client identity headers and injects the employee from the JWT.
                                 """)
                         .version("1.0"))
                 .components(new Components().addSecuritySchemes(
@@ -36,7 +36,7 @@ public class OpenApiConfig {
                                 .type(SecurityScheme.Type.HTTP)
                                 .scheme("bearer")
                                 .bearerFormat("JWT")
-                                .description("Paste accessToken from Registry /token (without the word Bearer)")))
+                                .description("Paste accessToken from POST /api/auth/token (without the word Bearer)")))
                 .addSecurityItem(new SecurityRequirement().addList("GatewayJWT"));
     }
 }

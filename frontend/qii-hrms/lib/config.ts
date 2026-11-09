@@ -20,7 +20,6 @@ function resolveDemoAuthKey(): string {
 }
 
 export const config = {
-  tenantId: str("TENANT_ID", "qii_creative"),
   gatewayUrl: str("GATEWAY_URL", "http://127.0.0.1:8090").replace(/\/+$/, ""),
   cookieName: str("COOKIE_NAME", "qii_session"),
   cookieSecure: process.env.COOKIE_SECURE

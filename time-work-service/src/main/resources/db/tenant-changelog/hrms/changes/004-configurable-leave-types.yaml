@@ -1,0 +1,268 @@
+databaseChangeLog:
+  # Generic leave product: types + balances + tenant settings.
+  # TechShop and Impit both use this; behavior differs by DATA only.
+  - changeSet:
+      id: hrms-004-leave-type
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_type
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: code
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: name
+                  type: VARCHAR(128)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: paid
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+                  remarks: "true = no salary deduction"
+              - column:
+                  name: requires_balance
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: allow_when_zero_balance
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: allow_when_coverage_fail
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: deduct_balance
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: sort_order
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: hrms-004-leave-balance
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_balance
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: leave_type_code
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: year
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: balance_days
+                  type: NUMERIC(10, 2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: leave_balance
+            columnNames: employee_id, leave_type_code, year
+            constraintName: uk_leave_balance_emp_type_year
+        - createIndex:
+            tableName: leave_balance
+            indexName: idx_leave_balance_employee
+            columns:
+              - column:
+                  name: employee_id
+
+  - changeSet:
+      id: hrms-004-leave-balance-ledger
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_balance_ledger
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: leave_type_code
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: year
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: delta_days
+                  type: NUMERIC(10, 2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(512)
+              - column:
+                  name: actor_employee_id
+                  type: BIGINT
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: hrms-004-leave-policy-modes
+      author: platform
+      changes:
+        - addColumn:
+            tableName: leave_policy
+            columns:
+              - column:
+                  name: notice_mode
+                  type: VARCHAR(32)
+                  defaultValue: ATTRIBUTE
+                  remarks: "NONE | FIXED | ATTRIBUTE (union/non-union)"
+              - column:
+                  name: default_notice_days
+                  type: INT
+                  defaultValueNumeric: 0
+              - column:
+                  name: coverage_mode
+                  type: VARCHAR(32)
+                  defaultValue: LOCATION_SHIFT
+                  remarks: "NONE | LOCATION | LOCATION_SHIFT"
+              - column:
+                  name: location_field
+                  type: VARCHAR(64)
+                  defaultValue: store_id
+              - column:
+                  name: shift_field
+                  type: VARCHAR(64)
+                  defaultValue: shift_pattern
+              - column:
+                  name: require_relief_on_coverage_fail
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+              - column:
+                  name: default_leave_type_code
+                  type: VARCHAR(32)
+
+  - changeSet:
+      id: hrms-004-leave-application-type
+      author: platform
+      changes:
+        - addColumn:
+            tableName: leave_application
+            columns:
+              - column:
+                  name: leave_type_code
+                  type: VARCHAR(32)
+              - column:
+                  name: paid
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+              - column:
+                  name: balance_deducted
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+
+  - changeSet:
+      id: hrms-004-tenant-settings
+      author: platform
+      changes:
+        - createTable:
+            tableName: tenant_settings
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: settings
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - sql:
+            sql: |
+              INSERT INTO tenant_settings (settings, updated_at)
+              SELECT '{}'::jsonb, NOW()
+              WHERE NOT EXISTS (SELECT 1 FROM tenant_settings);
+
+  - changeSet:
+      id: hrms-004-field-definition-flags
+      author: platform
+      changes:
+        - addColumn:
+            tableName: tenant_field_definition
+            columns:
+              - column:
+                  name: required_flag
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: unique_active
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: validation_regex
+                  type: VARCHAR(256)

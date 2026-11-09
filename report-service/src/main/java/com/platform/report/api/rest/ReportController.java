@@ -4,7 +4,6 @@ import com.platform.common.messaging.EventTypes;
 import com.platform.common.messaging.PlatformEvent;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.common.security.AuthContext;
-import com.platform.common.tenant.TenantContext;
 import com.platform.messaging.correlation.CorrelationContext;
 import com.platform.messaging.outbox.OutboxWriter;
 import com.platform.report.api.dto.AttendanceReportRequest;
@@ -65,7 +64,6 @@ public class ReportController {
             @Valid @RequestBody AttendanceReportRequest req,
             @RequestParam(defaultValue = "false") boolean async) {
 
-        String tenantId = TenantContext.getTenantId();
         String filename = String.format("attendance-%04d-%02d.csv", req.year(), req.month());
         String period = String.format("%04d-%02d", req.year(), req.month());
 
@@ -94,7 +92,6 @@ public class ReportController {
                     String.valueOf(job.getId()),
                     1L,
                     CorrelationContext.getOrCreate(),
-                    tenantId,
                     payload);
             outboxWriter.getObject().enqueue(event, PlatformQueues.REPORT_EXPORT);
 
@@ -105,7 +102,7 @@ public class ReportController {
             return ResponseEntity.status(HttpStatus.ACCEPTED).body(body);
         }
 
-        String csv = attendanceService.generateMonthlyCsv(tenantId, req);
+        String csv = attendanceService.generateMonthlyCsv(req);
         byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
         ReportExport archived = new ReportExport();
@@ -134,7 +131,7 @@ public class ReportController {
                 .body(bytes);
     }
 
-    /** Lists recent report exports from the tenant reports database. */
+    /** Lists recent report exports from the reports database. */
     @GetMapping("/exports")
     @RequiresPermission(feature = "reports", action = "view")
     public ResponseEntity<List<Map<String, Object>>> listExports() {

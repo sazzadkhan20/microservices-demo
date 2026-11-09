@@ -688,7 +688,10 @@ export default function PayrollPage() {
                   <div className="label">Covered by leave</div>
                   {fmtNumber(
                     dj?.coveredDays ??
-                      Object.values(djConsumed ?? {}).reduce((a, v) => a + Number(v || 0), 0),
+                      Object.values(djConsumed ?? {}).reduce<number>(
+                        (a, v) => a + Number(v || 0),
+                        0,
+                      ),
                   )}
                 </div>
               ) : null}

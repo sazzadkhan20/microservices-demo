@@ -12,18 +12,17 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 
 /**
- * Persistent in-app notification scoped to a tenant + employee.
+ * Persistent in-app notification for one employee.
  *
  * <p>Deduplication: when {@code dedupeKey} is non-null the service checks
- * for an existing (tenantId, dedupeKey) row before inserting — preventing
+ * for an existing dedupeKey row (also unique in the DB) before inserting — preventing
  * duplicate delivery for the same logical event.
  */
 @Entity
 @Table(
         name = "notifications",
         indexes = {
-                @Index(name = "idx_notif_tenant_emp", columnList = "tenant_id, employee_id"),
-                @Index(name = "idx_notif_tenant_dedupe", columnList = "tenant_id, dedupe_key")
+                @Index(name = "idx_notif_employee", columnList = "employee_id")
         }
 )
 public class Notification {
@@ -31,9 +30,6 @@ public class Notification {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(name = "tenant_id", nullable = false, length = 100)
-    private String tenantId;
 
     @Column(name = "employee_id", nullable = false)
     private Long employeeId;
@@ -81,8 +77,6 @@ public class Notification {
 
     public Long getId() { return id; }
 
-    public String getTenantId() { return tenantId; }
-    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
 
     public Long getEmployeeId() { return employeeId; }
     public void setEmployeeId(Long employeeId) { this.employeeId = employeeId; }

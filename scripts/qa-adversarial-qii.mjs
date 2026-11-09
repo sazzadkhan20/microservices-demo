@@ -54,9 +54,9 @@ function req(method, url, { headers = {}, body, timeout = 15000 } = {}) {
 }
 
 async function token(employeeId) {
-  const r = await req("POST", `${GW}/api/registry/token`, {
+  const r = await req("POST", `${GW}/api/auth/token`, {
     headers: { "X-Demo-Auth-Key": DEMO },
-    body: { tenantId: "qii_creative", employeeId: Number(employeeId) },
+    body: { employeeId: Number(employeeId) },
   });
   return r.json?.accessToken || r.json?.token || null;
 }
@@ -67,13 +67,15 @@ function auth(t) {
 
 async function main() {
   // Health
+  // HTTP actuator only — never probe people gRPC :9081 with HTTP.
   for (const [name, port] of [
-    ["registry", 8080],
-    ["hrms", 8081],
+    ["people", 8081],
     ["payroll", 8082],
     ["notif", 8083],
     ["files", 8084],
     ["reports", 8085],
+    ["leave", 8086],
+    ["time-work", 8087],
     ["gateway", 8090],
   ]) {
     const r = await req("GET", `http://127.0.0.1:${port}/actuator/health`);
@@ -88,19 +90,6 @@ async function main() {
     find("Blocker", "Auth", "TOKEN", "Failed to mint tokens for cast", { tAdmin: !!tAdmin, tHr: !!tHr, tMgr: !!tMgr, tEmp: !!tEmp }, "Cannot continue RBAC tests");
     console.log(JSON.stringify({ findings }, null, 2));
     return;
-  }
-
-  // Spoof tenant header
-  {
-    const r = await req("GET", `${GW}/hrms/api/employees?page=1&size=1`, {
-      headers: { ...auth(tAdmin), "X-Tenant-ID": "techshop" },
-    });
-    const tenantLeak = JSON.stringify(r.json || {}).includes("techshop");
-    // Should still be qii data
-    const sample = r.json?.content?.[0];
-    if (r.status === 200 && sample?.email && String(sample.email).includes("techshop")) {
-      find("Blocker", "Security", "TENANT-SPOOF", "Client X-Tenant-ID spoof switched tenant data", sample, "Cross-tenant data breach");
-    }
   }
 
   // Direct service bypass (no JWT) on HRMS
@@ -299,28 +288,6 @@ async function main() {
       evidence: { page1: r.status, page0: r0.status, p1total: r.json?.totalElements, p0total: r0.json?.totalElements, p0n: r0.json?.content?.length },
       impact: "Inconsistent page=0 vs page=1 across services breaks FE",
     });
-  }
-
-  // TechShop tenant still provisioned? (canonical id = techshop_retail)
-  {
-    const r = await req("POST", `${GW}/api/registry/token`, {
-      headers: { "X-Demo-Auth-Key": DEMO },
-      body: { tenantId: "techshop_retail", employeeId: 1 },
-    });
-    if (r.status >= 200 && r.status < 300 && (r.json?.accessToken || r.json?.token)) {
-      const tt = r.json.accessToken || r.json.token;
-      const em = await req("GET", `${GW}/hrms/api/employees?page=1&size=1`, { headers: auth(tt) });
-      findings.push({
-        sev: "Info",
-        area: "MultiTenant",
-        id: "TECHSHOP-ALIVE",
-        title: "TechShop tenant token + employees reachable",
-        evidence: { token: true, empStatus: em.status, sample: em.json?.content?.[0]?.employeeCode || em.json?.content?.[0]?.fullName },
-        impact: "Positive signal for multi-business reuse",
-      });
-    } else {
-      find("Major", "MultiTenant", "TECHSHOP-DOWN", "TechShop tenant token failed", { status: r.status, body: (r.raw || "").slice(0, 200) }, "Only Qii pack may work — reusability claim weak");
-    }
   }
 
   // Settings / org write as employee

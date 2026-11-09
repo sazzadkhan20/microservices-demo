@@ -1,7 +1,6 @@
 package com.platform.files.api.rest;
 
 import com.platform.common.security.AuthContext;
-import com.platform.common.tenant.TenantContext;
 import com.platform.files.api.dto.DownloadUrlResponse;
 import com.platform.files.api.dto.FileMetadataResponse;
 import com.platform.files.api.dto.FileUploadResponse;
@@ -47,12 +46,11 @@ public class FileController {
             @RequestParam(value = "classification", required = false) String classification,
             @RequestParam(value = "employeeId", required = false) Long employeeId) throws IOException {
 
-        String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
         String uploadedBy = empId != null ? empId.toString() : null;
         Long subject = employeeId != null ? employeeId : empId;
 
-        FileUploadResponse response = service.upload(tenantId, uploadedBy, file, classification, subject);
+        FileUploadResponse response = service.upload(uploadedBy, file, classification, subject);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
@@ -62,17 +60,15 @@ public class FileController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "false") boolean all) {
-        String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
-        return ResponseEntity.ok(service.list(tenantId, empId, page, size, all));
+        return ResponseEntity.ok(service.list(empId, page, size, all));
     }
 
     @GetMapping("/{id}")
     @RequiresPermission(feature = "documents", action = "view")
     public ResponseEntity<FileMetadataResponse> metadata(@PathVariable Long id) {
-        String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
-        return ResponseEntity.ok(service.getMetadata(tenantId, id, empId));
+        return ResponseEntity.ok(service.getMetadata(id, empId));
     }
 
     /**
@@ -82,9 +78,8 @@ public class FileController {
     @PostMapping("/{id}/download-url")
     @RequiresPermission(feature = "documents", action = "view")
     public ResponseEntity<DownloadUrlResponse> downloadUrl(@PathVariable Long id) {
-        String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
-        return ResponseEntity.ok(service.issueDownloadUrl(tenantId, id, empId));
+        return ResponseEntity.ok(service.issueDownloadUrl(id, empId));
     }
 
     /**
@@ -95,8 +90,7 @@ public class FileController {
     public ResponseEntity<InputStreamResource> content(
             @PathVariable Long id,
             @RequestParam("token") String token) throws IOException {
-        String tenantId = TenantContext.getTenantId();
-        FileService.OpenedDownload opened = service.openDownloadWithToken(tenantId, id, token);
+        FileService.OpenedDownload opened = service.openDownloadWithToken(id, token);
         return streamResponse(opened.metadata(), opened.stream());
     }
 
@@ -107,10 +101,9 @@ public class FileController {
     @GetMapping("/{id}/download")
     @RequiresPermission(feature = "documents", action = "view")
     public ResponseEntity<InputStreamResource> download(@PathVariable Long id) throws IOException {
-        String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
-        FileMetadataResponse meta = service.getMetadata(tenantId, id, empId);
-        InputStream stream = service.openDownload(tenantId, id, empId);
+        FileMetadataResponse meta = service.getMetadata(id, empId);
+        InputStream stream = service.openDownload(id, empId);
         return streamResponse(meta, stream);
     }
 
@@ -118,9 +111,8 @@ public class FileController {
     @RequiresPermission(feature = "documents", action = "delete")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable Long id) throws IOException {
-        String tenantId = TenantContext.getTenantId();
         Long empId = AuthContext.getEmployeeId();
-        service.delete(tenantId, id, empId);
+        service.delete(id, empId);
     }
 
     private static ResponseEntity<InputStreamResource> streamResponse(

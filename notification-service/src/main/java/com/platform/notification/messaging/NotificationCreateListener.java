@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.messaging.outbox.InboxGuard;
-import com.platform.messaging.tenant.TenantBoundRunner;
 import com.platform.notification.api.dto.CreateNotificationRequest;
 import com.platform.notification.application.NotificationService;
 import org.slf4j.Logger;
@@ -45,9 +44,8 @@ public class NotificationCreateListener {
         } catch (Exception e) {
             throw new IllegalArgumentException("Invalid notification.create payload", e);
         }
-        String tenantId = String.valueOf(envelope.getOrDefault("tenantId", ""));
         String eventId = String.valueOf(envelope.getOrDefault("eventId", ""));
-        TenantBoundRunner.run(tenantId, () -> inboxGuard.processOnce(
+        inboxGuard.processOnce(
                 eventId,
                 String.valueOf(envelope.getOrDefault("eventType", "")),
                 CONSUMER,
@@ -67,10 +65,10 @@ public class NotificationCreateListener {
                             str(payload.get("category")),
                             blankToNull(str(payload.get("dedupeKey"))),
                             blankToNull(str(payload.get("linkUrl"))));
-                    var created = notificationService.create(tenantId, req);
+                    var created = notificationService.create(req);
                     log.info("Notification created id={} emp={}", created.id(), employeeId);
                     return Map.of("notificationId", created.id());
-                }));
+                });
     }
 
     private static String str(Object o) {

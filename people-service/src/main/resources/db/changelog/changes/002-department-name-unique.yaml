@@ -1,0 +1,12 @@
+databaseChangeLog:
+  # Department name must be unique (case-insensitive), matching code uniqueness.
+  - changeSet:
+      id: people-002-department-name-unique
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: department
+      changes:
+        - sql:
+            sql: CREATE UNIQUE INDEX IF NOT EXISTS uq_department_name_ci ON department (lower(name));

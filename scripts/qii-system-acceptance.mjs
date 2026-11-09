@@ -35,16 +35,17 @@ function check(layer, id, pass, detail, extra = {}) {
 const demoHeaders = () => ({ 'X-Demo-Auth-Key': DEMO_AUTH_KEY });
 
 const token = async (employeeId) => {
-  const r = await req('POST', `${GW}/api/registry/token`, {
+  const r = await req('POST', `${GW}/api/auth/token`, {
     headers: demoHeaders(),
-    body: { tenantId: 'qii_creative', employeeId },
+    body: { employeeId },
   });
   return r.json?.token || r.json?.accessToken;
 };
 
 async function main() {
   // Health
-  for (const p of [8080, 8081, 8082, 8083, 8084, 8085, 8090]) {
+  // HTTP actuator only — never probe people gRPC :9081 with HTTP.
+  for (const p of [8081, 8082, 8083, 8084, 8085, 8086, 8087, 8090]) {
     try {
       const r = await req('GET', `http://127.0.0.1:${p}/actuator/health`);
       check('SYS', `HEALTH-${p}`, r.status === 200, `actuator ${r.status}`);
@@ -53,7 +54,7 @@ async function main() {
     }
   }
 
-  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts?tenantId=qii_creative`, {
+  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts`, {
     headers: demoHeaders(),
   });
   check('SYS', 'SEED-ACCOUNTS', accounts.status === 200 && Array.isArray(accounts.json), `status=${accounts.status}`);
@@ -148,28 +149,12 @@ async function main() {
   check('SYS', 'ROLES-SEED', roles.status === 200 && codes === 'ADMIN,EMPLOYEE,HR,MANAGER,SUPERADMIN', `status=${roles.status} codes=${codes}`);
 
   const adminKey = process.env.PLATFORM_ADMIN_KEY || 'local-platform-admin-change-me';
-  const tenants = await req('GET', `${GW}/api/registry/tenants`, {
-    headers: { 'X-Platform-Admin-Key': adminKey },
-  });
-  const tenantRows = Array.isArray(tenants.json) ? tenants.json : [];
-  const fileRoutes = tenantRows.filter((t) => String(t.serviceName).includes('file')).length;
-  check('SYS', 'MINIO-FILE-ROUTING', tenants.status === 200 && fileRoutes >= 1, `status=${tenants.status} file routing rows=${fileRoutes}`, {
-    expected: '>=1', actual: String(fileRoutes),
-  });
-
   const meE = await req('GET', `${GW}/hrms/api/me`, { headers: { Authorization: `Bearer ${tokE}` } });
   const perms = meE.json?.permissions || [];
   const hasView = perms.includes('attendance:view');
   const hasRead = perms.includes('attendance:read');
   check('SYS', 'FE-PERM-KEY-ALIGN', hasView && hasRead, `view=${hasView} read=${hasRead} (sidebar needs :read)`, {
     expected: 'both', actual: `view=${hasView},read=${hasRead}`,
-  });
-
-  const provision = await req('POST', `${GW}/api/registry/provision`, {
-    body: { tenantId: 'qa_should_not_exist', businessPack: 'qii_creative' },
-  });
-  check('SYS', 'PROVISION-AUTH', provision.status === 401 || provision.status === 403, `status=${provision.status}`, {
-    expected: '401/403', actual: String(provision.status),
   });
 
   // Tasks / work logs APIs

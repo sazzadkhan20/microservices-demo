@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -18,6 +18,8 @@ import {
   rowsOf,
   useDepartments,
   useEmployeesLookup,
+  useTeams,
+  type Dept,
   type Loc,
   type Rec,
   type Team,
@@ -39,6 +41,59 @@ function collect(err: z.ZodError) {
   const next: Record<string, string> = {};
   for (const i of err.issues) next[String(i.path[0])] ||= i.message;
   return next;
+}
+
+/** Create-department schema: code is a non-empty string; code + name unique vs existing rows. */
+function departmentCreateSchema(existing: Dept[]) {
+  const usedCodes = new Set(
+    existing.map((d) => (d.code ?? "").trim().toUpperCase()).filter(Boolean),
+  );
+  const usedNames = new Set(
+    existing.map((d) => d.name.trim().toLowerCase()).filter(Boolean),
+  );
+
+  return z
+    .object({
+      code: z
+        .string({ error: "Code must be a string" })
+        .trim()
+        .min(1, "Code is required")
+        .max(64, "Code must be at most 64 characters")
+        .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, "Use letters, numbers, underscores or hyphens"),
+      name: z
+        .string({ error: "Name must be a string" })
+        .trim()
+        .min(1, "Name is required")
+        .max(128, "Name must be at most 128 characters"),
+    })
+    .superRefine((v, ctx) => {
+      if (usedCodes.has(v.code.toUpperCase())) {
+        ctx.addIssue({ code: "custom", path: ["code"], message: "This code is already in use" });
+      }
+      if (usedNames.has(v.name.toLowerCase())) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["name"],
+          message: "This department name already exists",
+        });
+      }
+    });
+}
+
+/** Live field errors: required only after submit; uniqueness/format as soon as the field has a value. */
+function departmentFieldErrors(
+  schema: ReturnType<typeof departmentCreateSchema>,
+  values: { code: string; name: string },
+  mode: "live" | "submit",
+): Record<string, string> {
+  const parsed = schema.safeParse(values);
+  if (parsed.success) return {};
+  const all = collect(parsed.error);
+  if (mode === "submit") return all;
+  const out: Record<string, string> = {};
+  if (values.code.trim()) out.code = all.code ?? "";
+  if (values.name.trim()) out.name = all.name ?? "";
+  return out;
 }
 
 export default function OrgSettingsPage() {
@@ -78,7 +133,7 @@ function PeopleOrgChart() {
         <OrgChartTree
           roots={Array.isArray(chart.data) ? chart.data : []}
           canOpen={canOpen}
-          emptyMessage="No reporting lines to draw yet. Assign managers on employee records."
+          emptyMessage="No reporting lines to draw yet. Assign managers on employee records (People → employee → manager)."
         />
       ) : null}
     </div>
@@ -90,10 +145,17 @@ function PeopleOrgChart() {
 function Departments({ canManage }: { canManage: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const departments = useDepartments();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ code: "", name: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+
+  const schema = useMemo(
+    () => departmentCreateSchema(departments.data ?? []),
+    [departments.data],
+  );
 
   const tree = useQuery({
     queryKey: ["org-tree"],
@@ -102,23 +164,63 @@ function Departments({ canManage }: { canManage: boolean }) {
   const nodes = rowsOf<Rec>(tree.data);
 
   const create = useMutation({
-    mutationFn: (body: typeof form) => apiFetch(api.hrms("org/departments"), { method: "POST", body }),
+    mutationFn: (body: { code: string; name: string }) =>
+      apiFetch(api.hrms("org/departments"), { method: "POST", body }),
     onSuccess: () => {
       toast.show("Department created");
       setOpen(false);
       setForm({ code: "", name: "" });
+      setErrors({});
+      setSubmitted(false);
+      setErr("");
       void qc.invalidateQueries({ queryKey: ["org-tree"] });
       void qc.invalidateQueries({ queryKey: ["lookup", "departments"] });
     },
-    onError: (e: Error) => setErr(e.message),
+    onError: (e: Error) => {
+      const msg = e.message || "Could not create department";
+      const lower = msg.toLowerCase();
+      if (lower.includes("code")) {
+        setErrors((prev) => ({ ...prev, code: msg }));
+        setErr("");
+        return;
+      }
+      if (lower.includes("name")) {
+        setErrors((prev) => ({ ...prev, name: msg }));
+        setErr("");
+        return;
+      }
+      setErr(msg);
+    },
   });
+
+  function openModal() {
+    setForm({ code: "", name: "" });
+    setErrors({});
+    setErr("");
+    setSubmitted(false);
+    setOpen(true);
+  }
+
+  function setField(key: "code" | "name", value: string) {
+    const next = { ...form, [key]: value };
+    setForm(next);
+    setErr("");
+    setErrors(departmentFieldErrors(schema, next, submitted ? "submit" : "live"));
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    const parsed = z
-      .object({ code: z.string().trim().min(1, "Code is required"), name: z.string().trim().min(1, "Name is required") })
-      .safeParse(form);
-    if (!parsed.success) return setErrors(collect(parsed.error));
+    setSubmitted(true);
+    const fieldErrs = departmentFieldErrors(schema, form, "submit");
+    if (Object.keys(fieldErrs).length > 0) {
+      setErrors(fieldErrs);
+      return;
+    }
+    const parsed = schema.safeParse(form);
+    if (!parsed.success) {
+      setErrors(collect(parsed.error));
+      return;
+    }
     setErrors({});
     setErr("");
     create.mutate({ code: parsed.data.code.toUpperCase(), name: parsed.data.name });
@@ -129,12 +231,12 @@ function Departments({ canManage }: { canManage: boolean }) {
       <div className="card-head" style={{ marginBottom: 0 }}>
         <h2>Org tree</h2>
         {canManage ? (
-          <button type="button" className="btn primary" onClick={() => { setErr(""); setOpen(true); }}>
+          <button type="button" className="btn primary" onClick={openModal}>
             + New department
           </button>
         ) : null}
       </div>
-      <ErrorNote error={tree.error} />
+      <ErrorNote error={tree.error ?? departments.error} />
       {tree.isLoading ? <p className="muted">Loading…</p> : null}
       <div className="tree">
         <ul>
@@ -167,10 +269,24 @@ function Departments({ canManage }: { canManage: boolean }) {
         <form className="stack" onSubmit={submit} noValidate>
           <div className="form-grid">
             <FormField label="Code" required error={errors.code}>
-              <input type="text" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
+              <input
+                type="text"
+                inputMode="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={form.code}
+                onChange={(e) => setField("code", e.target.value)}
+                aria-invalid={!!errors.code}
+              />
             </FormField>
             <FormField label="Name" required error={errors.name}>
-              <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <input
+                type="text"
+                autoComplete="off"
+                value={form.name}
+                onChange={(e) => setField("name", e.target.value)}
+                aria-invalid={!!errors.name}
+              />
             </FormField>
           </div>
           {err ? <div className="notice bad">{err}</div> : null}
@@ -190,33 +306,110 @@ function Departments({ canManage }: { canManage: boolean }) {
 
 /* ---------------------------------- Teams ---------------------------------- */
 
-const teamSchema = z.object({
-  code: z.string().trim().min(1, "Code is required"),
-  name: z.string().trim().min(1, "Name is required"),
-  // FR-ORG-01 — teams belong to a department, each with one team lead.
-  departmentId: z.string().trim().min(1, "Department is required"),
-  leadEmployeeId: z.string().trim().min(1, "Team lead is required"),
-  maxOnLeave: z.coerce.number("Enter a number").int().min(0, "Must be ≥ 0").max(100),
-  clashAction: z.enum(["ALERT", "BLOCK"]),
-});
+type TeamFormValues = {
+  code: string;
+  name: string;
+  departmentId: string;
+  leadEmployeeId: string;
+  maxOnLeave: string;
+  clashAction: string;
+};
+
+/** Team create/edit schema — code + name unique (excluding the row being edited). */
+function teamFormSchema(existing: Team[], excludeId?: number) {
+  const others = existing.filter((t) => excludeId == null || t.id !== excludeId);
+  const usedCodes = new Set(
+    others.map((t) => (t.code ?? "").trim().toUpperCase()).filter(Boolean),
+  );
+  const usedNames = new Set(
+    others.map((t) => t.name.trim().toLowerCase()).filter(Boolean),
+  );
+
+  return z
+    .object({
+      code: z
+        .string({ error: "Code must be a string" })
+        .trim()
+        .min(1, "Code is required")
+        .max(64, "Code must be at most 64 characters")
+        .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, "Use letters, numbers, underscores or hyphens"),
+      name: z
+        .string({ error: "Name must be a string" })
+        .trim()
+        .min(1, "Name is required")
+        .max(128, "Name must be at most 128 characters"),
+      // FR-ORG-01 — teams belong to a department, each with one team lead.
+      departmentId: z.string().trim().min(1, "Department is required"),
+      leadEmployeeId: z.string().trim().min(1, "Team lead is required"),
+      maxOnLeave: z.coerce.number("Enter a number").int().min(0, "Must be ≥ 0").max(100),
+      clashAction: z.enum(["ALERT", "BLOCK"]),
+    })
+    .superRefine((v, ctx) => {
+      if (usedCodes.has(v.code.toUpperCase())) {
+        ctx.addIssue({ code: "custom", path: ["code"], message: "This code is already in use" });
+      }
+      if (usedNames.has(v.name.toLowerCase())) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["name"],
+          message: "This team name already exists",
+        });
+      }
+    });
+}
+
+function teamFieldErrors(
+  schema: ReturnType<typeof teamFormSchema>,
+  values: TeamFormValues,
+  mode: "live" | "submit",
+): Record<string, string> {
+  const parsed = schema.safeParse(values);
+  if (parsed.success) return {};
+  const all = collect(parsed.error);
+  if (mode === "submit") return all;
+  const out: Record<string, string> = {};
+  if (values.code.trim()) out.code = all.code ?? "";
+  if (values.name.trim()) out.name = all.name ?? "";
+  if (values.departmentId.trim()) out.departmentId = all.departmentId ?? "";
+  if (values.leadEmployeeId.trim()) out.leadEmployeeId = all.leadEmployeeId ?? "";
+  if (values.maxOnLeave.trim() !== "") out.maxOnLeave = all.maxOnLeave ?? "";
+  if (values.clashAction.trim()) out.clashAction = all.clashAction ?? "";
+  return out;
+}
 
 function Teams({ canManage }: { canManage: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
   const departments = useDepartments();
   const employees = useEmployeesLookup();
+  const teams = useTeams();
   const deptName = byId(departments.data, (d) => d.name);
   const empName = byId(employees.data, (e) => e.fullName || `#${e.id}`);
 
-  const blank = { code: "", name: "", departmentId: "", leadEmployeeId: "", maxOnLeave: "1", clashAction: "ALERT" };
+  const blank: TeamFormValues = {
+    code: "",
+    name: "",
+    departmentId: "",
+    leadEmployeeId: "",
+    maxOnLeave: "1",
+    clashAction: "ALERT",
+  };
   const [editing, setEditing] = useState<Team | "new" | null>(null);
-  const [form, setForm] = useState(blank);
+  const [form, setForm] = useState<TeamFormValues>(blank);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+
+  const excludeId = editing && editing !== "new" ? editing.id : undefined;
+  const schema = useMemo(
+    () => teamFormSchema(teams.data ?? [], excludeId),
+    [teams.data, excludeId],
+  );
 
   function openFor(t: Team | "new") {
     setErr("");
     setErrors({});
+    setSubmitted(false);
     setForm(
       t === "new"
         ? blank
@@ -232,6 +425,13 @@ function Teams({ canManage }: { canManage: boolean }) {
     setEditing(t);
   }
 
+  function setField<K extends keyof TeamFormValues>(key: K, value: TeamFormValues[K]) {
+    const next = { ...form, [key]: value };
+    setForm(next);
+    setErr("");
+    setErrors(teamFieldErrors(schema, next, submitted ? "submit" : "live"));
+  }
+
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       editing && editing !== "new"
@@ -240,21 +440,45 @@ function Teams({ canManage }: { canManage: boolean }) {
     onSuccess: () => {
       toast.show(editing === "new" ? "Team created" : "Team saved");
       setEditing(null);
+      setSubmitted(false);
       void qc.invalidateQueries({ queryKey: ["teams"] });
       void qc.invalidateQueries({ queryKey: ["lookup", "teams"] });
       void qc.invalidateQueries({ queryKey: ["org-tree"] });
     },
-    onError: (e: Error) => setErr(e.message),
+    onError: (e: Error) => {
+      const msg = e.message || "Could not save team";
+      const lower = msg.toLowerCase();
+      if (lower.includes("code")) {
+        setErrors((prev) => ({ ...prev, code: msg }));
+        setErr("");
+        return;
+      }
+      if (lower.includes("name")) {
+        setErrors((prev) => ({ ...prev, name: msg }));
+        setErr("");
+        return;
+      }
+      setErr(msg);
+    },
   });
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    const parsed = teamSchema.safeParse(form);
-    if (!parsed.success) return setErrors(collect(parsed.error));
+    setSubmitted(true);
+    const fieldErrs = teamFieldErrors(schema, form, "submit");
+    if (Object.values(fieldErrs).some(Boolean)) {
+      setErrors(fieldErrs);
+      return;
+    }
+    const parsed = schema.safeParse(form);
+    if (!parsed.success) {
+      setErrors(collect(parsed.error));
+      return;
+    }
     setErrors({});
     setErr("");
     save.mutate({
-      code: parsed.data.code,
+      code: parsed.data.code.toUpperCase(),
       name: parsed.data.name,
       departmentId: Number(parsed.data.departmentId),
       leadEmployeeId: Number(parsed.data.leadEmployeeId),
@@ -273,6 +497,7 @@ function Teams({ canManage }: { canManage: boolean }) {
           </button>
         ) : null}
       </div>
+      <ErrorNote error={teams.error} />
       <DataTable<Team>
         queryKey="teams"
         path={api.hrms("teams")}
@@ -293,13 +518,31 @@ function Teams({ canManage }: { canManage: boolean }) {
         <form className="stack" onSubmit={submit} noValidate>
           <div className="form-grid">
             <FormField label="Code" required error={errors.code}>
-              <input type="text" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
+              <input
+                type="text"
+                inputMode="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={form.code}
+                onChange={(e) => setField("code", e.target.value)}
+                aria-invalid={!!errors.code}
+              />
             </FormField>
             <FormField label="Name" required error={errors.name}>
-              <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <input
+                type="text"
+                autoComplete="off"
+                value={form.name}
+                onChange={(e) => setField("name", e.target.value)}
+                aria-invalid={!!errors.name}
+              />
             </FormField>
             <FormField label="Department" required error={errors.departmentId}>
-              <select value={form.departmentId} onChange={(e) => setForm({ ...form, departmentId: e.target.value })}>
+              <select
+                value={form.departmentId}
+                onChange={(e) => setField("departmentId", e.target.value)}
+                aria-invalid={!!errors.departmentId}
+              >
                 <option value="">— Select department —</option>
                 {(departments.data ?? []).map((d) => (
                   <option key={d.id} value={d.id}>
@@ -314,7 +557,11 @@ function Teams({ canManage }: { canManage: boolean }) {
               error={errors.leadEmployeeId}
               hint="Required — pick any existing employee (they do not need to be on this team yet)."
             >
-              <select value={form.leadEmployeeId} onChange={(e) => setForm({ ...form, leadEmployeeId: e.target.value })}>
+              <select
+                value={form.leadEmployeeId}
+                onChange={(e) => setField("leadEmployeeId", e.target.value)}
+                aria-invalid={!!errors.leadEmployeeId}
+              >
                 <option value="">— Select team lead —</option>
                 {(employees.data ?? []).map((m) => (
                   <option key={m.id} value={m.id}>
@@ -324,10 +571,20 @@ function Teams({ canManage }: { canManage: boolean }) {
               </select>
             </FormField>
             <FormField label="Max on leave at once" error={errors.maxOnLeave}>
-              <input type="number" min={0} value={form.maxOnLeave} onChange={(e) => setForm({ ...form, maxOnLeave: e.target.value })} />
+              <input
+                type="number"
+                min={0}
+                value={form.maxOnLeave}
+                onChange={(e) => setField("maxOnLeave", e.target.value)}
+                aria-invalid={!!errors.maxOnLeave}
+              />
             </FormField>
             <FormField label="When exceeded" error={errors.clashAction}>
-              <select value={form.clashAction} onChange={(e) => setForm({ ...form, clashAction: e.target.value })}>
+              <select
+                value={form.clashAction}
+                onChange={(e) => setField("clashAction", e.target.value)}
+                aria-invalid={!!errors.clashAction}
+              >
                 <option value="ALERT">Alert approver</option>
                 <option value="BLOCK">Block request</option>
               </select>
@@ -350,11 +607,30 @@ function Teams({ canManage }: { canManage: boolean }) {
 
 /* -------------------------------- Locations -------------------------------- */
 
+/** Qii defaults — Bangladesh (Dhaka) + Australia (Darwin). IANA zones drive attendance/holidays. */
+const QII_LOCATION_TIME_ZONES = ["Asia/Dhaka", "Australia/Darwin"] as const;
+
+function isValidIanaTimeZone(tz: string): boolean {
+  const value = tz.trim();
+  if (!value) return false;
+  try {
+    // Throws RangeError for unknown IANA ids in modern engines.
+    Intl.DateTimeFormat(undefined, { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const locSchema = z.object({
   code: z.string().trim().min(1, "Code is required"),
   name: z.string().trim().min(1, "Name is required"),
-  country: z.string(),
-  timeZone: z.string().trim().min(1, "Time zone is required (e.g. Asia/Dhaka)"),
+  country: z.string().trim().min(1, "Country is required"),
+  timeZone: z
+    .string()
+    .trim()
+    .min(1, "Time zone is required (e.g. Asia/Dhaka)")
+    .refine(isValidIanaTimeZone, "Use a valid IANA time zone (e.g. Asia/Dhaka or Australia/Darwin)"),
   defaultCurrency: z.string().trim().regex(/^[A-Za-z]{3}$/, "3-letter currency code"),
 });
 
@@ -406,7 +682,7 @@ function Locations({ canManage }: { canManage: boolean }) {
     setErr("");
     save.mutate({
       ...parsed.data,
-      country: parsed.data.country || undefined,
+      country: parsed.data.country.trim(),
       defaultCurrency: parsed.data.defaultCurrency.toUpperCase(),
     });
   }
@@ -421,6 +697,11 @@ function Locations({ canManage }: { canManage: boolean }) {
           </button>
         ) : null}
       </div>
+      <p className="muted small" style={{ marginTop: 0 }}>
+        Defaults: Bangladesh (Dhaka, <span className="mono">Asia/Dhaka</span>) and Australia (Darwin,{" "}
+        <span className="mono">Australia/Darwin</span>). Each employee&apos;s location time zone drives
+        check-in work date, lateness, and holiday day boundaries.
+      </p>
       <DataTable<Loc>
         queryKey="locations"
         path={api.hrms("locations")}
@@ -430,8 +711,16 @@ function Locations({ canManage }: { canManage: boolean }) {
         onRowClick={canManage ? (r) => openFor(r) : undefined}
         columns={[
           { key: "code", header: "Code", sortable: true, className: "mono" },
-          { key: "name", header: "Name", sortable: true, render: (r) => <b>{r.name}</b> },
-          { key: "country", header: "Country", render: (r) => str(r.country) },
+          {
+            key: "name",
+            header: "Location",
+            sortable: true,
+            render: (r) => (
+              <b>
+                {str(r.country) ? `${str(r.country)} (${r.name})` : r.name}
+              </b>
+            ),
+          },
           { key: "timeZone", header: "Time zone", className: "mono" },
           { key: "defaultCurrency", header: "Currency", className: "mono" },
         ]}
@@ -442,14 +731,50 @@ function Locations({ canManage }: { canManage: boolean }) {
             <FormField label="Code" required error={errors.code}>
               <input type="text" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
             </FormField>
-            <FormField label="Name" required error={errors.name}>
+            <FormField label="Name" required error={errors.name} hint="City / site name, e.g. Dhaka or Darwin">
               <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </FormField>
-            <FormField label="Country" error={errors.country}>
-              <input type="text" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} />
+            <FormField label="Country" required error={errors.country}>
+              <input
+                type="text"
+                value={form.country}
+                onChange={(e) => setForm({ ...form, country: e.target.value })}
+                placeholder="Bangladesh"
+                aria-invalid={!!errors.country}
+              />
             </FormField>
-            <FormField label="Time zone" required error={errors.timeZone} hint="IANA name, e.g. Asia/Dhaka">
-              <input type="text" value={form.timeZone} onChange={(e) => setForm({ ...form, timeZone: e.target.value })} />
+            <FormField
+              label="Time zone"
+              required
+              error={errors.timeZone}
+              hint="IANA zone used for check-in / holidays for employees at this location"
+            >
+              <input
+                type="text"
+                list="qii-location-timezones"
+                value={form.timeZone}
+                onChange={(e) => {
+                  const timeZone = e.target.value;
+                  setForm({ ...form, timeZone });
+                  if (!timeZone.trim()) {
+                    setErrors((prev) => ({ ...prev, timeZone: "" }));
+                  } else if (!isValidIanaTimeZone(timeZone)) {
+                    setErrors((prev) => ({
+                      ...prev,
+                      timeZone: "Use a valid IANA time zone (e.g. Asia/Dhaka or Australia/Darwin)",
+                    }));
+                  } else {
+                    setErrors((prev) => ({ ...prev, timeZone: "" }));
+                  }
+                }}
+                placeholder="Asia/Dhaka"
+                aria-invalid={!!errors.timeZone}
+              />
+              <datalist id="qii-location-timezones">
+                {QII_LOCATION_TIME_ZONES.map((tz) => (
+                  <option key={tz} value={tz} />
+                ))}
+              </datalist>
             </FormField>
             <FormField label="Default currency" required error={errors.defaultCurrency}>
               <input

@@ -1,35 +1,16 @@
 package com.platform.payroll.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.platform.payroll.infrastructure.multitenancy.TenantDataSourceManager;
-import com.platform.payroll.infrastructure.multitenancy.TenantRoutingDataSource;
-import com.platform.payroll.infrastructure.redis.RoutingInvalidateListener;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Primary;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
-import org.springframework.data.redis.listener.RedisMessageListenerContainer;
 import org.springframework.web.client.RestClient;
 
-import javax.sql.DataSource;
-
+/**
+ * Payroll owns one fixed PostgreSQL database (spring.datasource.*, guide §1/§5).
+ * The DataSource and Liquibase are configured by Spring Boot from application.yml.
+ */
 @Configuration
-@EnableConfigurationProperties(PayrollProperties.class)
 public class PayrollConfig {
-
-    @Bean
-    @Primary
-    public DataSource dataSource(TenantDataSourceManager manager) {
-        return new TenantRoutingDataSource(manager);
-    }
-
-    @Bean
-    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory factory) {
-        return new StringRedisTemplate(factory);
-    }
 
     @Bean
     public ObjectMapper objectMapper() {
@@ -39,15 +20,5 @@ public class PayrollConfig {
     @Bean
     public RestClient.Builder restClientBuilder() {
         return RestClient.builder();
-    }
-
-    @Bean
-    public RedisMessageListenerContainer redisMessageListenerContainer(
-            RedisConnectionFactory factory,
-            RoutingInvalidateListener listener) {
-        RedisMessageListenerContainer container = new RedisMessageListenerContainer();
-        container.setConnectionFactory(factory);
-        container.addMessageListener(listener, new ChannelTopic(listener.channel()));
-        return container;
     }
 }

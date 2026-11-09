@@ -1,33 +1,29 @@
 {
   "info": {
     "name": "Qii Creative HRMS",
-    "description": "Account-picker JWT flow + HRMS / payroll / notifications / files / reports via Gateway :8090",
+    "description": "Qii HRMS (single company). Login: POST {{gateway}}/api/auth/token with X-Demo-Auth-Key (demo only).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "gateway", "value": "http://127.0.0.1:8090" },
-    { "key": "tenantId", "value": "qii_creative" },
-    { "key": "token", "value": "" },
-    { "key": "employeeId", "value": "" }
+    {
+      "key": "gateway",
+      "value": "http://127.0.0.1:8090"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "employeeId",
+      "value": ""
+    }
   ],
   "item": [
-    {
-      "name": "0. Provision",
-      "request": {
-        "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"businessPack\": \"qii_creative\"\n}"
-        },
-        "url": "{{gateway}}/api/registry/provision"
-      }
-    },
     {
       "name": "1. List accounts",
       "request": {
         "method": "GET",
-        "url": "{{gateway}}/hrms/api/auth/accounts?tenantId={{tenantId}}"
+        "url": "{{gateway}}/hrms/api/auth/accounts"
       }
     },
     {
@@ -46,19 +42,29 @@
       ],
       "request": {
         "method": "POST",
-        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"employeeId\": {{employeeId}}\n}"
+          "raw": "{\n  \"employeeId\": {{employeeId}}\n}"
         },
-        "url": "{{gateway}}/api/registry/token"
+        "url": "{{gateway}}/api/auth/token"
       }
     },
     {
       "name": "3. Me",
       "request": {
         "method": "GET",
-        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
         "url": "{{gateway}}/hrms/api/me"
       }
     },
@@ -66,7 +72,12 @@
       "name": "4. Attendance today",
       "request": {
         "method": "GET",
-        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
         "url": "{{gateway}}/hrms/api/attendance/today"
       }
     },
@@ -74,7 +85,12 @@
       "name": "5. Check-in",
       "request": {
         "method": "POST",
-        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
         "url": "{{gateway}}/hrms/api/attendance/check-in"
       }
     },
@@ -82,7 +98,12 @@
       "name": "6. My leave",
       "request": {
         "method": "GET",
-        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
         "url": "{{gateway}}/hrms/api/leave/my"
       }
     },
@@ -90,7 +111,12 @@
       "name": "7. Employees",
       "request": {
         "method": "GET",
-        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
         "url": "{{gateway}}/hrms/api/employees"
       }
     },
@@ -98,7 +124,12 @@
       "name": "8. Notifications",
       "request": {
         "method": "GET",
-        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          }
+        ],
         "url": "{{gateway}}/notifications/api/notifications"
       }
     },
@@ -107,8 +138,14 @@
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Authorization", "value": "Bearer {{token}}" },
-          { "key": "Content-Type", "value": "application/json" }
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
         ],
         "body": {
           "mode": "raw",

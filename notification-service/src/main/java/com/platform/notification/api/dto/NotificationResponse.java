@@ -7,7 +7,6 @@ import java.time.Instant;
  */
 public record NotificationResponse(
         Long id,
-        String tenantId,
         Long employeeId,
         String title,
         String body,

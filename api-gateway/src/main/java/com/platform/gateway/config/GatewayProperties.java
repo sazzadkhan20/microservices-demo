@@ -12,6 +12,8 @@ public class GatewayProperties {
     private Security security = new Security();
     private DemoAuth demoAuth = new DemoAuth();
     private List<String> publicPaths = new ArrayList<>();
+    private Session session = new Session();
+    private People people = new People();
 
     public Jwt getJwt() {
         return jwt;
@@ -35,6 +37,22 @@ public class GatewayProperties {
 
     public void setDemoAuth(DemoAuth demoAuth) {
         this.demoAuth = demoAuth;
+    }
+
+    public Session getSession() {
+        return session;
+    }
+
+    public void setSession(Session session) {
+        this.session = session;
+    }
+
+    public People getPeople() {
+        return people;
+    }
+
+    public void setPeople(People people) {
+        this.people = people;
     }
 
     public List<String> getPublicPaths() {
@@ -61,6 +79,16 @@ public class GatewayProperties {
     public static class Security {
         private String serviceKey;
         private String adminKey;
+        /** Backend-only secret for system calls (e.g. People employee auth-check at login). */
+        private String internalKey;
+
+        public String getInternalKey() {
+            return internalKey;
+        }
+
+        public void setInternalKey(String internalKey) {
+            this.internalKey = internalKey;
+        }
 
         public String getServiceKey() {
             return serviceKey;
@@ -84,7 +112,7 @@ public class GatewayProperties {
      * header X-Demo-Auth-Key; when disabled they are not reachable through the gateway at all.
      */
     public static class DemoAuth {
-        private boolean enabled = true;
+        private boolean enabled = false;
         private String key;
 
         public boolean isEnabled() {
@@ -101,6 +129,32 @@ public class GatewayProperties {
 
         public void setKey(String key) {
             this.key = key;
+        }
+    }
+
+    /** Session token settings (gateway is the only token issuer and verifier). */
+    public static class Session {
+        private long tokenTtlSeconds = 604_800L;
+
+        public long getTokenTtlSeconds() {
+            return tokenTtlSeconds;
+        }
+
+        public void setTokenTtlSeconds(long tokenTtlSeconds) {
+            this.tokenTtlSeconds = tokenTtlSeconds;
+        }
+    }
+
+    /** People service (employee identity source) used to validate logins. */
+    public static class People {
+        private String baseUrl = "http://127.0.0.1:8081";
+
+        public String getBaseUrl() {
+            return baseUrl;
+        }
+
+        public void setBaseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
         }
     }
 }

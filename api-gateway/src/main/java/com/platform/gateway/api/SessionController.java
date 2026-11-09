@@ -68,7 +68,6 @@ public class SessionController {
     @PostMapping("/revoke-employee/{employeeId}")
     public Mono<ResponseEntity<Map<String, Object>>> revokeEmployee(
             @PathVariable Long employeeId,
-            @RequestParam String tenantId,
             @RequestHeader(value = "X-Platform-Admin-Key", required = false) String providedAdminKey,
             @RequestParam(defaultValue = "604800") long ttlSeconds) {
         if (adminKey.isBlank() || !SecretMatcher.matches(providedAdminKey, adminKey)) {
@@ -76,10 +75,9 @@ public class SessionController {
                     .body(Map.of("ok", false, "message", "Admin key required")));
         }
         Duration ttl = Duration.ofSeconds(Math.max(60, ttlSeconds));
-        return revocationStore.revokeEmployee(tenantId, employeeId, ttl)
+        return revocationStore.revokeEmployee(employeeId, ttl)
                 .thenReturn(ResponseEntity.ok(Map.of(
                         "ok", true,
-                        "tenantId", tenantId,
                         "employeeId", employeeId,
                         "ttlSeconds", ttl.toSeconds())));
     }

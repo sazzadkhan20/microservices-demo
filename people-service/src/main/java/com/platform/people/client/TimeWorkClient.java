@@ -2,7 +2,6 @@ package com.platform.people.client;
 
 import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,7 +42,6 @@ public class TimeWorkClient {
             body.put("locationId", locationId);
             client.post()
                     .uri("/api/internal/work-schedules/sync-from-pattern")
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .header(InternalCalls.HEADER, internalKey)
                     .body(body)
                     .retrieve()
@@ -60,7 +58,6 @@ public class TimeWorkClient {
                     .uri(uri -> uri.path("/api/internal/attendance-facts/{id}")
                             .queryParam("period", period)
                             .build(employeeId))
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .header(InternalCalls.HEADER, internalKey)
                     .retrieve()
                     .body(Map.class);
@@ -69,10 +66,5 @@ public class TimeWorkClient {
             log.warn("Attendance facts fetch failed: {}", e.getMessage());
             throw new IllegalStateException("Time&Work service unavailable for payroll facts", e);
         }
-    }
-
-    private static String tenant() {
-        String t = TenantContext.getTenantId();
-        return t == null ? "" : t;
     }
 }

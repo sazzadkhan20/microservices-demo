@@ -4,10 +4,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.files.application.FileService;
-import com.platform.files.infrastructure.multitenancy.TenantDataSourceManager;
 import com.platform.messaging.outbox.InboxGuard;
 import com.platform.messaging.outbox.OutboxRelay;
-import com.platform.messaging.tenant.TenantBoundRunner;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -25,19 +23,16 @@ public class FileScanListener {
     private final ObjectMapper objectMapper;
     private final InboxGuard inboxGuard;
     private final FileService fileService;
-    private final TenantDataSourceManager dataSourceManager;
     private final OutboxRelay outboxRelay;
 
     public FileScanListener(
             ObjectMapper objectMapper,
             InboxGuard inboxGuard,
             FileService fileService,
-            TenantDataSourceManager dataSourceManager,
             OutboxRelay outboxRelay) {
         this.objectMapper = objectMapper;
         this.inboxGuard = inboxGuard;
         this.fileService = fileService;
-        this.dataSourceManager = dataSourceManager;
         this.outboxRelay = outboxRelay;
     }
 
@@ -45,9 +40,8 @@ public class FileScanListener {
     public void onMessage(Message message) throws Exception {
         byte[] body = message.getBody();
         Map<String, Object> envelope = objectMapper.readValue(body, new TypeReference<>() {});
-        String tenantId = String.valueOf(envelope.getOrDefault("tenantId", ""));
         String eventId = String.valueOf(envelope.getOrDefault("eventId", ""));
-        TenantBoundRunner.run(tenantId, () -> inboxGuard.processOnce(
+        inboxGuard.processOnce(
                 eventId,
                 String.valueOf(envelope.getOrDefault("eventType", "")),
                 CONSUMER,
@@ -62,13 +56,6 @@ public class FileScanListener {
                     // processScan persists REJECTED without throwing — ack after durable write (guide §7).
                     String status = fileService.processScan(fileId);
                     return Map.of("fileId", fileId, "status", status, "ok", true);
-                }));
-    }
-
-    @Scheduled(fixedDelayString = "${platform.messaging.outbox-poll-ms:1000}")
-    public void drainOutbox() {
-        for (String tenantId : dataSourceManager.outboxTenantIds()) {
-            TenantBoundRunner.run(tenantId, outboxRelay::drainBatch);
-        }
+                });
     }
 }

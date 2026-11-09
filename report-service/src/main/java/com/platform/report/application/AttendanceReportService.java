@@ -28,7 +28,7 @@ public class AttendanceReportService {
     private static final String CSV_HEADER = "employeeId,date,status,checkIn,checkOut\n";
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
-    /** Default when attendance row has no timeZone (Qii / BD tenants). */
+    /** Default when attendance row has no timeZone (Qii Creative, Asia/Dhaka). */
     private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Dhaka");
 
     private final HrmsGatewayClient hrms;
@@ -43,7 +43,7 @@ public class AttendanceReportService {
                 || hrms.hasPermission(actorId, "employees", "edit");
     }
 
-    public String generateMonthlyCsv(String tenantId, AttendanceReportRequest req) {
+    public String generateMonthlyCsv(AttendanceReportRequest req) {
         Long actor = AuthContext.getEmployeeId();
         if (actor == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing employee identity");
@@ -80,7 +80,7 @@ public class AttendanceReportService {
             if (row != null) {
                 status = text(row, "status", text(row, "statusCode", "RECORDED"));
                 ZoneId zone = zoneOf(row);
-                // Prefer HRMS local wall-clock fields (already in tenant TZ); else Instant → zone.
+                // Prefer HRMS local wall-clock fields (already in company TZ); else Instant → zone.
                 checkIn = localTimeOf(row, zone, "checkInLocal", "checkIn", "checkInAt");
                 checkOut = localTimeOf(row, zone, "checkOutLocal", "checkOut", "checkOutAt");
             } else {

@@ -1,0 +1,31 @@
+databaseChangeLog:
+  # Single-company deployment (guide §1): events no longer carry a tenant id.
+  - changeSet:
+      id: notification-sc-001-outbox-drop-tenant
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: message_outbox
+            columnName: tenant_id
+      changes:
+        - dropColumn:
+            tableName: message_outbox
+            columnName: tenant_id
+  - changeSet:
+      id: notification-sc-002-notifications-drop-tenant
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: notifications
+            columnName: tenant_id
+      changes:
+        - dropColumn:
+            tableName: notifications
+            columnName: tenant_id
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_notif_employee ON notifications (employee_id)
+        # DB-06: concurrent creates with the same dedupe key must not duplicate.
+        - sql:
+            sql: CREATE UNIQUE INDEX IF NOT EXISTS uq_notif_dedupe_key ON notifications (dedupe_key) WHERE dedupe_key IS NOT NULL

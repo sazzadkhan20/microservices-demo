@@ -2,25 +2,25 @@
 
 Per **HRMS Microservices Developer Guide §3**. Each service owns its database, migrations, runtime role, **local outbox/inbox**, and **local audit trail**. Services do **not** share JDBC. Communicate via HTTP contracts and RabbitMQ.
 
-## Ports & registry names
+## Ports & databases (single company, fixed connections)
 
-| Service | Port | Registry `service_name` | Tenant DB |
-|---------|------|-------------------------|-----------|
-| `people-service` | **8081** / gRPC **9081** | `people` | `people_<tenant>` |
-| `leave-service` | **8086** | `leave` | `leave_<tenant>` |
-| `time-work-service` | **8087** | `time-work` | `timework_<tenant>` |
-| `payroll-service` | **8082** | `payroll` | `payroll_<tenant>` |
-| `file-service` | **8084** | `file` | `files_<tenant>` |
-| `notification-service` | **8083** | `notification` | `notif_<tenant>` |
-| `report-service` | **8085** | `report` | `reports_<tenant>` |
+| Service | Port | Database |
+|---------|------|----------|
+| `people-service` | **8081** HTTP/actuator · **9081** gRPC only (do not HTTP-probe) | `people_db` |
+| `leave-service` | **8086** | `leave_db` |
+| `time-work-service` | **8087** | `timework_db` |
+| `payroll-service` | **8082** | `payroll_db` |
+| `file-service` | **8084** | `files_db` |
+| `notification-service` | **8083** | `notification_db` |
+| `report-service` | **8085** | `reports_db` |
 
-Gateway **8090**, registry **8080**. Legacy alias `hrms` → People JDBC.
+Gateway **8090** (no database). Connection, roles and deployment: [DEPLOYMENT_FIXED_DB.md](DEPLOYMENT_FIXED_DB.md).
 
 ## Domain ownership
 
 | Service | Owns |
 |---------|------|
-| **People** | Employees, org, RBAC, employment/reporting history, field defs, `tenant_settings`, `people_audit_log` |
+| **People** | Employees, org, RBAC, employment/reporting history, field defs, `tenant_settings` (company settings), `people_audit_log` |
 | **Leave** | Leave domain, `leave_settings`, `leave_audit_log` |
 | **Time & Work** | Schedules, holidays, attendance, tasks, work logs, `timework_settings`, `timework_audit_log` |
 | **Payroll** | Salary history, payslips, finalize ops, `payroll_audit_log` |
@@ -36,15 +36,15 @@ Each service writes **only its own** audit rows into a **service-named** table:
 
 | DB | Audit table |
 |----|-------------|
-| people_* | `people_audit_log` |
-| leave_* | `leave_audit_log` |
-| timework_* | `timework_audit_log` |
-| payroll_* | `payroll_audit_log` |
-| files_* | `files_audit_log` |
-| notif_* | `notification_audit_log` |
-| reports_* | `report_audit_log` |
+| people_db | `people_audit_log` |
+| leave_db | `leave_audit_log` |
+| timework_db | `timework_audit_log` |
+| payroll_db | `payroll_audit_log` |
+| files_db | `files_audit_log` |
+| notification_db | `notification_audit_log` |
+| reports_db | `report_audit_log` |
 
-Provisioning partitions legacy monolith `audit_log` clones by `entity` into these tables (`AuditDataPartitioner`). No shared audit JDBC.
+No shared audit JDBC.
 
 ## Messaging (guide outbox/inbox)
 

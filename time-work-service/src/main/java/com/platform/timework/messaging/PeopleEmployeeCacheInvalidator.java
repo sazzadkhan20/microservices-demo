@@ -7,7 +7,6 @@ import com.platform.common.messaging.PlatformQueues;
 import com.platform.common.people.PeopleDirectoryClient;
 import com.platform.messaging.correlation.CorrelationContext;
 import com.platform.messaging.outbox.InboxGuard;
-import com.platform.messaging.tenant.TenantBoundRunner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
@@ -53,25 +52,22 @@ public class PeopleEmployeeCacheInvalidator {
         if (!EventTypes.PEOPLE_EMPLOYEE_UPSERTED.equals(eventType)) {
             return;
         }
-        String tenantId = str(envelope.get("tenantId"));
         String eventId = str(envelope.get("eventId"));
         String correlationId = str(envelope.get("correlationId"));
-        if (tenantId.isBlank() || eventId.isBlank()) {
+        if (eventId.isBlank()) {
             return;
         }
-        TenantBoundRunner.run(tenantId, () -> {
-            CorrelationContext.set(correlationId.isBlank() ? eventId : correlationId);
-            try {
-                inboxGuard.processOnce(eventId, eventType, CONSUMER, envelope, () -> {
-                    Long id = employeeIdOf(envelope);
-                    people.invalidateEmployee(id);
-                    log.debug("Time&Work People cache invalidated tenant={} employeeId={}", tenantId, id);
-                    return Map.of("ok", true, "employeeId", id == null ? "" : id);
-                });
-            } finally {
-                CorrelationContext.clear();
-            }
-        });
+        CorrelationContext.set(correlationId.isBlank() ? eventId : correlationId);
+        try {
+            inboxGuard.processOnce(eventId, eventType, CONSUMER, envelope, () -> {
+                Long id = employeeIdOf(envelope);
+                people.invalidateEmployee(id);
+                log.debug("Time&Work People cache invalidated employeeId={}", id);
+                return Map.of("ok", true, "employeeId", id == null ? "" : id);
+            });
+        } finally {
+            CorrelationContext.clear();
+        }
     }
 
     private Long employeeIdOf(Map<String, Object> envelope) {

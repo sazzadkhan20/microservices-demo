@@ -1,9 +1,32 @@
 server:
   port: 8082
+  shutdown: graceful
 
 spring:
   application:
     name: payroll-service
+  # Guide §1/§5 — one fixed database owned by this service. Runtime uses a restricted DML role;
+  # Liquibase uses a separate schema-owner (migration) role. Credentials come from env / secrets manager.
+  datasource:
+    url: ${PAYROLL_DB_URL:jdbc:postgresql://127.0.0.1:5434/payroll_db}
+    username: ${PAYROLL_DB_USER:payroll_app}
+    password: ${PAYROLL_DB_PASSWORD}
+    hikari:
+      pool-name: payroll-db
+      maximum-pool-size: ${PAYROLL_DB_POOL_SIZE:10}
+      minimum-idle: 2
+      connection-timeout: 5000
+      validation-timeout: 3000
+      idle-timeout: 600000
+      max-lifetime: 1700000
+      keepalive-time: 120000
+      leak-detection-threshold: 60000
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    user: ${PAYROLL_DB_MIGRATION_USER:payroll_migrator}
+    password: ${PAYROLL_DB_MIGRATION_PASSWORD}
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   rabbitmq:
     host: ${RABBITMQ_HOST:127.0.0.1}
     port: ${RABBITMQ_PORT:5672}
@@ -28,8 +51,6 @@ spring:
         initial-interval: 500
         max-attempts: 3
         multiplier: 2.0
-  liquibase:
-    enabled: false
   jpa:
     open-in-view: false
     hibernate:
@@ -39,13 +60,6 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc:
           time_zone: UTC
-        boot:
-          allow_jdbc_metadata_access: false
-  data:
-    redis:
-      host: ${REDIS_HOST:127.0.0.1}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
 
 # gRPC client → HRMS
 grpc:
@@ -60,7 +74,6 @@ payroll:
   leave-base-url: ${LEAVE_BASE_URL:http://127.0.0.1:8086}
 
 platform:
-  service-name: payroll
   messaging:
     enabled: ${PLATFORM_MESSAGING_ENABLED:true}
     outbox-poll-ms: 1000
@@ -69,12 +82,6 @@ platform:
     finalize-warn-minutes: ${PAYROLL_FINALIZE_WARN_MINUTES:5}
     finalize-action-required-minutes: ${PAYROLL_FINALIZE_ACTION_REQUIRED_MINUTES:30}
     finalize-recovery-interval-ms: ${PAYROLL_FINALIZE_RECOVERY_INTERVAL_MS:60000}
-  tenancy:
-    mode: ${PLATFORM_TENANCY_MODE:DYNAMIC}
-    fixed-tenant-id: ${PLATFORM_FIXED_TENANT_ID:}
-    fixed-jdbc-url: ${PLATFORM_FIXED_JDBC_URL:}
-    fixed-username: ${PLATFORM_FIXED_JDBC_USER:}
-    fixed-password: ${PLATFORM_FIXED_JDBC_PASSWORD:}
   notification:
     # Empty = log-only (finalize still succeeds). Points at notification-service.
     base-url: ${NOTIFICATION_BASE_URL:http://127.0.0.1:8083}
@@ -83,17 +90,6 @@ platform:
     require-gateway: ${PLATFORM_REQUIRE_GATEWAY:true}
     service-key: ${PLATFORM_SERVICE_KEY}
     internal-key: ${PLATFORM_INTERNAL_KEY}
-  registry:
-    base-url: ${REGISTRY_BASE_URL:http://localhost:8080}
-    service-key: ${PLATFORM_SERVICE_KEY}
-  datasource:
-    maximum-pool-size: 5
-    minimum-idle: 1
-    max-lifetime-ms: 1800000
-    password: ${PAYROLL_PG_PASSWORD:${PLATFORM_DB_PASSWORD:}}
-  cache:
-    l1-max-size: 50
-    l1-expire-after-access-minutes: 5
 
 springdoc:
   swagger-ui:
@@ -106,6 +102,9 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,db
   endpoints:
     web:
       exposure:

@@ -3,7 +3,6 @@ package com.platform.payroll.infrastructure.grpc;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.platform.common.constants.PlatformHeaders;
-import com.platform.common.tenant.TenantContext;
 import com.platform.hrms.api.grpc.EmployeeResponse;
 import com.platform.hrms.api.grpc.EmployeeServiceGrpc;
 import com.platform.hrms.api.grpc.GetEmployeeRequest;
@@ -27,8 +26,6 @@ import java.util.Set;
 @Component
 public class HrmsEmployeeClient {
 
-    private static final Metadata.Key<String> TENANT_KEY =
-            Metadata.Key.of(PlatformHeaders.GRPC_TENANT_ID, Metadata.ASCII_STRING_MARSHALLER);
     private static final Metadata.Key<String> SERVICE_KEY =
             Metadata.Key.of(PlatformHeaders.GRPC_SERVICE_KEY, Metadata.ASCII_STRING_MARSHALLER);
 
@@ -62,10 +59,9 @@ public class HrmsEmployeeClient {
         );
     }
 
-    /** Effective lower-case permission keys ("feature:action", "*:*") for the employee in the current tenant. */
+    /** Effective lower-case permission keys ("feature:action", "*:*") for the employee. */
     public Set<String> getPermissions(long employeeId) {
-        String tenantId = requireTenant();
-        return permissionCache.get(tenantId + ":" + employeeId, k -> {
+        return permissionCache.get(String.valueOf(employeeId), k -> {
             PermissionsResponse response = stubWithHeaders()
                     .getPermissions(GetPermissionsRequest.newBuilder().setEmployeeId(employeeId).build());
             return Set.copyOf(new HashSet<>(response.getPermissionKeysList()));
@@ -74,17 +70,10 @@ public class HrmsEmployeeClient {
 
     private EmployeeServiceGrpc.EmployeeServiceBlockingStub stubWithHeaders() {
         Metadata headers = new Metadata();
-        headers.put(TENANT_KEY, requireTenant());
         headers.put(SERVICE_KEY, serviceKey);
-        return stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers));
-    }
-
-    private static String requireTenant() {
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null) {
-            throw new IllegalStateException("TenantContext empty — cannot call HRMS");
-        }
-        return tenantId;
+        // API-01: explicit deadline so a slow People service cannot pin Payroll threads.
+        return stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
+                .withDeadlineAfter(5, java.util.concurrent.TimeUnit.SECONDS);
     }
 
     public record EmployeeSnapshot(

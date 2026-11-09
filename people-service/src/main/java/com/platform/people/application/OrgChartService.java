@@ -113,11 +113,16 @@ public class OrgChartService {
 
         Map<Long, List<Long>> children = new HashMap<>();
         List<Long> roots = new ArrayList<>();
+        Set<Long> unresolvedManager = new HashSet<>();
         for (Long id : byId.keySet()) {
             Long mgr = managerById.get(id);
             if (mgr != null && byId.containsKey(mgr) && !Objects.equals(mgr, id)) {
                 children.computeIfAbsent(mgr, k -> new ArrayList<>()).add(id);
             } else {
+                // No manager, self-manager, or manager outside this chart (inactive / filtered) → root.
+                if (mgr != null && !Objects.equals(mgr, id) && !byId.containsKey(mgr)) {
+                    unresolvedManager.add(id);
+                }
                 roots.add(id);
             }
         }
@@ -135,7 +140,8 @@ public class OrgChartService {
         List<Map<String, Object>> out = new ArrayList<>();
         Set<Long> visiting = new HashSet<>();
         for (Long rootId : roots) {
-            Map<String, Object> node = buildNode(rootId, byId, children, managerById, deptNames, locNames, visiting, 0);
+            Map<String, Object> node = buildNode(
+                    rootId, byId, children, managerById, deptNames, locNames, unresolvedManager, visiting, 0);
             if (node != null) {
                 out.add(node);
             }
@@ -172,6 +178,7 @@ public class OrgChartService {
             Map<Long, Long> managerById,
             Map<Long, String> deptNames,
             Map<Long, String> locNames,
+            Set<Long> unresolvedManager,
             Set<Long> visiting,
             int depth) {
         if (depth > 64 || !byId.containsKey(id) || !visiting.add(id)) {
@@ -185,13 +192,15 @@ public class OrgChartService {
         node.put("jobTitle", e.getJobTitle());
         node.put("status", e.getStatus());
         node.put("managerId", managerById.get(id));
+        node.put("unresolvedManager", unresolvedManager.contains(id));
         node.put("departmentId", e.getDepartmentId());
         node.put("departmentName", e.getDepartmentId() == null ? null : deptNames.get(e.getDepartmentId()));
         node.put("locationId", e.getLocationId());
         node.put("locationName", e.getLocationId() == null ? null : locNames.get(e.getLocationId()));
         List<Map<String, Object>> childNodes = new ArrayList<>();
         for (Long cid : children.getOrDefault(id, List.of())) {
-            Map<String, Object> c = buildNode(cid, byId, children, managerById, deptNames, locNames, visiting, depth + 1);
+            Map<String, Object> c = buildNode(
+                    cid, byId, children, managerById, deptNames, locNames, unresolvedManager, visiting, depth + 1);
             if (c != null) {
                 childNodes.add(c);
             }

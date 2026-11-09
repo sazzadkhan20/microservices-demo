@@ -1,7 +1,6 @@
 package com.platform.files.api.rest;
 
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 import com.platform.files.application.FileService;
 import io.swagger.v3.oas.annotations.Hidden;
 import jakarta.servlet.http.HttpServletRequest;
@@ -39,10 +38,6 @@ public class InternalFileController {
         if (!InternalCalls.isTrusted(request.getHeader(InternalCalls.HEADER), internalKey)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Internal key required");
         }
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "X-Tenant-ID required");
-        }
-        return fileService.internalDescribe(tenantId, id);
+        return fileService.internalDescribe(id);
     }
 }

@@ -9,40 +9,36 @@ const tAdm = await token(ADMIN), tHr = await token(HR), tMgr = await token(MGR),
 
 // ---- token issuance ----
 {
-  const r = await req("POST", `${GW}/api/registry/token`, { headers: { "X-Demo-Auth-Key": DEMO }, body: { tenantId: "qii_creative" } });
+  const r = await req("POST", `${GW}/api/auth/token`, { headers: { "X-Demo-Auth-Key": DEMO }, body: {} });
   check("TOKEN-NO-EMPLOYEE", r.status >= 400, `status=${r.status} ${r.text.slice(0, 120)}`, "Medium");
-  const r2 = await req("POST", `${GW}/api/registry/token`, { headers: { "X-Demo-Auth-Key": DEMO }, body: { tenantId: "qii_creative", employeeId: 99999 } });
+  const r2 = await req("POST", `${GW}/api/auth/token`, { headers: { "X-Demo-Auth-Key": DEMO }, body: { employeeId: 99999 } });
   check("TOKEN-NONEXISTENT-EMPLOYEE", r2.status >= 400, `status=${r2.status} ${r2.text.slice(0, 160)}`, "High");
-  const r3 = await req("POST", `${GW}/api/registry/token`, { headers: { "X-Demo-Auth-Key": DEMO }, body: { tenantId: "qa_should_not_exist", employeeId: 1 } });
-  check("TOKEN-HALF-PROVISIONED-TENANT", r3.status >= 400, `status=${r3.status} ${r3.text.slice(0, 160)}`, "Medium");
-  const r4 = await req("POST", `${GW}/api/registry/token`, { headers: { "X-Demo-Auth-Key": DEMO }, body: { tenantId: "techshop_retail", employeeId: 1 } });
-  check("TOKEN-OTHER-TENANT", r4.status === 200, `techshop status=${r4.status}`, "Info");
   const exp = decode(tAdm); check("SESSION-TTL-7D (FR-AUTH-06)", exp.exp - exp.iat >= 7 * 86400, `ttl=${exp.exp - exp.iat}s`, "Medium");
 }
 
 // ---- JWT forgery ----
 {
   const now = Math.floor(Date.now() / 1000);
-  const none = signJwt({ sub: "x", tenant_id: "qii_creative", employee_id: 1, iat: now, exp: now + 999 }, "", "none");
+  const none = signJwt({ sub: "x", employee_id: 1, iat: now, exp: now + 999 }, "", "none");
   let r = await req("GET", `${H}/employees?page=0&size=1`, { headers: A(none) });
   check("JWT-ALG-NONE", r.status === 401, `status=${r.status}`, "Critical");
-  const bad = signJwt({ sub: "x", tenant_id: "qii_creative", employee_id: 1, iat: now, exp: now + 999 }, "wrong-secret-wrong-secret-wrong-secret");
+  const bad = signJwt({ sub: "x", employee_id: 1, iat: now, exp: now + 999 }, "wrong-secret-wrong-secret-wrong-secret");
   r = await req("GET", `${H}/employees?page=0&size=1`, { headers: A(bad) });
   check("JWT-WRONG-SECRET", r.status === 401, `status=${r.status}`, "Critical");
-  const expired = signJwt({ sub: "x", tenant_id: "qii_creative", employee_id: 1, iat: now - 999, exp: now - 10 }, SECRET);
+  const expired = signJwt({ sub: "x", employee_id: 1, iat: now - 999, exp: now - 10 }, SECRET);
   r = await req("GET", `${H}/employees?page=0&size=1`, { headers: A(expired) });
   check("JWT-EXPIRED", r.status === 401, `status=${r.status}`, "Critical");
-  const forged = signJwt({ sub: "x", tenant_id: "qii_creative", employee_id: 1, iat: now, exp: now + 999 }, SECRET);
+  const forged = signJwt({ sub: "x", employee_id: 1, iat: now, exp: now + 999 }, SECRET);
   r = await req("GET", `${H}/me`, { headers: A(forged) });
   check("JWT-DEFAULT-SECRET-FORGE (secret in repo)", r.status === 401, `status=${r.status} -> forged SUPERADMIN works if 200`, "Critical");
-  const noExp = signJwt({ sub: "x", tenant_id: "qii_creative", employee_id: 1, iat: now }, SECRET);
+  const noExp = signJwt({ sub: "x", employee_id: 1, iat: now }, SECRET);
   r = await req("GET", `${H}/me`, { headers: A(noExp) });
   check("JWT-NO-EXP-ACCEPTED", r.status === 401, `status=${r.status}`, "High");
 }
 
 // ---- header spoofing via gateway ----
 {
-  let r = await req("GET", `${H}/me`, { headers: { ...A(tEmp), "X-Employee-ID": "1", "X-Tenant-ID": "techshop_retail" } });
+  let r = await req("GET", `${H}/me`, { headers: { ...A(tEmp), "X-Employee-ID": "1" } });
   check("SPOOF-X-EMPLOYEE-ID", r.json?.employeeId == EMP || r.json?.id == EMP || r.json?.employee?.id == EMP, `me=${r.text.slice(0, 160)}`, "Critical");
   r = await req("GET", `${H}/me`, { headers: { ...A(tEmp), "X-Service-Key": "x", "X-Roles": "SUPERADMIN" } });
   check("SPOOF-EXTRA-HEADERS", r.status === 200, `status=${r.status}`, "Info");
@@ -50,22 +46,18 @@ const tAdm = await token(ADMIN), tHr = await token(HR), tMgr = await token(MGR),
 
 // ---- direct service bypass (internal ports) ----
 for (const [n, url] of [["hrms", "http://127.0.0.1:8081/api/employees?page=0&size=2"], ["payroll", "http://127.0.0.1:8082/api/payroll/payslips"], ["notif", "http://127.0.0.1:8083/api/notifications"], ["files", "http://127.0.0.1:8084/api/files"], ["reports", "http://127.0.0.1:8085/api/reports/exports"]]) {
-  const r = await req("GET", url, { headers: { "X-Tenant-ID": "qii_creative", "X-Employee-ID": "1" } });
+  const r = await req("GET", url, { headers: { "X-Employee-ID": "1" } });
   check(`DIRECT-${n}-NO-SERVICE-KEY`, r.status === 401 || r.status === 403, `status=${r.status}`, "Critical");
-  const r2 = await req("GET", url, { headers: { "X-Tenant-ID": "qii_creative", "X-Employee-ID": "1", "X-Service-Key": DEMO } });
+  const r2 = await req("GET", url, { headers: { "X-Employee-ID": "1", "X-Service-Key": DEMO } });
   check(`DIRECT-${n}-WITH-DEFAULT-KEY (demo key == service key)`, !(r2.status === 200), `status=${r2.status}`, "High");
 }
 
-// ---- registry admin ----
+// ---- control plane removed (single company) ----
 {
   let r = await req("POST", `${GW}/api/registry/provision`, { body: { tenantId: "qa_probe_x" } });
-  check("PROVISION-NO-KEY", r.status === 401 || r.status === 403, `status=${r.status}`, "Critical");
+  check("NO-REGISTRY-PROVISION-ROUTE", r.status === 404 || r.status === 401, `status=${r.status}`, "Critical");
   r = await req("GET", `${GW}/api/registry/tenants`, {});
-  check("REGISTRY-LIST-TENANTS-NO-KEY", r.status === 401 || r.status === 403, `status=${r.status} ${r.text.slice(0, 120)}`, "High");
-  r = await req("GET", `${GW}/api/registry/tenants/qii_creative`, { headers: A(tEmp) });
-  check("REGISTRY-TENANT-DETAIL-AS-EMPLOYEE", !(r.status === 200 && /password|jdbc/i.test(r.text)), `status=${r.status} ${r.text.slice(0, 160)}`, "Critical");
-  r = await req("POST", `${GW}/api/registry/provision`, { headers: { "X-Platform-Admin-Key": "local-platform-admin-change-me" }, body: { tenantId: "bad'; DROP DATABASE x; --" } });
-  check("PROVISION-SQLI-TENANT-ID", r.status === 400, `status=${r.status} ${r.text.slice(0, 160)}`, "Critical");
+  check("NO-REGISTRY-TENANTS-ROUTE", r.status === 404 || r.status === 401, `status=${r.status}`, "High");
 }
 
 // ---- IDOR / RBAC as plain employee (Karim id=9) ----
@@ -135,18 +127,6 @@ for (const [m, url, what] of idor) {
   check("NOTIF-READ-OTHERS", others.length === 0, `status=${r.status} others=${others.length}`, "High");
   const r2 = await req("POST", `${GW}/notifications/api/notifications`, { headers: A(tEmp), body: { recipientId: 1, type: "PHISH", text: "Click http://evil", title: "x" } });
   check("NOTIF-EMPLOYEE-CAN-CREATE-FOR-OTHERS", r2.status === 403 || r2.status === 401, `status=${r2.status} ${r2.text.slice(0, 120)}`, "High");
-}
-
-// ---- tenant isolation: qii token -> request carrying techshop ids ----
-{
-  const tTs = await token(1, "techshop_retail");
-  const r = await req("GET", `${H}/employees?page=0&size=3`, { headers: A(tTs) });
-  check("TECHSHOP-EMPLOYEES-WORK", r.status === 200, `status=${r.status} ${r.text.slice(0, 200)}`, "High");
-  const tIm = await token(1, "impit_limited");
-  const r2 = await req("GET", `${H}/employees?page=0&size=3`, { headers: A(tIm) });
-  check("IMPIT-EMPLOYEES-WORK", r2.status === 200, `status=${r2.status} ${r2.text.slice(0, 200)}`, "High");
-  const r3 = await req("GET", `${P}/payroll/config`, { headers: A(tTs) });
-  check("TECHSHOP-PAYROLL-CONFIG", r3.status === 200, `status=${r3.status} ${r3.text.slice(0, 200)}`, "High");
 }
 
 // ---- input robustness: 500s ----

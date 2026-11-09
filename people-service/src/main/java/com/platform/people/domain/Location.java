@@ -15,7 +15,7 @@ public class Location {
     @Column(name = "name", nullable = false, length = 128)
     private String name;
 
-    @Column(name = "country", length = 64)
+    @Column(name = "country", nullable = false, length = 64)
     private String country;
 
     @Column(name = "time_zone", nullable = false, length = 64)

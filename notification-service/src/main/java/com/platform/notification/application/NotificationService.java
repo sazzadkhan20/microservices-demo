@@ -31,18 +31,17 @@ public class NotificationService {
      *
      * @return the new or existing (deduplicated) notification
      */
-    public NotificationResponse create(String tenantId, CreateNotificationRequest req) {
+    public NotificationResponse create(CreateNotificationRequest req) {
         // Deduplication: if dedupeKey is set and already exists, return the existing record
         if (req.dedupeKey() != null && !req.dedupeKey().isBlank()) {
             Optional<Notification> existing =
-                    repository.findByTenantIdAndDedupeKey(tenantId, req.dedupeKey());
+                    repository.findByDedupeKey(req.dedupeKey());
             if (existing.isPresent()) {
                 return toResponse(existing.get());
             }
         }
 
         Notification n = new Notification();
-        n.setTenantId(tenantId);
         n.setEmployeeId(req.employeeId());
         n.setTitle(req.title());
         n.setBody(req.body());
@@ -54,6 +53,7 @@ public class NotificationService {
         n.setLastDeliveryAt(Instant.now());
         n.setDeliveryStatus("DELIVERED");
 
+        // uq_notif_dedupe_key rejects a concurrent duplicate; the retried command then hits the lookup above.
         Notification saved = repository.save(n);
         auditService.record(req.employeeId(), "CREATE", "Notification", String.valueOf(saved.getId()), null,
                 Map.of("category", saved.getCategory() == null ? "" : saved.getCategory(),
@@ -62,26 +62,26 @@ public class NotificationService {
     }
 
     @Transactional(readOnly = true)
-    public Page<NotificationResponse> listForEmployee(String tenantId, Long employeeId,
+    public Page<NotificationResponse> listForEmployee(Long employeeId,
                                                        int page, int size) {
         Pageable pageable = PageRequest.of(page, Math.min(size, 200));
-        return repository.findByTenantIdAndEmployeeIdOrderByCreatedAtDesc(tenantId, employeeId, pageable)
+        return repository.findByEmployeeIdOrderByCreatedAtDesc(employeeId, pageable)
                 .map(this::toResponse);
     }
 
     @Transactional(readOnly = true)
-    public long unreadCount(String tenantId, Long employeeId) {
-        return repository.countByTenantIdAndEmployeeIdAndReadFlagFalse(tenantId, employeeId);
+    public long unreadCount(Long employeeId) {
+        return repository.countByEmployeeIdAndReadFlagFalse(employeeId);
     }
 
     /**
      * Marks a notification as read for the owning employee only.
      *
-     * @throws IllegalArgumentException if not found for tenant
+     * @throws IllegalArgumentException if not found
      * @throws SecurityException if the notification belongs to another employee
      */
-    public NotificationResponse markReadForEmployee(String tenantId, Long id, Long employeeId) {
-        Notification n = repository.findByIdAndTenantId(id, tenantId)
+    public NotificationResponse markReadForEmployee(Long id, Long employeeId) {
+        Notification n = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Notification not found: " + id));
         if (!employeeId.equals(n.getEmployeeId())) {
@@ -99,7 +99,6 @@ public class NotificationService {
     private NotificationResponse toResponse(Notification n) {
         return new NotificationResponse(
                 n.getId(),
-                n.getTenantId(),
                 n.getEmployeeId(),
                 n.getTitle(),
                 n.getBody(),

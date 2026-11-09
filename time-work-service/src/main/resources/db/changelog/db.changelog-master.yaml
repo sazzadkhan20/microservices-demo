@@ -1,0 +1,8 @@
+# Service-owned Liquibase changelog (single company, fixed DB connection).
+# Legacy changesets keep their original classpath paths (db/tenant-changelog/...)
+# so DATABASECHANGELOG history on existing databases still matches. Add new work under db/changelog/changes/.
+databaseChangeLog:
+  - include:
+      file: db/tenant-changelog/timework/db.changelog-master.yaml
+  - include:
+      file: db/changelog/changes/001-single-company.yaml

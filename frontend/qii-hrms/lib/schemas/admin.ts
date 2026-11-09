@@ -31,7 +31,11 @@ export const locationRowSchema = z.object({
 });
 export type LocationRow = z.infer<typeof locationRowSchema>;
 
-export const departmentSchema = z.object({ id, code: maybe(z.string()), name: z.string() });
+export const departmentSchema = z.object({
+  id,
+  code: z.string().trim().min(1),
+  name: z.string().trim().min(1),
+});
 export type DepartmentRow = z.infer<typeof departmentSchema>;
 export const departmentListSchema = z.array(departmentSchema);
 

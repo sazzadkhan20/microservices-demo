@@ -63,12 +63,35 @@ public class OrgController {
     @RequiresPermission(feature = "hierarchy", action = "edit")
     @Operation(summary = "Create department (prototype hierarchy.edit / org structure)")
     public DepartmentResponse createDepartment(@RequestBody Map<String, Object> body) {
-        Department d = new Department();
-        d.setCode(str(body, "code"));
-        d.setName(str(body, "name"));
-        if (d.getCode() == null || d.getName() == null) {
+        Object rawCode = body.get("code");
+        if (rawCode != null && !(rawCode instanceof String)) {
+            throw new IllegalArgumentException("code must be a string");
+        }
+        Object rawName = body.get("name");
+        if (rawName != null && !(rawName instanceof String)) {
+            throw new IllegalArgumentException("name must be a string");
+        }
+        String code = str(body, "code");
+        String name = str(body, "name");
+        if (code == null || name == null) {
             throw new IllegalArgumentException("code and name are required");
         }
+        if (code.length() > 64) {
+            throw new IllegalArgumentException("code must be at most 64 characters");
+        }
+        if (name.length() > 128) {
+            throw new IllegalArgumentException("name must be at most 128 characters");
+        }
+        code = code.toUpperCase(java.util.Locale.ROOT);
+        if (departmentRepository.existsByCodeIgnoreCase(code)) {
+            throw new IllegalStateException("Department code already exists");
+        }
+        if (departmentRepository.existsByNameIgnoreCase(name)) {
+            throw new IllegalStateException("Department name already exists");
+        }
+        Department d = new Department();
+        d.setCode(code);
+        d.setName(name);
         return DepartmentResponse.from(departmentRepository.save(d));
     }
 

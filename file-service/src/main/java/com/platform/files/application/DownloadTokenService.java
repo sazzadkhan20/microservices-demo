@@ -31,41 +31,40 @@ public class DownloadTokenService {
         this.ttlSeconds = Math.max(30L, Math.min(ttlSeconds, 900L));
     }
 
-    public IssuedToken issue(Long fileId, String tenantId, Long requesterEmployeeId) {
+    public IssuedToken issue(Long fileId, Long requesterEmployeeId) {
         long exp = Instant.now().getEpochSecond() + ttlSeconds;
         String nonce = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         String emp = requesterEmployeeId == null ? "0" : String.valueOf(requesterEmployeeId);
-        String body = fileId + "|" + tenantId + "|" + exp + "|" + emp + "|" + nonce;
+        String body = fileId + "|" + exp + "|" + emp + "|" + nonce;
         String sig = hmac(body);
         return new IssuedToken(body + "|" + sig, Instant.ofEpochSecond(exp));
     }
 
-    public Claims verify(String token, Long expectedFileId, String expectedTenantId) {
+    public Claims verify(String token, Long expectedFileId) {
         if (token == null || token.isBlank()) {
             throw new IllegalArgumentException("Download token required");
         }
         String[] parts = token.split("\\|");
-        if (parts.length != 6) {
+        if (parts.length != 5) {
             throw new IllegalArgumentException("Invalid download token");
         }
-        String body = parts[0] + "|" + parts[1] + "|" + parts[2] + "|" + parts[3] + "|" + parts[4];
+        String body = parts[0] + "|" + parts[1] + "|" + parts[2] + "|" + parts[3];
         String expectedSig = hmac(body);
         if (!MessageDigest.isEqual(
                 expectedSig.getBytes(StandardCharsets.UTF_8),
-                parts[5].getBytes(StandardCharsets.UTF_8))) {
+                parts[4].getBytes(StandardCharsets.UTF_8))) {
             throw new IllegalArgumentException("Invalid download token signature");
         }
-        long exp = Long.parseLong(parts[2]);
+        long exp = Long.parseLong(parts[1]);
         if (Instant.now().getEpochSecond() > exp) {
             throw new IllegalArgumentException("Download token expired");
         }
         Long fileId = Long.parseLong(parts[0]);
-        String tenantId = parts[1];
-        if (!expectedFileId.equals(fileId) || !expectedTenantId.equals(tenantId)) {
+        if (!expectedFileId.equals(fileId)) {
             throw new IllegalArgumentException("Download token does not match file");
         }
-        Long emp = "0".equals(parts[3]) ? null : Long.parseLong(parts[3]);
-        return new Claims(fileId, tenantId, Instant.ofEpochSecond(exp), emp);
+        Long emp = "0".equals(parts[2]) ? null : Long.parseLong(parts[2]);
+        return new Claims(fileId, Instant.ofEpochSecond(exp), emp);
     }
 
     private String hmac(String body) {
@@ -80,5 +79,5 @@ public class DownloadTokenService {
 
     public record IssuedToken(String token, Instant expiresAt) {}
 
-    public record Claims(Long fileId, String tenantId, Instant expiresAt, Long requesterEmployeeId) {}
+    public record Claims(Long fileId, Instant expiresAt, Long requesterEmployeeId) {}
 }

@@ -1,25 +1,24 @@
 /**
- * Multi-project Gradle settings for the reusable HRMS + Payroll platform.
+ * Multi-project Gradle settings for the Qii HRMS (single company, fixed DB per service).
  *
  * Modules:
- *  - platform-common        : shared tenant context, Redis key constants, JWT helpers
+ *  - platform-common        : shared security, API envelope, JWT and config helpers
+ *  - platform-messaging     : transactional outbox / inbox + RabbitMQ topology
  *  - hrms-api               : protobuf / gRPC API contract used by HRMS + Payroll
- *  - tenant-registry        : control-plane (provision DBs, routing, Redis pub/sub)
  *  - people-service         : employees, org, RBAC (guide §3)
  *  - leave-service          : leave policies, approvals, balances
  *  - time-work-service      : schedules, attendance, tasks, work logs
  *  - payroll-service        : reusable Payroll modular monolith (REST + gRPC client)
  *  - api-gateway            : sole public entry (JWT trust boundary + routing)
- *  - notification-service   : in-app notification inbox per tenant (port 8083)
- *  - file-service           : multipart upload / download per tenant (port 8084)
- *  - report-service         : CSV report generation per tenant (port 8085)
+ *  - notification-service   : in-app notification inbox (port 8083)
+ *  - file-service           : document upload / download (port 8084)
+ *  - report-service         : attendance report exports (port 8085)
  */
 rootProject.name = 'microservices-demo'
 
 include 'platform-common'
 include 'platform-messaging'
 include 'hrms-api'
-include 'tenant-registry'
 include 'people-service'
 include 'leave-service'
 include 'time-work-service'

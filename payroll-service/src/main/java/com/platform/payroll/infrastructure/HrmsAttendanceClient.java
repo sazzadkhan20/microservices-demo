@@ -3,7 +3,6 @@ package com.platform.payroll.infrastructure;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.constants.PlatformHeaders;
-import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -59,12 +58,10 @@ public class HrmsAttendanceClient {
         try {
             String url = hrmsBaseUrl + "/api/attendance/employee/" + employeeId
                     + "?page=1&size=100&sort=workDate,asc";
-            String tenant = TenantContext.getTenantId() == null ? "" : TenantContext.getTenantId();
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url))
                     .timeout(Duration.ofSeconds(8))
                     .header(PlatformHeaders.SERVICE_KEY, serviceKey)
-                    .header(PlatformHeaders.TENANT_ID, tenant)
                     .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId))
                     .GET()
                     .build();

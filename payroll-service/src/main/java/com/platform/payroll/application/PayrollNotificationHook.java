@@ -2,7 +2,6 @@ package com.platform.payroll.application;
 
 import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 import com.platform.payroll.domain.PayrollConfigEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -133,14 +132,12 @@ public class PayrollNotificationHook {
             return;
         }
         try {
-            String tenant = TenantContext.getTenantId() == null ? "" : TenantContext.getTenantId();
             HttpRequest.Builder b = HttpRequest.newBuilder()
                     .uri(URI.create(notificationBaseUrl.replaceAll("/$", "") + "/api/notifications"))
                     .timeout(Duration.ofSeconds(3))
                     .header("Content-Type", "application/json")
                     .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                     .header(InternalCalls.HEADER, internalKey)
-                    .header(PlatformHeaders.TENANT_ID, tenant)
                     .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId))
                     .POST(HttpRequest.BodyPublishers.ofString(body));
             HttpResponse<String> resp = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
@@ -153,13 +150,11 @@ public class PayrollNotificationHook {
     }
 
     private HttpRequest buildGet(String url) {
-        String tenant = TenantContext.getTenantId() == null ? "" : TenantContext.getTenantId();
         return HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(3))
                 .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                 .header(InternalCalls.HEADER, internalKey)
-                .header(PlatformHeaders.TENANT_ID, tenant)
                 .GET()
                 .build();
     }

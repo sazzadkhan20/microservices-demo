@@ -8,21 +8,19 @@ import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.UUID;
 
 /**
- * HS256 JWT helper. Claims: tenant_id (required), employee_id (optional), jti (session id).
- * Guide §4 (OIDC deferred): gateway validates signature/exp/alg; jti enables session revocation.
+ * HS256 session JWT for the single-company deployment.
+ * Claims: {@code sub}, {@code employee_id} (required), {@code jti} (session id for revocation).
+ * Issued and verified only by the API gateway (guide §4: edge validation; OIDC replaces issuance later).
  */
 public final class JwtSupport {
 
-    public static final String CLAIM_TENANT_ID = "tenant_id";
     public static final String CLAIM_EMPLOYEE_ID = "employee_id";
     public static final String CLAIM_SUB = "sub";
-    public static final String ISSUER = "platform-registry";
-    public static final String AUDIENCE = "platform-services";
+    public static final String ISSUER = "hrms-gateway";
+    public static final String AUDIENCE = "hrms-services";
 
     private final SecretKey key;
 
@@ -34,25 +32,18 @@ public final class JwtSupport {
         this.key = Keys.hmacShaKeyFor(bytes);
     }
 
-    /** Legacy practice token (tenant only). */
-    public String issueToken(String subject, String tenantId, long ttlSeconds) {
-        return issueToken(subject, tenantId, null, ttlSeconds);
-    }
-
-    /** Product / demo session: tenant + employee identity + unique jti for revocation. */
-    public String issueToken(String subject, String tenantId, Long employeeId, long ttlSeconds) {
-        Instant now = Instant.now();
-        Map<String, Object> claims = new HashMap<>();
-        claims.put(CLAIM_TENANT_ID, tenantId);
-        if (employeeId != null) {
-            claims.put(CLAIM_EMPLOYEE_ID, employeeId);
+    /** Employee session: identity + unique jti for revocation. */
+    public String issueToken(String subject, Long employeeId, long ttlSeconds) {
+        if (employeeId == null) {
+            throw new IllegalArgumentException("employeeId is required for a session token");
         }
+        Instant now = Instant.now();
         return Jwts.builder()
                 .id(UUID.randomUUID().toString())
                 .issuer(ISSUER)
                 .audience().add(AUDIENCE).and()
                 .subject(subject)
-                .claims(claims)
+                .claim(CLAIM_EMPLOYEE_ID, employeeId)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plusSeconds(ttlSeconds)))
                 .signWith(key)
@@ -76,12 +67,12 @@ public final class JwtSupport {
         return claims;
     }
 
-    public String requireTenantId(Claims claims) {
-        Object value = claims.get(CLAIM_TENANT_ID);
-        if (value == null || value.toString().isBlank()) {
-            throw new IllegalArgumentException("JWT missing required claim: " + CLAIM_TENANT_ID);
+    public Long requireEmployeeId(Claims claims) {
+        Long id = employeeIdOrNull(claims);
+        if (id == null) {
+            throw new IllegalArgumentException("JWT missing required claim: " + CLAIM_EMPLOYEE_ID);
         }
-        return value.toString();
+        return id;
     }
 
     public Long employeeIdOrNull(Claims claims) {

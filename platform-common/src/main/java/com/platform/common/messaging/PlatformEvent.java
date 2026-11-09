@@ -16,7 +16,6 @@ public record PlatformEvent(
         long aggregateVersion,
         Instant occurredAt,
         String correlationId,
-        String tenantId,
         Map<String, Object> payload
 ) {
     public static PlatformEvent of(
@@ -24,7 +23,6 @@ public record PlatformEvent(
             String aggregateId,
             long aggregateVersion,
             String correlationId,
-            String tenantId,
             Map<String, Object> payload) {
         return new PlatformEvent(
                 UUID.randomUUID().toString(),
@@ -34,7 +32,6 @@ public record PlatformEvent(
                 aggregateVersion,
                 Instant.now(),
                 correlationId == null || correlationId.isBlank() ? UUID.randomUUID().toString() : correlationId,
-                tenantId,
                 payload == null ? Map.of() : payload);
     }
 }

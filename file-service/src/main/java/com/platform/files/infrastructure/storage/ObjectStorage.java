@@ -4,7 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 
 /**
- * Tenant-agnostic object storage port. Implementations: local disk (dev) or MinIO (default).
+ * Object storage port. Implementations: local disk (dev) or MinIO (default).
  * Buckets stay private — no public ACLs; authorized downloads use short-lived app tokens.
  */
 public interface ObjectStorage {
@@ -16,7 +16,7 @@ public interface ObjectStorage {
 
     void delete(String bucket, String objectKey) throws IOException;
 
-    /** Ensure bucket exists (idempotent). Called on first upload per tenant. */
+    /** Ensure bucket exists (idempotent). Called once at startup. */
     void ensureBucket(String bucket) throws IOException;
 
     /** True when the object exists (used for link validation / orphan checks). */

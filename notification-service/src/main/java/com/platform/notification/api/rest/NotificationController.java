@@ -2,7 +2,6 @@ package com.platform.notification.api.rest;
 
 import com.platform.common.security.AuthContext;
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 import com.platform.notification.api.dto.CreateNotificationRequest;
 import com.platform.notification.api.dto.NotificationResponse;
 import com.platform.notification.application.NotificationService;
@@ -54,11 +53,10 @@ public class NotificationController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Forbidden: cannot list another employee's notifications");
         }
-        String tenantId = TenantContext.getTenantId();
         // Notification-service historically used 0-based pages; keep that contract for FE.
         int safePage = Math.max(page, 0);
         int safeSize = Math.min(Math.max(size, 1), 100);
-        Page<NotificationResponse> result = service.listForEmployee(tenantId, self, safePage, safeSize);
+        Page<NotificationResponse> result = service.listForEmployee(self, safePage, safeSize);
         return ResponseEntity.ok(toPageMap(result, safePage, safeSize));
     }
 
@@ -75,7 +73,6 @@ public class NotificationController {
             @Valid @RequestBody CreateNotificationRequest req,
             HttpServletRequest http) {
 
-        String tenantId = TenantContext.getTenantId();
         Long target;
         if (InternalCalls.isTrusted(http.getHeader(InternalCalls.HEADER), internalKey)) {
             target = req.employeeId() != null ? req.employeeId() : AuthContext.getEmployeeId();
@@ -94,15 +91,14 @@ public class NotificationController {
                 req.dedupeKey(),
                 req.linkUrl()
         );
-        return ResponseEntity.status(HttpStatus.CREATED).body(service.create(tenantId, bound));
+        return ResponseEntity.status(HttpStatus.CREATED).body(service.create(bound));
     }
 
     /** Marks own notification as read. */
     @PostMapping("/{id}/read")
     public ResponseEntity<NotificationResponse> markRead(@PathVariable Long id) {
-        String tenantId = TenantContext.getTenantId();
         Long self = requireSelf();
-        return ResponseEntity.ok(service.markReadForEmployee(tenantId, id, self));
+        return ResponseEntity.ok(service.markReadForEmployee(id, self));
     }
 
     @GetMapping("/unread-count")
@@ -114,8 +110,7 @@ public class NotificationController {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Forbidden: cannot read another employee's unread count");
         }
-        String tenantId = TenantContext.getTenantId();
-        return ResponseEntity.ok(Map.of("unreadCount", service.unreadCount(tenantId, self)));
+        return ResponseEntity.ok(Map.of("unreadCount", service.unreadCount(self)));
     }
 
     private static Map<String, Object> toPageMap(Page<NotificationResponse> result, int page, int size) {

@@ -1,0 +1,43 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-008-reporting-line-history
+      author: platform
+      changes:
+        - createTable:
+            tableName: reporting_line_history
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: manager_id
+                  type: BIGINT
+              - column:
+                  name: from_date
+                  type: DATE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: to_date
+                  type: DATE
+              - column:
+                  name: changed_by
+                  type: BIGINT
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: reporting_line_history
+            indexName: idx_reporting_line_employee
+            columns:
+              - column:
+                  name: employee_id

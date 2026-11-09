@@ -32,23 +32,23 @@ public class SessionRevocationStore {
                 .then();
     }
 
-    public Mono<Void> revokeEmployee(String tenantId, Long employeeId, Duration ttl) {
-        if (tenantId == null || tenantId.isBlank() || employeeId == null) {
+    public Mono<Void> revokeEmployee(Long employeeId, Duration ttl) {
+        if (employeeId == null) {
             return Mono.empty();
         }
         Duration safeTtl = ttl == null || ttl.isNegative() || ttl.isZero() ? Duration.ofHours(12) : ttl;
         return redis.opsForValue()
-                .set(EMP_PREFIX + tenantId.trim() + ":" + employeeId, "1", safeTtl)
+                .set(EMP_PREFIX + employeeId, "1", safeTtl)
                 .then();
     }
 
-    public Mono<Boolean> isRevoked(String jti, String tenantId, Long employeeId) {
+    public Mono<Boolean> isRevoked(String jti, Long employeeId) {
         Mono<Boolean> jtiCheck = (jti == null || jti.isBlank())
                 ? Mono.just(false)
                 : redis.hasKey(JTI_PREFIX + jti).defaultIfEmpty(false);
-        Mono<Boolean> empCheck = (tenantId == null || tenantId.isBlank() || employeeId == null)
+        Mono<Boolean> empCheck = (employeeId == null)
                 ? Mono.just(false)
-                : redis.hasKey(EMP_PREFIX + tenantId.trim() + ":" + employeeId).defaultIfEmpty(false);
+                : redis.hasKey(EMP_PREFIX + employeeId).defaultIfEmpty(false);
         return Mono.zip(jtiCheck, empCheck).map(t -> Boolean.TRUE.equals(t.getT1()) || Boolean.TRUE.equals(t.getT2()));
     }
 }

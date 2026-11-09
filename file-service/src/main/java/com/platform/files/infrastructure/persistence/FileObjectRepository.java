@@ -12,11 +12,9 @@ import java.util.Optional;
 
 public interface FileObjectRepository extends JpaRepository<FileObject, Long> {
 
-    Optional<FileObject> findByIdAndTenantId(Long id, String tenantId);
+    Page<FileObject> findAllByOrderByIdDesc(Pageable pageable);
 
-    Page<FileObject> findByTenantIdOrderByIdDesc(String tenantId, Pageable pageable);
-
-    Page<FileObject> findByTenantIdAndUploadedByOrderByIdDesc(String tenantId, String uploadedBy, Pageable pageable);
+    Page<FileObject> findByUploadedByOrderByIdDesc(String uploadedBy, Pageable pageable);
 
     List<FileObject> findByScanStatusAndCreatedAtBefore(String scanStatus, Instant cutoff);
 

@@ -1,0 +1,12 @@
+databaseChangeLog:
+  # Team name must be unique (case-insensitive), matching code uniqueness.
+  - changeSet:
+      id: people-003-team-name-unique
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: team
+      changes:
+        - sql:
+            sql: CREATE UNIQUE INDEX IF NOT EXISTS uq_team_name_ci ON team (lower(name));

@@ -24,7 +24,6 @@ class HrmsPermissionClientTest {
     private final AtomicInteger status = new AtomicInteger(200);
     private final AtomicReference<String> body =
             new AtomicReference<>("{\"permissions\":[\"reports:view\",\"leave:read\"]}");
-    private final AtomicReference<String> seenTenant = new AtomicReference<>();
     private final AtomicReference<String> seenEmployee = new AtomicReference<>();
     private final AtomicReference<String> seenKey = new AtomicReference<>();
 
@@ -33,7 +32,6 @@ class HrmsPermissionClientTest {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/me", ex -> {
             calls.incrementAndGet();
-            seenTenant.set(ex.getRequestHeaders().getFirst("X-Tenant-ID"));
             seenEmployee.set(ex.getRequestHeaders().getFirst("X-Employee-ID"));
             seenKey.set(ex.getRequestHeaders().getFirst("X-Service-Key"));
             byte[] bytes = body.get().getBytes(StandardCharsets.UTF_8);
@@ -56,9 +54,8 @@ class HrmsPermissionClientTest {
     @Test
     void forwardsIdentityAndParsesPermissions() {
         HrmsPermissionClient c = client(Duration.ZERO);
-        assertTrue(c.has("t1", 7L, "reports", "view"));
-        assertFalse(c.has("t1", 7L, "reports", "export"));
-        assertEquals("t1", seenTenant.get());
+        assertTrue(c.has(7L, "reports", "view"));
+        assertFalse(c.has(7L, "reports", "export"));
         assertEquals("7", seenEmployee.get());
         assertEquals("k", seenKey.get());
     }
@@ -76,26 +73,25 @@ class HrmsPermissionClientTest {
     @Test
     void cachesWithinTtl() {
         HrmsPermissionClient c = client(Duration.ofSeconds(30));
-        c.permissions("t1", 7L);
-        c.permissions("t1", 7L);
+        c.permissions(7L);
+        c.permissions(7L);
         assertEquals(1, calls.get());
-        c.permissions("t1", 8L);
+        c.permissions(8L);
         assertEquals(2, calls.get());
     }
 
     @Test
     void clientErrorMeansNoPermissions_serverErrorFailsClosed() {
         status.set(400);
-        assertTrue(client(Duration.ZERO).permissions("t1", 7L).isEmpty());
+        assertTrue(client(Duration.ZERO).permissions(7L).isEmpty());
         status.set(500);
-        assertThrows(PermissionLookupException.class, () -> client(Duration.ZERO).permissions("t1", 7L));
+        assertThrows(PermissionLookupException.class, () -> client(Duration.ZERO).permissions(7L));
     }
 
     @Test
     void missingIdentityHasNoPermissions() {
         HrmsPermissionClient c = client(Duration.ZERO);
-        assertTrue(c.permissions(null, 7L).isEmpty());
-        assertTrue(c.permissions("t1", null).isEmpty());
+        assertTrue(c.permissions(null).isEmpty());
         assertEquals(0, calls.get());
     }
 

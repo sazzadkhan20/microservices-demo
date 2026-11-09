@@ -23,10 +23,10 @@ export async function req(method, url, { headers = {}, body, raw = false } = {})
   }
 }
 
-export async function token(employeeId, tenantId = "qii_creative") {
-  const r = await req("POST", `${GW}/api/registry/token`, {
+export async function token(employeeId) {
+  const r = await req("POST", `${GW}/api/auth/token`, {
     headers: { "X-Demo-Auth-Key": DEMO },
-    body: { tenantId, employeeId: employeeId == null ? undefined : Number(employeeId) },
+    body: { employeeId: employeeId == null ? undefined : Number(employeeId) },
   });
   return r.json?.accessToken || null;
 }

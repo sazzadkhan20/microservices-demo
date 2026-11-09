@@ -3,7 +3,6 @@ package com.platform.report.infrastructure;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.constants.PlatformHeaders;
-import com.platform.common.tenant.TenantContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -137,12 +136,10 @@ public class HrmsGatewayClient {
                     url.append(e.getKey()).append('=').append(e.getValue());
                 }
             }
-            String tenant = TenantContext.getTenantId() == null ? "" : TenantContext.getTenantId();
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(url.toString()))
                     .timeout(Duration.ofSeconds(8))
                     .header(PlatformHeaders.SERVICE_KEY, serviceKey)
-                    .header(PlatformHeaders.TENANT_ID, tenant)
                     .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(actorEmployeeId))
                     .GET()
                     .build();

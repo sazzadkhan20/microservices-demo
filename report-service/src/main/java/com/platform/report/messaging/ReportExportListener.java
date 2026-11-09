@@ -4,19 +4,15 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.messaging.outbox.InboxGuard;
-import com.platform.messaging.outbox.OutboxRelay;
-import com.platform.messaging.tenant.TenantBoundRunner;
 import com.platform.report.api.dto.AttendanceReportRequest;
 import com.platform.report.application.AttendanceReportService;
 import com.platform.report.domain.ReportExport;
-import com.platform.report.infrastructure.multitenancy.TenantDataSourceManager;
 import com.platform.report.infrastructure.persistence.ReportExportRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,40 +34,33 @@ public class ReportExportListener {
     private final InboxGuard inboxGuard;
     private final AttendanceReportService attendanceService;
     private final ReportExportRepository exportRepository;
-    private final TenantDataSourceManager dataSourceManager;
-    private final OutboxRelay outboxRelay;
 
     public ReportExportListener(
             ObjectMapper objectMapper,
             InboxGuard inboxGuard,
             AttendanceReportService attendanceService,
-            ReportExportRepository exportRepository,
-            TenantDataSourceManager dataSourceManager,
-            OutboxRelay outboxRelay) {
+            ReportExportRepository exportRepository) {
         this.objectMapper = objectMapper;
         this.inboxGuard = inboxGuard;
         this.attendanceService = attendanceService;
         this.exportRepository = exportRepository;
-        this.dataSourceManager = dataSourceManager;
-        this.outboxRelay = outboxRelay;
     }
 
     @RabbitListener(queues = PlatformQueues.REPORT_EXPORT_Q)
     public void onMessage(Message message) throws Exception {
         byte[] body = message.getBody();
         Map<String, Object> envelope = objectMapper.readValue(body, new TypeReference<>() {});
-        String tenantId = String.valueOf(envelope.getOrDefault("tenantId", ""));
         String eventId = String.valueOf(envelope.getOrDefault("eventId", ""));
-        TenantBoundRunner.run(tenantId, () -> inboxGuard.processOnce(
+        inboxGuard.processOnce(
                 eventId,
                 String.valueOf(envelope.getOrDefault("eventType", "")),
                 CONSUMER,
                 envelope,
-                () -> runExport(tenantId, envelope)));
+                () -> runExport(envelope));
     }
 
     @Transactional
-    protected Map<String, Object> runExport(String tenantId, Map<String, Object> envelope) {
+    protected Map<String, Object> runExport(Map<String, Object> envelope) {
         @SuppressWarnings("unchecked")
         Map<String, Object> payload = envelope.get("payload") instanceof Map<?, ?> m
                 ? (Map<String, Object>) m : envelope;
@@ -89,7 +78,7 @@ public class ReportExportListener {
             Long employeeId = payload.get("employeeId") == null ? null
                     : Long.parseLong(String.valueOf(payload.get("employeeId")));
             AttendanceReportRequest req = new AttendanceReportRequest(year, month, employeeId);
-            String csv = attendanceService.generateMonthlyCsv(tenantId, req);
+            String csv = attendanceService.generateMonthlyCsv(req);
             byte[] bytes = csv.getBytes(StandardCharsets.UTF_8);
             job.setSizeBytes(bytes.length);
             job.setStatus("READY");
@@ -106,17 +95,6 @@ public class ReportExportListener {
             job.setCompletedAt(Instant.now());
             exportRepository.save(job);
             throw e;
-        }
-    }
-
-    @Scheduled(fixedDelayString = "${platform.messaging.outbox-poll-ms:1000}")
-    public void drainOutbox() {
-        for (String tenantId : dataSourceManager.outboxTenantIds()) {
-            try {
-                TenantBoundRunner.run(tenantId, outboxRelay::drainBatch);
-            } catch (Exception e) {
-                log.warn("Outbox drain skipped for tenant={}: {}", tenantId, e.getMessage());
-            }
         }
     }
 }

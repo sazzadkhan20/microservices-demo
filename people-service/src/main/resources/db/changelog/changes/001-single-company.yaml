@@ -1,0 +1,15 @@
+databaseChangeLog:
+  # Single-company deployment (guide §1): events no longer carry a tenant id.
+  - changeSet:
+      id: people-sc-001-outbox-drop-tenant
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: message_outbox
+            columnName: tenant_id
+      changes:
+        - dropColumn:
+            tableName: message_outbox
+            columnName: tenant_id
+

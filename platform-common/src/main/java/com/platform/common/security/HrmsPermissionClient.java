@@ -17,9 +17,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * RBAC lives in the HRMS tenant database. Services without that DB (notifications, reports)
+ * RBAC lives in the People database. Services without that DB (notifications, reports)
  * resolve an employee's permission keys via HRMS {@code GET /api/me} using the already
- * authenticated tenant + employee identity (plus the service key for traceability).
+ * authenticated employee identity (plus the service key for traceability).
  *
  * <p>Fail-closed: any transport / 5xx failure throws {@link PermissionLookupException};
  * 4xx (unknown employee, etc.) means "no permissions".
@@ -46,17 +46,17 @@ public final class HrmsPermissionClient {
     }
 
     /** Permission keys such as {@code reports:view}; may contain {@code *:*}. */
-    public Set<String> permissions(String tenantId, Long employeeId) {
-        if (tenantId == null || tenantId.isBlank() || employeeId == null) {
+    public Set<String> permissions(Long employeeId) {
+        if (employeeId == null) {
             return Set.of();
         }
-        String key = tenantId + "|" + employeeId;
+        String key = String.valueOf(employeeId);
         long now = System.currentTimeMillis();
         CacheEntry hit = cache.get(key);
         if (hit != null && hit.expiresAt > now) {
             return hit.keys;
         }
-        Set<String> fresh = fetch(tenantId, employeeId);
+        Set<String> fresh = fetch(employeeId);
         if (cacheTtlMillis > 0) {
             if (cache.size() > MAX_CACHE_ENTRIES) {
                 cache.clear();
@@ -66,8 +66,8 @@ public final class HrmsPermissionClient {
         return fresh;
     }
 
-    public boolean has(String tenantId, Long employeeId, String feature, String action) {
-        return grants(permissions(tenantId, employeeId), feature, action);
+    public boolean has(Long employeeId, String feature, String action) {
+        return grants(permissions(employeeId), feature, action);
     }
 
     /** Wildcards ({@code *:*}, {@code feature:*}) and the view/read alias are honoured. */
@@ -89,11 +89,10 @@ public final class HrmsPermissionClient {
         return false;
     }
 
-    private Set<String> fetch(String tenantId, Long employeeId) {
+    private Set<String> fetch(Long employeeId) {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/api/me"))
                 .timeout(Duration.ofSeconds(5))
-                .header(PlatformHeaders.TENANT_ID, tenantId)
                 .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId))
                 .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                 .header("Accept", "application/json")

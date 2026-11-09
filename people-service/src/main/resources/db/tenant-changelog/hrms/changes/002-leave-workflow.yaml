@@ -1,0 +1,274 @@
+databaseChangeLog:
+  # Config-driven leave workflow. New businesses change DATA only — not code.
+  - changeSet:
+      id: hrms-002-leave-policy-extend
+      author: platform
+      changes:
+        - addColumn:
+            tableName: leave_policy
+            columns:
+              - column:
+                  name: working_days
+                  type: JSONB
+                  constraints:
+                    nullable: true
+                  remarks: "Which weekdays count as work, e.g. [\"SAT\",\"SUN\",\"MON\",\"TUE\",\"WED\",\"THU\"]"
+              - column:
+                  name: union_notice_days
+                  type: INT
+                  defaultValueNumeric: 7
+                  constraints:
+                    nullable: false
+              - column:
+                  name: non_union_notice_days
+                  type: INT
+                  defaultValueNumeric: 3
+                  constraints:
+                    nullable: false
+              - column:
+                  name: require_coverage_check
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: approval_chain
+                  type: JSONB
+                  constraints:
+                    nullable: true
+                  remarks: '[{"step":1,"role":"STORE_MANAGER"},{"step":2,"role":"REGIONAL_HR"}]'
+        - sql:
+            sql: |
+              UPDATE leave_policy
+                 SET working_days = '["MON","TUE","WED","THU","FRI"]'::jsonb,
+                     approval_chain = '[{"step":1,"role":"HR"}]'::jsonb
+               WHERE working_days IS NULL;
+        - addNotNullConstraint:
+            tableName: leave_policy
+            columnName: working_days
+            columnDataType: JSONB
+
+  - changeSet:
+      id: hrms-002-store-shift-coverage
+      author: platform
+      changes:
+        - createTable:
+            tableName: store_shift_coverage
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: store_id
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: shift_pattern
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: min_staff
+                  type: INT
+                  constraints:
+                    nullable: false
+        - addUniqueConstraint:
+            tableName: store_shift_coverage
+            columnNames: store_id, shift_pattern
+            constraintName: uk_store_shift_coverage
+
+  - changeSet:
+      id: hrms-002-leave-blackout
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_blackout
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: store_id
+                  type: VARCHAR(64)
+                  remarks: "NULL = all stores"
+              - column:
+                  name: start_date
+                  type: DATE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: end_date
+                  type: DATE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(256)
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: hrms-002-leave-application
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_application
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: start_date
+                  type: DATE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: end_date
+                  type: DATE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: working_days_counted
+                  type: NUMERIC(10, 2)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reason
+                  type: VARCHAR(512)
+              - column:
+                  name: union_member
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: notice_days_given
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: notice_days_required
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: coverage_ok
+                  type: BOOLEAN
+                  constraints:
+                    nullable: false
+              - column:
+                  name: needs_relief
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false
+              - column:
+                  name: relief_employee_id
+                  type: BIGINT
+              - column:
+                  name: store_id
+                  type: VARCHAR(64)
+              - column:
+                  name: shift_pattern
+                  type: VARCHAR(64)
+              - column:
+                  name: coverage_snapshot
+                  type: JSONB
+                  constraints:
+                    nullable: false
+              - column:
+                  name: current_step
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+              - column:
+                  name: reject_reason
+                  type: VARCHAR(512)
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+        - createIndex:
+            tableName: leave_application
+            indexName: idx_leave_app_employee
+            columns:
+              - column:
+                  name: employee_id
+        - createIndex:
+            tableName: leave_application
+            indexName: idx_leave_app_status
+            columns:
+              - column:
+                  name: status
+
+  - changeSet:
+      id: hrms-002-leave-approval
+      author: platform
+      changes:
+        - createTable:
+            tableName: leave_approval
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: application_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: step_order
+                  type: INT
+                  constraints:
+                    nullable: false
+              - column:
+                  name: approver_role
+                  type: VARCHAR(64)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: status
+                  type: VARCHAR(32)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: actor_name
+                  type: VARCHAR(128)
+              - column:
+                  name: comment_text
+                  type: VARCHAR(512)
+              - column:
+                  name: decided_at
+                  type: TIMESTAMP WITH TIME ZONE
+        - createIndex:
+            tableName: leave_approval
+            indexName: idx_leave_approval_app
+            columns:
+              - column:
+                  name: application_id

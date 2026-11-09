@@ -2,7 +2,6 @@ package com.platform.people.client;
 
 import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -33,16 +32,11 @@ public class FilesGatewayClient {
 
     @SuppressWarnings("unchecked")
     public Map<String, Object> describe(Long fileId) {
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isBlank()) {
-            throw new IllegalStateException("TenantContext required for file describe");
-        }
         try {
             Map<String, Object> body = client.get()
                     .uri("/api/internal/files/{id}", fileId)
                     .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                     .header(InternalCalls.HEADER, internalKey)
-                    .header(PlatformHeaders.TENANT_ID, tenantId)
                     .accept(MediaType.APPLICATION_JSON)
                     .retrieve()
                     .body(Map.class);

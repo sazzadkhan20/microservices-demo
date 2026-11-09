@@ -57,9 +57,9 @@ const demoH = () => ({ 'X-Demo-Auth-Key': DEMO });
 const auth = (tok) => ({ Authorization: `Bearer ${tok}` });
 
 async function mint(employeeId) {
-  const r = await req('POST', `${GW}/api/registry/token`, {
+  const r = await req('POST', `${GW}/api/auth/token`, {
     headers: demoH(),
-    body: { tenantId: 'qii_creative', employeeId },
+    body: { employeeId },
   });
   return r.json?.accessToken || r.json?.token || null;
 }
@@ -78,7 +78,7 @@ async function section(name, fn) {
 
 async function main() {
   // ---- cast ----
-  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts?tenantId=qii_creative`, { headers: demoH() });
+  const accounts = await req('GET', `${GW}/hrms/api/auth/accounts`, { headers: demoH() });
   failFast('accounts-list', accounts.status === 200 && Array.isArray(accounts.json) && accounts.json.length >= 8,
     `status=${accounts.status} n=${accounts.json?.length}`);
 
@@ -105,8 +105,8 @@ async function main() {
 
   // ========== 1. AUTH / ME / RBAC ==========
   await section('AUTH', async () => {
-    const noKey = await req('POST', `${GW}/api/registry/token`, {
-      body: { tenantId: 'qii_creative', employeeId: idAdmin },
+    const noKey = await req('POST', `${GW}/api/auth/token`, {
+      body: { employeeId: idAdmin },
     });
     check('token-requires-demo-key', noKey.status === 401 || noKey.status === 403, `status=${noKey.status}`);
 

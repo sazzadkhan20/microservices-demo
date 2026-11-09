@@ -161,8 +161,8 @@ export default function ProfilePage() {
           <KV label="Permissions">
             <span className="mono">{permissionCount}</span> <span className="muted small">granted by your roles</span>
           </KV>
-          <KV label="Workspace">
-            <span className="mono">{str(me.tenantId)}</span>
+          <KV label="Company">
+            <span>Qii Creative</span>
           </KV>
         </div>
       </section>

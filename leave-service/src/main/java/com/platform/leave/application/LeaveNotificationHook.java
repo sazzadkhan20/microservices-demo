@@ -153,15 +153,12 @@ public class LeaveNotificationHook {
             return;
         }
         try {
-            String tenant = com.platform.common.tenant.TenantContext.getTenantId() == null
-                    ? "" : com.platform.common.tenant.TenantContext.getTenantId();
             HttpRequest.Builder b = HttpRequest.newBuilder()
                     .uri(URI.create(baseUrl.replaceAll("/$", "") + "/api/notifications"))
                     .timeout(Duration.ofSeconds(3))
                     .header("Content-Type", "application/json")
                     .header(com.platform.common.constants.PlatformHeaders.SERVICE_KEY, serviceKey)
                     .header(com.platform.common.security.InternalCalls.HEADER, internalKey)
-                    .header(com.platform.common.constants.PlatformHeaders.TENANT_ID, tenant)
                     .POST(HttpRequest.BodyPublishers.ofString(body));
             if (employeeId != null) {
                 b.header(com.platform.common.constants.PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId));

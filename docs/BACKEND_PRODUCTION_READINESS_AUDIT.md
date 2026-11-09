@@ -36,6 +36,29 @@
 
 ---
 
+## 0.1 Status update — single company, fixed DB connections (2026-11-09)
+
+Multi-tenancy was removed to follow guide §1 ("One company. Use fixed service database connections"). See
+[DEPLOYMENT_FIXED_DB.md](DEPLOYMENT_FIXED_DB.md). Effect on the findings below (verified on the local stack):
+
+| Issue | Status | Evidence |
+|---|---|---|
+| DB-01 shared SUPERUSER | **Resolved** | Per-service `<svc>_app` (DML only) + `<svc>_migrator` (owner) roles; `leave_app` → `people_db` refused (no CONNECT); `people_app` DDL refused |
+| DB-02 provisioning creds = runtime creds | **Resolved** | No provisioning in the runtime; each service gets only its own credentials from env / secrets manager |
+| DB-03 registry owns all schemas / writes into service DBs | **Resolved** | `tenant-registry` deleted; each service runs its own Liquibase changelog (`db/changelog/db.changelog-master.yaml`) as its migrator role |
+| DB-04 fresh environment cannot be built | **Resolved** | Empty Postgres → first-boot role/DB init → all 7 services migrated from scratch → `seed-qii-dev.sh load` reproduced all row counts |
+| DB-07 legacy archive DB | **Resolved (local)** | `archive_hrms_*` and all non-Qii tenant databases dropped |
+| DB-10 dynamic tenant routing / pool races / Redis on DB path | **Resolved** | Routing DataSource, pool lifecycle, Redis routing and registry fallback removed; one Hikari pool per service; services no longer depend on Redis |
+| SEC-04 control plane on public edge | **Resolved** | No registry routes; `/api/registry/**` → 404 |
+| SEC-05 registry/Redis hold DB credentials | **Resolved** | No credential distribution API or Redis payload exists |
+| SEC-16 registry admin auth | **Resolved (removed)** | Registry deleted |
+| MSG-07 outbox draining depends on Redis SCAN | **Resolved** | `OutboxRelay` drains on its own schedule; no tenant iteration |
+| DB-06 notification dedupe not unique | **Resolved** | `uq_notif_dedupe_key` (partial unique index) |
+| OPS-07 control plane in startup/login path | **Partly resolved** | Fleet migration removed; login token minted by the gateway (still demo auth — SEC-01 open) |
+| API-01 gRPC without deadline | **Partly resolved** | People gRPC stub now has a 5 s deadline; HTTP clients unchanged |
+
+All other findings remain open and are unchanged by this work.
+
 ## 1. Executive verdict
 
 **The backend is NOT production-ready.** The service split, outbox/inbox library, RabbitMQ topology, and finalize state machine are a good skeleton. Several release-blocking defects remain:
@@ -279,7 +302,7 @@
 - **Severity:** MEDIUM · **Guide:** §5 MUST ("Store instants in UTC and preserve location time zones for schedules and period boundaries")
 - **Where:** 33 uses of `LocalDate.now()`/system zone (`WorkLogService`, `TaskService`, `ReportingLineService`, `LeaveApplicationService`, `LeaveBalanceService`, `PayrollFinalizeService` period gate, etc.), hard-coded `Asia/Dhaka` (`AttendanceService.java:601`, `AttendanceReportService`), `payslip.period_label VARCHAR(32)` and `leave_operation.period_label`
 - **Fix:** Inject a `Clock`. Resolve "today" in the employee's location zone (stored on Location/Employee, owned by People and projected). Store periods as `period_start DATE`, `period_end DATE`, `zone`. Remove hard-coded zones.
-- **Done when:** Tests at UTC midnight boundaries for Dhaka and Sydney employees produce correct work dates and finalize gates.
+- **Done when:** Tests at UTC midnight boundaries for Dhaka and Darwin employees produce correct work dates and finalize gates.
 
 ### DB-10 — Dynamic tenant routing and pool lifecycle risks (guide §11 row 5)
 - **Severity:** MEDIUM (HIGH for availability) · **Guide:** §11 ("If retained, fix capacity and lifecycle races and handle Redis failure explicitly"), §1 ("fixed service database connections" for initial deployment)

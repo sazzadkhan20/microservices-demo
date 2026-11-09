@@ -1,6 +1,5 @@
 package com.platform.people.client;
 
-import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,15 +37,9 @@ public class SessionRevokeClient {
             log.warn("Session revoke skipped — PLATFORM_ADMIN_KEY not set");
             return;
         }
-        String tenant = TenantContext.getTenantId();
-        if (tenant == null || tenant.isBlank()) {
-            log.warn("Session revoke skipped — no tenant context for employee {}", employeeId);
-            return;
-        }
         try {
             client.post()
                     .uri(uri -> uri.path("/api/session/revoke-employee/{id}")
-                            .queryParam("tenantId", tenant)
                             .queryParam("ttlSeconds", 604800)
                             .build(employeeId))
                     .header("X-Platform-Admin-Key", adminKey)

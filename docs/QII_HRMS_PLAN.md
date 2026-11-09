@@ -20,6 +20,9 @@ todos:
     content: "Acceptance against SRS AT-*, keep TechShop/Impit routing intact; document config packs"
 ---
 
+> **Historical plan (superseded for tenancy).** This plan was written for a multi-tenant design (tenant registry, per-tenant databases/buckets, `tenant_id` claims, `X-Tenant-ID`). The backend now runs for **one company with fixed per-service database connections** (guide §1) — see [DEPLOYMENT_FIXED_DB.md](DEPLOYMENT_FIXED_DB.md). Feature/RBAC content below is still the product reference.
+
+
 # Qii HRMS v1 — full implementation plan
 
 ## North star (non-negotiable)

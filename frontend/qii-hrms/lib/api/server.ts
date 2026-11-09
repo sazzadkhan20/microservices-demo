@@ -53,7 +53,7 @@ export class GatewayError extends Error {
 }
 
 /**
- * Headers for the gateway's account-picker endpoints (/api/registry/token, /hrms/api/auth/accounts).
+ * Headers for the gateway's account-picker endpoints (/api/auth/token, /hrms/api/auth/accounts).
  * The shared secret never reaches the browser; it is attached here, server-side only.
  */
 export function demoAuthHeaders(): Record<string, string> {

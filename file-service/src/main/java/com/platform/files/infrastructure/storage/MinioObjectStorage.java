@@ -19,7 +19,7 @@ import java.io.IOException;
 import java.io.InputStream;
 
 /**
- * MinIO-backed storage — one bucket per tenant (created at first use / provision hook).
+ * MinIO-backed storage — one private company bucket (FILE_STORAGE_BUCKET), created on startup.
  */
 @Component
 @ConditionalOnProperty(name = "file.storage.type", havingValue = "minio", matchIfMissing = true)

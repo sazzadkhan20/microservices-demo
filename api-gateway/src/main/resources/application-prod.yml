@@ -5,8 +5,6 @@ platform:
     - /actuator/health
     - /actuator/health/**
     - /actuator/info
-    - /api/registry/health-info
-    - /registry/health-info
 
 springdoc:
   api-docs:

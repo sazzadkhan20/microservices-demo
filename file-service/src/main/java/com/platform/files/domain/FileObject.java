@@ -12,16 +12,14 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 
 /**
- * Metadata record for an uploaded file, scoped to a tenant.
+ * Metadata record for an uploaded file (company documents, guide §8).
  *
- * <p>Actual bytes live on the local filesystem under
- * {@code {FILE_STORAGE_ROOT}/{tenantId}/{uuid}} — referenced by {@link #storageKey}.
+ * <p>Bytes live in private object storage; {@link #storageKey} is {@code bucket/(quarantine|released)/uuid}.
  */
 @Entity
 @Table(
         name = "file_object",
         indexes = {
-                @Index(name = "idx_file_tenant", columnList = "tenant_id"),
                 @Index(name = "idx_file_storage_key", columnList = "storage_key", unique = true)
         }
 )
@@ -30,9 +28,6 @@ public class FileObject {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-
-    @Column(name = "tenant_id", nullable = false, length = 100)
-    private String tenantId;
 
     @Column(name = "original_name", nullable = false, length = 500)
     private String originalName;
@@ -43,7 +38,7 @@ public class FileObject {
     @Column(name = "size_bytes", nullable = false)
     private long sizeBytes;
 
-    /** Relative path under the storage root: {@code tenantId/uuid}. */
+    /** Object location: {@code bucket/prefix/uuid}. */
     @Column(name = "storage_key", nullable = false, unique = true, length = 500)
     private String storageKey;
 
@@ -81,8 +76,6 @@ public class FileObject {
 
     public Long getId() { return id; }
 
-    public String getTenantId() { return tenantId; }
-    public void setTenantId(String tenantId) { this.tenantId = tenantId; }
 
     public String getOriginalName() { return originalName; }
     public void setOriginalName(String originalName) { this.originalName = originalName; }

@@ -5,8 +5,6 @@ import com.platform.common.messaging.PlatformEvent;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.common.people.PeopleDirectoryClient;
 import com.platform.common.security.HrmsPermissionClient;
-import com.platform.common.tenant.TenantContext;
-import com.platform.common.tenant.TenantIds;
 import com.platform.files.api.dto.DownloadUrlResponse;
 import com.platform.files.api.dto.FileMetadataResponse;
 import com.platform.files.api.dto.FileUploadResponse;
@@ -88,6 +86,7 @@ public class FileService {
     private final DownloadTokenService downloadTokens;
     private final ObjectProvider<PeopleDirectoryClient> peopleDirectory;
     private final long rejectedRetentionDays;
+    private final String bucket;
 
     public FileService(
             FileObjectRepository repository,
@@ -98,7 +97,9 @@ public class FileService {
             DownloadTokenService downloadTokens,
             ObjectProvider<PeopleDirectoryClient> peopleDirectory,
             @org.springframework.beans.factory.annotation.Value("${file.retention.rejected-days:30}")
-            long rejectedRetentionDays) {
+            long rejectedRetentionDays,
+            @org.springframework.beans.factory.annotation.Value("${file.storage.bucket:qii-hrms-documents}")
+            String bucket) {
         this.repository = repository;
         this.storage = storage;
         this.outboxWriter = outboxWriter;
@@ -107,15 +108,15 @@ public class FileService {
         this.downloadTokens = downloadTokens;
         this.peopleDirectory = peopleDirectory;
         this.rejectedRetentionDays = Math.max(1L, rejectedRetentionDays);
+        this.bucket = bucket == null || bucket.isBlank() ? "qii-hrms-documents" : bucket.trim();
     }
 
-    public FileUploadResponse upload(String tenantId, String uploadedBy, MultipartFile file)
+    public FileUploadResponse upload(String uploadedBy, MultipartFile file)
             throws IOException {
-        return upload(tenantId, uploadedBy, file, "GENERAL", null);
+        return upload(uploadedBy, file, "GENERAL", null);
     }
 
     public FileUploadResponse upload(
-            String tenantId,
             String uploadedBy,
             MultipartFile file,
             String classification,
@@ -147,8 +148,6 @@ public class FileService {
         }
         assertCanUpload(actorId, subjectEmployeeId, classification);
 
-        String normalized = TenantIds.normalize(tenantId);
-        String bucket = TenantIds.filesBucket(normalized);
         String objectUuid = UUID.randomUUID().toString();
         String objectKey = PREFIX_QUARANTINE + objectUuid;
 
@@ -158,7 +157,6 @@ public class FileService {
         FileObject saved;
         try {
             FileObject fo = new FileObject();
-            fo.setTenantId(normalized);
             fo.setOriginalName(file.getOriginalFilename() != null
                     ? file.getOriginalFilename() : objectUuid);
             fo.setContentType(contentType);
@@ -217,16 +215,16 @@ public class FileService {
     }
 
     @Transactional(readOnly = true)
-    public FileMetadataResponse getMetadata(String tenantId, Long id, Long requesterEmployeeId) {
-        FileObject fo = findByTenantId(tenantId, id);
+    public FileMetadataResponse getMetadata(Long id, Long requesterEmployeeId) {
+        FileObject fo = findFile(id);
         assertCanAccess(fo, requesterEmployeeId, false);
         return toMetadata(fo);
     }
 
     /** Internal S2S existence/scan check (People document attach). */
     @Transactional(readOnly = true)
-    public Map<String, Object> internalDescribe(String tenantId, Long id) {
-        FileObject fo = findByTenantId(tenantId, id);
+    public Map<String, Object> internalDescribe(Long id) {
+        FileObject fo = findFile(id);
         boolean objectPresent;
         try {
             String[] parts = splitStorageKey(fo.getStorageKey());
@@ -236,7 +234,6 @@ public class FileService {
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", fo.getId());
-        out.put("tenantId", fo.getTenantId());
         out.put("scanStatus", fo.getScanStatus());
         out.put("classification", fo.getClassification());
         out.put("employeeId", fo.getEmployeeId());
@@ -249,16 +246,15 @@ public class FileService {
     }
 
     @Transactional(readOnly = true)
-    public Map<String, Object> list(String tenantId, Long requesterEmployeeId, int page, int size, boolean all) {
-        String t = TenantIds.normalize(tenantId);
+    public Map<String, Object> list(Long requesterEmployeeId, int page, int size, boolean all) {
         int p = Math.max(page, 0);
         int s = Math.min(Math.max(size, 1), 100);
         Page<FileObject> result;
         if (all && canViewDocuments(requesterEmployeeId)) {
-            result = repository.findByTenantIdOrderByIdDesc(t, PageRequest.of(p, s));
+            result = repository.findAllByOrderByIdDesc(PageRequest.of(p, s));
         } else {
             String by = requesterEmployeeId == null ? "" : String.valueOf(requesterEmployeeId);
-            result = repository.findByTenantIdAndUploadedByOrderByIdDesc(t, by, PageRequest.of(p, s));
+            result = repository.findByUploadedByOrderByIdDesc(by, PageRequest.of(p, s));
         }
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("content", result.getContent().stream().map(this::toMetadata).toList());
@@ -270,16 +266,17 @@ public class FileService {
     }
 
     /** Authorize + issue short-lived download URL (guide §8). */
-    public DownloadUrlResponse issueDownloadUrl(String tenantId, Long id, Long requesterEmployeeId) {
-        FileObject fo = findByTenantId(tenantId, id);
+    public DownloadUrlResponse issueDownloadUrl(Long id, Long requesterEmployeeId) {
+        FileObject fo = findFile(id);
         assertCanAccess(fo, requesterEmployeeId, true);
         assertReleased(fo);
         DownloadTokenService.IssuedToken issued =
-                downloadTokens.issue(fo.getId(), fo.getTenantId(), requesterEmployeeId);
+                downloadTokens.issue(fo.getId(), requesterEmployeeId);
         auditService.record(requesterEmployeeId, "DOWNLOAD_URL", "FileObject", String.valueOf(id), null,
                 Map.of("expiresAt", issued.expiresAt().toString(), "scanStatus", fo.getScanStatus(),
                         "classification", fo.getClassification()));
-        String url = "/api/files/" + id + "/content?token=" + issued.token();
+        String url = "/api/files/" + id + "/content?token="
+                + java.net.URLEncoder.encode(issued.token(), java.nio.charset.StandardCharsets.UTF_8);
         return new DownloadUrlResponse(id, url, issued.token(), issued.expiresAt());
     }
 
@@ -287,9 +284,9 @@ public class FileService {
      * Verify short-lived token, audit access, and open the released object stream (guide §8).
      */
     @Transactional(readOnly = true)
-    public OpenedDownload openDownloadWithToken(String tenantId, Long id, String token) throws IOException {
-        FileObject fo = findByTenantId(tenantId, id);
-        DownloadTokenService.Claims claims = downloadTokens.verify(token, id, fo.getTenantId());
+    public OpenedDownload openDownloadWithToken(Long id, String token) throws IOException {
+        FileObject fo = findFile(id);
+        DownloadTokenService.Claims claims = downloadTokens.verify(token, id);
         assertReleased(fo);
         auditService.record(claims.requesterEmployeeId(), "DOWNLOAD", "FileObject", String.valueOf(id), null,
                 Map.of("storageKey", fo.getStorageKey(), "scanStatus", fo.getScanStatus(),
@@ -302,8 +299,8 @@ public class FileService {
 
     /** Legacy session download — still gated by quarantine + ACL; prefers short-lived URL path. */
     @Transactional(readOnly = true)
-    public InputStream openDownload(String tenantId, Long id, Long requesterEmployeeId) throws IOException {
-        FileObject fo = findByTenantId(tenantId, id);
+    public InputStream openDownload(Long id, Long requesterEmployeeId) throws IOException {
+        FileObject fo = findFile(id);
         assertCanAccess(fo, requesterEmployeeId, true);
         assertReleased(fo);
         auditService.record(requesterEmployeeId, "DOWNLOAD", "FileObject", String.valueOf(id), null,
@@ -366,8 +363,8 @@ public class FileService {
         }
     }
 
-    public void delete(String tenantId, Long id, Long requesterEmployeeId) throws IOException {
-        FileObject fo = findByTenantId(tenantId, id);
+    public void delete(Long id, Long requesterEmployeeId) throws IOException {
+        FileObject fo = findFile(id);
         assertCanAccess(fo, requesterEmployeeId, false);
         if (!isOwner(fo, requesterEmployeeId) && !canManageDocuments(requesterEmployeeId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Forbidden: cannot delete this file");
@@ -425,10 +422,6 @@ public class FileService {
         if (writer == null) {
             return;
         }
-        String tenant = TenantContext.getTenantId();
-        if (tenant == null || tenant.isBlank()) {
-            tenant = saved.getTenantId();
-        }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("fileId", saved.getId());
         payload.put("storageKey", saved.getStorageKey());
@@ -437,7 +430,6 @@ public class FileService {
                 String.valueOf(saved.getId()),
                 1L,
                 CorrelationContext.getOrCreate(),
-                tenant,
                 payload);
         writer.enqueue(event, PlatformQueues.FILE_SCAN);
     }
@@ -607,12 +599,12 @@ public class FileService {
     }
 
     @Transactional(readOnly = true)
-    public String getContentType(String tenantId, Long id) {
-        return findByTenantId(tenantId, id).getContentType();
+    public String getContentType(Long id) {
+        return findFile(id).getContentType();
     }
 
-    public void ensureTenantBucket(String tenantId) throws IOException {
-        storage.ensureBucket(TenantIds.filesBucket(tenantId));
+    public void ensureBucket() throws IOException {
+        storage.ensureBucket(bucket);
     }
 
     /** Reject client-labelled types that do not match file magic bytes (e.g. MZ exe as PDF). */
@@ -719,8 +711,8 @@ public class FileService {
         };
     }
 
-    private FileObject findByTenantId(String tenantId, Long id) {
-        return repository.findByIdAndTenantId(id, TenantIds.normalize(tenantId))
+    private FileObject findFile(Long id) {
+        return repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("File not found: " + id));
     }
 
@@ -735,7 +727,6 @@ public class FileService {
     private FileMetadataResponse toMetadata(FileObject fo) {
         return new FileMetadataResponse(
                 fo.getId(),
-                fo.getTenantId(),
                 fo.getOriginalName(),
                 fo.getContentType(),
                 fo.getSizeBytes(),

@@ -1,0 +1,30 @@
+databaseChangeLog:
+  # Single-company deployment (guide §1): events no longer carry a tenant id.
+  - changeSet:
+      id: files-sc-001-outbox-drop-tenant
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: message_outbox
+            columnName: tenant_id
+      changes:
+        - dropColumn:
+            tableName: message_outbox
+            columnName: tenant_id
+  - changeSet:
+      id: files-sc-002-file-object-drop-tenant
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: file_object
+            columnName: tenant_id
+      changes:
+        - dropColumn:
+            tableName: file_object
+            columnName: tenant_id
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_file_uploaded_by ON file_object (uploaded_by)
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_file_employee ON file_object (employee_id)

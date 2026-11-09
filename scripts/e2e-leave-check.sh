@@ -8,9 +8,9 @@ ok(){ echo "OK  $*"; pass=$((pass+1)); }
 bad(){ echo "FAIL $*"; fail=$((fail+1)); }
 
 mint() {
-  curl -s -X POST "$GW/api/registry/token" \
+  curl -s -X POST "$GW/api/auth/token" \
     -H "Content-Type: application/json" -H "X-Demo-Auth-Key: $DEMO" \
-    -d "{\"tenantId\":\"qii_creative\",\"employeeId\":$1,\"subject\":\"$2\"}" \
+    -d "{\"employeeId\":$1,\"subject\":\"$2\"}" \
     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p'
 }
 

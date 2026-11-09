@@ -12,7 +12,6 @@ import com.platform.messaging.correlation.CorrelationContext;
 import com.platform.messaging.outbox.InboxGuard;
 import com.platform.messaging.outbox.OutboxRelay;
 import com.platform.messaging.outbox.OutboxWriter;
-import com.platform.messaging.tenant.TenantBoundRunner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
@@ -75,17 +74,14 @@ public class LeaveCoverCommandListener {
         } catch (Exception e) {
             throw new IllegalArgumentException("Invalid leave-cover payload", e);
         }
-        String tenantId = str(envelope.get("tenantId"));
         String eventId = str(envelope.get("eventId"));
         String correlationId = str(envelope.get("correlationId"));
-        TenantBoundRunner.run(tenantId, () -> {
-            CorrelationContext.set(correlationId.isBlank() ? eventId : correlationId);
-            try {
-                commandHandler.handle(envelope);
-            } finally {
-                CorrelationContext.clear();
-            }
-        });
+        CorrelationContext.set(correlationId.isBlank() ? eventId : correlationId);
+        try {
+            commandHandler.handle(envelope);
+        } finally {
+            CorrelationContext.clear();
+        }
     }
 
     /** Invoked only via {@link LeaveCoverCommandHandler} so the transaction proxy applies. */
@@ -128,11 +124,10 @@ public class LeaveCoverCommandListener {
         resultPayload.put("status", existing.getStatus());
         resultPayload.put("idempotentReplay", true);
 
-        String tenantId = str(envelope.get("tenantId"));
         String correlationId = str(envelope.get("correlationId"));
         long aggregateVersion = longOf(envelope.get("aggregateVersion")) == null
                 ? 1L : longOf(envelope.get("aggregateVersion"));
-        enqueueResult(tenantId, correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
+        enqueueResult(correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
         log.info("Re-emitted leave-cover result for duplicate event opKey={}", operationKey);
     }
 
@@ -144,7 +139,6 @@ public class LeaveCoverCommandListener {
         String periodLabel = str(payload.get("periodLabel"));
         boolean reverse = Boolean.TRUE.equals(payload.get("reverse"));
         Map<String, BigDecimal> consumed = toConsumed(payload.get("consumedByType"));
-        String tenantId = str(envelope.get("tenantId"));
         String correlationId = str(envelope.get("correlationId"));
         String eventId = str(envelope.get("eventId"));
         long aggregateVersion = longOf(envelope.get("aggregateVersion")) == null
@@ -163,7 +157,7 @@ public class LeaveCoverCommandListener {
             resultPayload.put("success", LeaveOperation.STATUS_SUCCEEDED.equals(existing.getStatus()));
             resultPayload.put("status", existing.getStatus());
             resultPayload.put("idempotentReplay", true);
-            enqueueResult(tenantId, correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
+            enqueueResult(correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
             return resultPayload;
         }
 
@@ -192,12 +186,11 @@ public class LeaveCoverCommandListener {
         op.setCompletedAt(Instant.now());
         leaveOperationRepository.save(op);
 
-        enqueueResult(tenantId, correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
+        enqueueResult(correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
         return resultPayload;
     }
 
     private void enqueueResult(
-            String tenantId,
             String correlationId,
             String aggregateId,
             long version,
@@ -207,7 +200,6 @@ public class LeaveCoverCommandListener {
                 aggregateId == null || aggregateId.isBlank() ? "unknown" : aggregateId,
                 version,
                 correlationId,
-                tenantId,
                 resultPayload);
         outboxWriter.enqueue(event, PlatformQueues.LEAVE_COVER_RESULT);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {

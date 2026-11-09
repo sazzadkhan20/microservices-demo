@@ -2,7 +2,6 @@ package com.platform.people.client;
 
 import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -35,7 +34,6 @@ public class LeaveClient {
         try {
             Map<?, ?> body = client.get()
                     .uri("/api/internal/approvals/pending-for/{id}", leavingEmployeeId)
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .header(InternalCalls.HEADER, internalKey)
                     .retrieve()
                     .body(Map.class);
@@ -50,7 +48,6 @@ public class LeaveClient {
         try {
             client.post()
                     .uri("/api/internal/approvals/reassign")
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .header(InternalCalls.HEADER, internalKey)
                     .body(Map.of("leavingId", leavingId, "newApproverId", newApproverId))
                     .retrieve()
@@ -68,7 +65,6 @@ public class LeaveClient {
                     .uri(uri -> uri.path("/api/internal/leave-facts/{id}")
                             .queryParam("period", period)
                             .build(employeeId))
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .header(InternalCalls.HEADER, internalKey)
                     .retrieve()
                     .body(Map.class);
@@ -78,10 +74,5 @@ public class LeaveClient {
             // PAY-01: fail closed — caller must not invent zeros
             throw new IllegalStateException("Leave service unavailable for payroll facts", e);
         }
-    }
-
-    private static String tenant() {
-        String t = TenantContext.getTenantId();
-        return t == null ? "" : t;
     }
 }

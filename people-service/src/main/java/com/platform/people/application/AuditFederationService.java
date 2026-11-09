@@ -1,7 +1,6 @@
 package com.platform.people.application;
 
 import com.platform.common.constants.PlatformHeaders;
-import com.platform.common.tenant.TenantContext;
 import com.platform.people.api.dto.AggregatedAuditRow;
 import com.platform.people.domain.AuditLog;
 import com.platform.people.infrastructure.persistence.AuditLogRepository;
@@ -81,7 +80,6 @@ public class AuditFederationService {
                     .uri(uri -> uri.path("/api/internal/audit")
                             .queryParam("limit", PER_SERVICE_LIMIT)
                             .build())
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .retrieve()
                     .body(new ParameterizedTypeReference<>() {});
             if (body == null || body.isEmpty()) {
@@ -173,11 +171,6 @@ public class AuditFederationService {
             return s;
         }
         return String.valueOf(raw);
-    }
-
-    private static String tenant() {
-        String t = TenantContext.getTenantId();
-        return t == null ? "" : t;
     }
 
     private record RemoteAuditSource(String name, String baseUrl) {}

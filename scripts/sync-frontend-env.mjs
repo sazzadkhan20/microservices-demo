@@ -32,7 +32,6 @@ const rootVars = parseEnv(fs.readFileSync(rootEnv, "utf8"));
 const existing = fs.existsSync(feEnv) ? parseEnv(fs.readFileSync(feEnv, "utf8")) : {};
 
 const next = {
-  TENANT_ID: existing.TENANT_ID || "qii_creative",
   GATEWAY_URL: existing.GATEWAY_URL || "http://127.0.0.1:8090",
   COOKIE_NAME: existing.COOKIE_NAME || "qii_session",
   GATEWAY_TIMEOUT_MS: existing.GATEWAY_TIMEOUT_MS || "30000",

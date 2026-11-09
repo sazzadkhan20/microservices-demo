@@ -3,7 +3,6 @@ package com.platform.people.messaging;
 import com.platform.common.messaging.EventTypes;
 import com.platform.common.messaging.PlatformEvent;
 import com.platform.common.messaging.PlatformQueues;
-import com.platform.common.tenant.TenantContext;
 import com.platform.people.domain.Designation;
 import com.platform.people.domain.Employee;
 import com.platform.people.domain.Team;
@@ -56,11 +55,6 @@ public class EmployeeProjectionPublisher {
         if (employee == null || employee.getId() == null) {
             return;
         }
-        String tenantId = TenantContext.getTenantId();
-        if (tenantId == null || tenantId.isBlank()) {
-            log.warn("Skip employee projection publish — no tenant bound (employeeId={})", employee.getId());
-            return;
-        }
         Map<String, Object> payload = toPayload(employee);
         if (roleCodes != null) {
             payload.put("roleCodes", roleCodes);
@@ -70,7 +64,6 @@ public class EmployeeProjectionPublisher {
                 String.valueOf(employee.getId()),
                 employee.getUpdatedAt() == null ? 0L : employee.getUpdatedAt().toEpochMilli(),
                 CorrelationContext.get(),
-                tenantId,
                 payload);
         outboxWriter.enqueue(event, PlatformQueues.PEOPLE_EMPLOYEE_UPSERTED);
         flushOutboxAfterCommit();

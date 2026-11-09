@@ -45,9 +45,6 @@ public class MessageOutbox {
     @Column(name = "correlation_id", nullable = false, length = 64)
     private String correlationId;
 
-    @Column(name = "tenant_id", nullable = false, length = 100)
-    private String tenantId;
-
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "payload_json", nullable = false, columnDefinition = "jsonb")
     private Map<String, Object> payloadJson = new HashMap<>();
@@ -117,14 +114,6 @@ public class MessageOutbox {
 
     public void setCorrelationId(String correlationId) {
         this.correlationId = correlationId;
-    }
-
-    public String getTenantId() {
-        return tenantId;
-    }
-
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
     }
 
     public Map<String, Object> getPayloadJson() {

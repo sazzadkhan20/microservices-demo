@@ -1,42 +1,45 @@
-# Infrastructure + optional full stack.
+# Qii HRMS — single company, one fixed database per service (guide §1, §3, §5).
 #
-# Secrets: set in repo-root `.env` (see `.env.example`). Compose does not embed
-# credential literals — missing vars fail fast.
+# Secrets: set in repo-root `.env` (see `.env.example`). Compose embeds no credential literals.
+#   docker compose up -d                          # infrastructure only (IDE / bootRun apps)
+#   docker compose --profile apps up -d --build   # full stack
+#   bash scripts/up-local.sh                      # convenience wrapper
 #
-# Profiles keep each app independently deployable (large-scale ready):
-#   docker compose up -d                                          # infra only
-#   docker compose --profile apps up -d --build                   # full stack (+ MinIO infra)
-# Or convenience: bash scripts/up-local.sh
+# Database layout (a shared PostgreSQL cluster is acceptable initially — guide §1):
+#   postgres-hrms     people_db, leave_db, timework_db
+#   postgres-payroll  payroll_db
+#   postgres-platform files_db, notification_db, reports_db
+# Each database has its own <svc>_migrator (schema owner, Liquibase only) and <svc>_app (DML only) role,
+# created on first boot by docker/postgres/init-service-dbs.sh. Services migrate their own schema on startup.
 #
-# Production: deploy each service Dockerfile separately; Compose is local/dev only.
+# Local-only: ports are published on 127.0.0.1 for IDE runs. In production only the HTTPS ingress → BFF
+# is public; databases, broker, Redis, object storage and service ports stay on a private network (guide §9).
 
 services:
+  # Gateway session revocation store (logout / offboarding).
   redis:
     image: redis:7
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # Guide §1/§7 — durable broker with publisher confirms + consumer acks (management UI :15672)
-  # Required infra (same as Redis/Postgres). Apps default to 127.0.0.1:5672 when run from IDE.
+  # Guide §1/§7 — durable broker with publisher confirms + consumer acks (management UI :15672).
   rabbitmq:
     image: rabbitmq:3.13-management
     restart: unless-stopped
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
     environment:
-      # Used when definitions are absent; definitions.json is authoritative on first boot.
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
-      # Guide §7: durable topology available before app services start (outbox/inbox consumers).
       - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
       - ./docker/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
     healthcheck:
@@ -46,34 +49,22 @@ services:
       retries: 12
       start_period: 20s
 
-  postgres-registry:
-    image: postgres:16
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
-      PLATFORM_DB_USER: ${PLATFORM_DB_USER}
-      PLATFORM_DB_PASSWORD: ${PLATFORM_DB_PASSWORD}
-    ports:
-      # Host 5435 — avoid conflict with a local Windows PostgreSQL often bound to 5432
-      - "5435:5432"
-    volumes:
-      - ./docker/postgres/init-registry.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
-      - pg_registry_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   postgres-hrms:
     image: postgres:16
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
-      PLATFORM_DB_USER: ${PLATFORM_DB_USER}
-      PLATFORM_DB_PASSWORD: ${PLATFORM_DB_PASSWORD}
+      SERVICE_DBS: "people_db:PEOPLE leave_db:LEAVE timework_db:TIMEWORK"
+      PEOPLE_DB_PASSWORD: ${PEOPLE_DB_PASSWORD}
+      PEOPLE_DB_MIGRATION_PASSWORD: ${PEOPLE_DB_MIGRATION_PASSWORD}
+      LEAVE_DB_PASSWORD: ${LEAVE_DB_PASSWORD}
+      LEAVE_DB_MIGRATION_PASSWORD: ${LEAVE_DB_MIGRATION_PASSWORD}
+      TIMEWORK_DB_PASSWORD: ${TIMEWORK_DB_PASSWORD}
+      TIMEWORK_DB_MIGRATION_PASSWORD: ${TIMEWORK_DB_MIGRATION_PASSWORD}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
-      - ./docker/postgres/init-hrms-host.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+      - ./docker/postgres/init-service-dbs.sh:/docker-entrypoint-initdb.d/01-init-service-dbs.sh:ro
+      - ./docker/postgres/service-db.sql:/docker-entrypoint-initdb.d/service-db.sql.tpl:ro
       - pg_hrms_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -85,12 +76,14 @@ services:
     image: postgres:16
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
-      PLATFORM_DB_USER: ${PLATFORM_DB_USER}
-      PLATFORM_DB_PASSWORD: ${PLATFORM_DB_PASSWORD}
+      SERVICE_DBS: "payroll_db:PAYROLL"
+      PAYROLL_DB_PASSWORD: ${PAYROLL_DB_PASSWORD}
+      PAYROLL_DB_MIGRATION_PASSWORD: ${PAYROLL_DB_MIGRATION_PASSWORD}
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
-      - ./docker/postgres/init-payroll-host.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+      - ./docker/postgres/init-service-dbs.sh:/docker-entrypoint-initdb.d/01-init-service-dbs.sh:ro
+      - ./docker/postgres/service-db.sql:/docker-entrypoint-initdb.d/service-db.sql.tpl:ro
       - pg_payroll_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -102,12 +95,18 @@ services:
     image: postgres:16
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD}
-      PLATFORM_DB_USER: ${PLATFORM_DB_USER}
-      PLATFORM_DB_PASSWORD: ${PLATFORM_DB_PASSWORD}
+      SERVICE_DBS: "files_db:FILES notification_db:NOTIFICATION reports_db:REPORT"
+      FILES_DB_PASSWORD: ${FILES_DB_PASSWORD}
+      FILES_DB_MIGRATION_PASSWORD: ${FILES_DB_MIGRATION_PASSWORD}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+      NOTIFICATION_DB_MIGRATION_PASSWORD: ${NOTIFICATION_DB_MIGRATION_PASSWORD}
+      REPORT_DB_PASSWORD: ${REPORT_DB_PASSWORD}
+      REPORT_DB_MIGRATION_PASSWORD: ${REPORT_DB_MIGRATION_PASSWORD}
     ports:
-      - "5436:5432"
+      - "127.0.0.1:5436:5432"
     volumes:
-      - ./docker/postgres/init-platform-host.sh:/docker-entrypoint-initdb.d/01-init.sh:ro
+      - ./docker/postgres/init-service-dbs.sh:/docker-entrypoint-initdb.d/01-init-service-dbs.sh:ro
+      - ./docker/postgres/service-db.sql:/docker-entrypoint-initdb.d/service-db.sql.tpl:ro
       - pg_platform_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
@@ -115,336 +114,14 @@ services:
       timeout: 5s
       retries: 10
 
-  tenant-registry:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: tenant-registry/Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      REGISTRY_DB_URL: jdbc:postgresql://postgres-registry:5432/registry_db
-      REGISTRY_DB_USER: ${PLATFORM_DB_USER}
-      REGISTRY_DB_PASSWORD: ${PLATFORM_DB_PASSWORD}
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_PORT: 6379
-      HRMS_PG_ADMIN_URL: jdbc:postgresql://postgres-hrms:5432/postgres
-      HRMS_PG_HOST: postgres-hrms
-      HRMS_PG_PORT: 5432
-      HRMS_PG_USER: ${HRMS_PG_USER}
-      HRMS_PG_PASSWORD: ${HRMS_PG_PASSWORD}
-      PAYROLL_PG_ADMIN_URL: jdbc:postgresql://postgres-payroll:5432/postgres
-      PAYROLL_PG_HOST: postgres-payroll
-      PAYROLL_PG_PORT: 5432
-      PAYROLL_PG_USER: ${PAYROLL_PG_USER}
-      PAYROLL_PG_PASSWORD: ${PAYROLL_PG_PASSWORD}
-      FILES_PG_ADMIN_URL: jdbc:postgresql://postgres-platform:5432/postgres
-      FILES_PG_HOST: postgres-platform
-      FILES_PG_PORT: 5432
-      FILES_PG_USER: ${FILES_PG_USER}
-      FILES_PG_PASSWORD: ${FILES_PG_PASSWORD}
-      NOTIF_PG_ADMIN_URL: jdbc:postgresql://postgres-platform:5432/postgres
-      NOTIF_PG_HOST: postgres-platform
-      NOTIF_PG_PORT: 5432
-      NOTIF_PG_USER: ${NOTIF_PG_USER}
-      NOTIF_PG_PASSWORD: ${NOTIF_PG_PASSWORD}
-      REPORT_PG_ADMIN_URL: jdbc:postgresql://postgres-platform:5432/postgres
-      REPORT_PG_HOST: postgres-platform
-      REPORT_PG_PORT: 5432
-      REPORT_PG_USER: ${REPORT_PG_USER}
-      REPORT_PG_PASSWORD: ${REPORT_PG_PASSWORD}
-      PEOPLE_PG_USER: ${PEOPLE_PG_USER}
-      PEOPLE_PG_PASSWORD: ${PEOPLE_PG_PASSWORD}
-      LEAVE_PG_USER: ${LEAVE_PG_USER}
-      LEAVE_PG_PASSWORD: ${LEAVE_PG_PASSWORD}
-      TIMEWORK_PG_USER: ${TIMEWORK_PG_USER}
-      TIMEWORK_PG_PASSWORD: ${TIMEWORK_PG_PASSWORD}
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      JWT_SECRET: ${JWT_SECRET}
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
-      HRMS_BASE_URL: http://people-service:8081
-      TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-604800}
-      FLEET_AUTO_MIGRATE: ${FLEET_AUTO_MIGRATE:-true}
-    depends_on:
-      postgres-registry:
-        condition: service_healthy
-      postgres-hrms:
-        condition: service_healthy
-      postgres-payroll:
-        condition: service_healthy
-      postgres-platform:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      minio:
-        condition: service_healthy
-
-  # Guide §3 — People / Leave / Time&Work as separate deployables (ports 8081 / 8086 / 8087).
-  # Each resolves JDBC via its own registry service name → people_* / leave_* / timework_* DB.
-  people-service:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: people-service/Dockerfile
-    ports:
-      - "8081:8081"
-      - "9081:9081"
-    environment:
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_PORT: 6379
-      REGISTRY_BASE_URL: http://tenant-registry:8080
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
-      LEAVE_BASE_URL: http://leave-service:8086
-      TIME_WORK_BASE_URL: http://time-work-service:8087
-    depends_on:
-      tenant-registry:
-        condition: service_started
-      redis:
-        condition: service_started
-      postgres-hrms:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-
-  leave-service:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: leave-service/Dockerfile
-    ports:
-      - "8086:8086"
-    environment:
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_PORT: 6379
-      REGISTRY_BASE_URL: http://tenant-registry:8080
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
-      TIME_WORK_BASE_URL: http://time-work-service:8087
-      PEOPLE_BASE_URL: http://people-service:8081
-      HRMS_BASE_URL: http://people-service:8081
-    depends_on:
-      tenant-registry:
-        condition: service_started
-      people-service:
-        condition: service_started
-      redis:
-        condition: service_started
-      postgres-hrms:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-
-  time-work-service:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: time-work-service/Dockerfile
-    ports:
-      - "8087:8087"
-    environment:
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_PORT: 6379
-      REGISTRY_BASE_URL: http://tenant-registry:8080
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
-      LEAVE_BASE_URL: http://leave-service:8086
-      PEOPLE_BASE_URL: http://people-service:8081
-      HRMS_BASE_URL: http://people-service:8081
-    depends_on:
-      tenant-registry:
-        condition: service_started
-      people-service:
-        condition: service_started
-      redis:
-        condition: service_started
-      postgres-hrms:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-
-  payroll-service:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: payroll-service/Dockerfile
-    ports:
-      - "8082:8082"
-    environment:
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REDIS_PORT: 6379
-      REGISTRY_BASE_URL: http://tenant-registry:8080
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      HRMS_BASE_URL: http://people-service:8081
-      TIME_WORK_BASE_URL: http://time-work-service:8087
-      LEAVE_BASE_URL: http://leave-service:8086
-      HRMS_GRPC_ADDRESS: static://people-service:9081
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
-      NOTIFICATION_BASE_URL: http://notification-service:8083
-    depends_on:
-      tenant-registry:
-        condition: service_started
-      people-service:
-        condition: service_started
-      leave-service:
-        condition: service_started
-      time-work-service:
-        condition: service_started
-      redis:
-        condition: service_started
-      postgres-payroll:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-
-  notification-service:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: notification-service/Dockerfile
-    ports:
-      - "8083:8083"
-    environment:
-      # JDBC resolved per-tenant via registry routing → notif_<tenantId> on postgres-platform
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REGISTRY_BASE_URL: http://tenant-registry:8080
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
-    depends_on:
-      tenant-registry:
-        condition: service_started
-      postgres-platform:
-        condition: service_started
-      redis:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-
-  file-service:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: file-service/Dockerfile
-    ports:
-      - "8084:8084"
-    environment:
-      # JDBC resolved per-tenant via registry routing → files_<tenantId> on postgres-platform
-      FILE_STORAGE_TYPE: minio
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      JWT_SECRET: ${JWT_SECRET}
-      PEOPLE_BASE_URL: http://people-service:8081
-      HRMS_BASE_URL: http://people-service:8081
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REGISTRY_BASE_URL: http://tenant-registry:8080
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
-    depends_on:
-      tenant-registry:
-        condition: service_started
-      postgres-platform:
-        condition: service_started
-      minio:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-      people-service:
-        condition: service_started
-
-  report-service:
-    profiles: ["apps"]
-    build:
-      context: .
-      dockerfile: report-service/Dockerfile
-    ports:
-      - "8085:8085"
-    environment:
-      # JDBC resolved per-tenant via registry routing → reports_<tenantId> on postgres-platform
-      HRMS_BASE_URL: http://people-service:8081
-      TIME_WORK_BASE_URL: http://time-work-service:8087
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      REGISTRY_BASE_URL: http://tenant-registry:8080
-      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
-      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_USER: ${RABBITMQ_USER}
-      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
-      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
-    depends_on:
-      tenant-registry:
-        condition: service_started
-      people-service:
-        condition: service_started
-      time-work-service:
-        condition: service_started
-      postgres-platform:
-        condition: service_started
-      redis:
-        condition: service_started
-      rabbitmq:
-        condition: service_healthy
-
-  # Object storage for file-service (bucket-per-tenant). Core infra like Redis —
-  # always started with `docker compose up -d` so IDE-run file-service can reach it.
-  # MINIO_ACCESS_KEY / MINIO_SECRET_KEY used by apps MUST match ROOT_USER / ROOT_PASSWORD.
+  # Private object storage for company documents (file-service, bucket FILE_STORAGE_BUCKET).
   minio:
-    # Prefer a locally available tag when Hub/Quay pulls are blocked; override with
-    # MINIO_IMAGE=quay.io/minio/minio:<release> when registry access works.
     image: ${MINIO_IMAGE:-minio/minio:latest}
     pull_policy: if_not_present
     restart: unless-stopped
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -458,16 +135,238 @@ services:
       retries: 12
       start_period: 15s
 
+  # Guide §3 — People / Leave / Time&Work / Payroll / Documents / Notifications / Reporting,
+  # each an independent deployable with its own fixed database connection.
+  people-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: people-service/Dockerfile
+    ports:
+      # 8081 = HTTP/actuator (health probes). 9081 = gRPC only (Payroll → People). Never HTTP-probe 9081.
+      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:9081:9081"
+    environment:
+      PEOPLE_DB_URL: jdbc:postgresql://postgres-hrms:5432/people_db
+      PEOPLE_DB_USER: people_app
+      PEOPLE_DB_PASSWORD: ${PEOPLE_DB_PASSWORD}
+      PEOPLE_DB_MIGRATION_USER: people_migrator
+      PEOPLE_DB_MIGRATION_PASSWORD: ${PEOPLE_DB_MIGRATION_PASSWORD}
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
+      GATEWAY_BASE_URL: http://api-gateway:8090
+      LEAVE_BASE_URL: http://leave-service:8086
+      TIME_WORK_BASE_URL: http://time-work-service:8087
+      PAYROLL_BASE_URL: http://payroll-service:8082
+      FILES_BASE_URL: http://file-service:8084
+      NOTIFICATION_BASE_URL: http://notification-service:8083
+      REPORT_BASE_URL: http://report-service:8085
+    depends_on:
+      postgres-hrms:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  leave-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: leave-service/Dockerfile
+    ports:
+      - "127.0.0.1:8086:8086"
+    environment:
+      LEAVE_DB_URL: jdbc:postgresql://postgres-hrms:5432/leave_db
+      LEAVE_DB_USER: leave_app
+      LEAVE_DB_PASSWORD: ${LEAVE_DB_PASSWORD}
+      LEAVE_DB_MIGRATION_USER: leave_migrator
+      LEAVE_DB_MIGRATION_PASSWORD: ${LEAVE_DB_MIGRATION_PASSWORD}
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
+      TIME_WORK_BASE_URL: http://time-work-service:8087
+      PEOPLE_BASE_URL: http://people-service:8081
+      HRMS_BASE_URL: http://people-service:8081
+    depends_on:
+      postgres-hrms:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  time-work-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: time-work-service/Dockerfile
+    ports:
+      - "127.0.0.1:8087:8087"
+    environment:
+      TIMEWORK_DB_URL: jdbc:postgresql://postgres-hrms:5432/timework_db
+      TIMEWORK_DB_USER: timework_app
+      TIMEWORK_DB_PASSWORD: ${TIMEWORK_DB_PASSWORD}
+      TIMEWORK_DB_MIGRATION_USER: timework_migrator
+      TIMEWORK_DB_MIGRATION_PASSWORD: ${TIMEWORK_DB_MIGRATION_PASSWORD}
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
+      LEAVE_BASE_URL: http://leave-service:8086
+      PEOPLE_BASE_URL: http://people-service:8081
+      HRMS_BASE_URL: http://people-service:8081
+    depends_on:
+      postgres-hrms:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  payroll-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: payroll-service/Dockerfile
+    ports:
+      - "127.0.0.1:8082:8082"
+    environment:
+      PAYROLL_DB_URL: jdbc:postgresql://postgres-payroll:5432/payroll_db
+      PAYROLL_DB_USER: payroll_app
+      PAYROLL_DB_PASSWORD: ${PAYROLL_DB_PASSWORD}
+      PAYROLL_DB_MIGRATION_USER: payroll_migrator
+      PAYROLL_DB_MIGRATION_PASSWORD: ${PAYROLL_DB_MIGRATION_PASSWORD}
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      HRMS_BASE_URL: http://people-service:8081
+      TIME_WORK_BASE_URL: http://time-work-service:8087
+      LEAVE_BASE_URL: http://leave-service:8086
+      HRMS_GRPC_ADDRESS: static://people-service:9081
+      NOTIFICATION_BASE_URL: http://notification-service:8083
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
+    depends_on:
+      postgres-payroll:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      people-service:
+        condition: service_started
+
+  notification-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    ports:
+      - "127.0.0.1:8083:8083"
+    environment:
+      NOTIFICATION_DB_URL: jdbc:postgresql://postgres-platform:5432/notification_db
+      NOTIFICATION_DB_USER: notification_app
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+      NOTIFICATION_DB_MIGRATION_USER: notification_migrator
+      NOTIFICATION_DB_MIGRATION_PASSWORD: ${NOTIFICATION_DB_MIGRATION_PASSWORD}
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
+    depends_on:
+      postgres-platform:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  file-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: file-service/Dockerfile
+    ports:
+      - "127.0.0.1:8084:8084"
+    environment:
+      FILES_DB_URL: jdbc:postgresql://postgres-platform:5432/files_db
+      FILES_DB_USER: files_app
+      FILES_DB_PASSWORD: ${FILES_DB_PASSWORD}
+      FILES_DB_MIGRATION_USER: files_migrator
+      FILES_DB_MIGRATION_PASSWORD: ${FILES_DB_MIGRATION_PASSWORD}
+      FILE_STORAGE_TYPE: minio
+      FILE_STORAGE_BUCKET: ${FILE_STORAGE_BUCKET:-qii-hrms-documents}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      FILE_DOWNLOAD_SIGNING_KEY: ${FILE_DOWNLOAD_SIGNING_KEY:-${JWT_SECRET}}
+      PEOPLE_BASE_URL: http://people-service:8081
+      HRMS_BASE_URL: http://people-service:8081
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
+    depends_on:
+      postgres-platform:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      people-service:
+        condition: service_started
+
+  report-service:
+    profiles: ["apps"]
+    build:
+      context: .
+      dockerfile: report-service/Dockerfile
+    ports:
+      - "127.0.0.1:8085:8085"
+    environment:
+      REPORT_DB_URL: jdbc:postgresql://postgres-platform:5432/reports_db
+      REPORT_DB_USER: report_app
+      REPORT_DB_PASSWORD: ${REPORT_DB_PASSWORD}
+      REPORT_DB_MIGRATION_USER: report_migrator
+      REPORT_DB_MIGRATION_PASSWORD: ${REPORT_DB_MIGRATION_PASSWORD}
+      HRMS_BASE_URL: http://people-service:8081
+      TIME_WORK_BASE_URL: http://time-work-service:8087
+      PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+      PLATFORM_MESSAGING_ENABLED: ${PLATFORM_MESSAGING_ENABLED:-true}
+    depends_on:
+      postgres-platform:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Sole public entry behind the BFF: verifies session JWTs, mints demo sessions, routes to services.
   api-gateway:
     profiles: ["apps"]
     build:
       context: .
       dockerfile: api-gateway/Dockerfile
     ports:
-      - "8090:8090"
+      - "127.0.0.1:8090:8090"
     environment:
-      REGISTRY_URI: http://tenant-registry:8080
-      HRMS_URI: http://people-service:8081
       PEOPLE_URI: http://people-service:8081
       LEAVE_URI: http://leave-service:8086
       TIME_WORK_URI: http://time-work-service:8087
@@ -475,22 +374,21 @@ services:
       NOTIF_URI: http://notification-service:8083
       FILES_URI: http://file-service:8084
       REPORTS_URI: http://report-service:8085
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
       DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-false}
       DEMO_AUTH_KEY: ${DEMO_AUTH_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-604800}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
       PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
-      REDIS_HOST: redis
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
     depends_on:
-      - tenant-registry
-      - people-service
-      - leave-service
-      - time-work-service
-      - payroll-service
-      - notification-service
-      - file-service
-      - report-service
+      redis:
+        condition: service_healthy
+      people-service:
+        condition: service_started
 
   qii-frontend:
     profiles: ["apps"]
@@ -500,7 +398,6 @@ services:
     ports:
       - "3000:3000"
     environment:
-      TENANT_ID: qii_creative
       GATEWAY_URL: http://api-gateway:8090
       DEMO_AUTH_KEY: ${DEMO_AUTH_KEY}
       COOKIE_NAME: qii_session
@@ -509,7 +406,6 @@ services:
       - api-gateway
 
 volumes:
-  pg_registry_data:
   pg_hrms_data:
   pg_payroll_data:
   pg_platform_data:

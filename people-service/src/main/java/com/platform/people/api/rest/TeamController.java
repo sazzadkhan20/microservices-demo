@@ -66,13 +66,13 @@ public class TeamController {
     @Operation(summary = "Create team (org structure — hierarchy.edit). "
             + "Department and team lead are required (FR-ORG-01).")
     public Team create(@RequestBody Map<String, Object> body) {
-        String code = requireText(body, "code");
-        if (teamRepository.findAll().stream().anyMatch(t -> code.equalsIgnoreCase(t.getCode()))) {
-            throw new IllegalStateException("Team code already exists: " + code);
-        }
+        String code = requireStringField(body, "code").toUpperCase(Locale.ROOT);
+        String name = requireStringField(body, "name");
+        assertCodeAvailable(code, null);
+        assertNameAvailable(name, null);
         Team team = new Team();
         team.setCode(code);
-        team.setName(requireText(body, "name"));
+        team.setName(name);
         // FR-ORG-01 — teams within a department, each with one team lead.
         Long departmentId = requireLong(body, "departmentId");
         assertDepartmentExists(departmentId);
@@ -92,17 +92,18 @@ public class TeamController {
         Team team = teamRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Team not found: " + id));
         if (body.containsKey("code")) {
-            String newCode = requireText(body, "code");
-            if (!newCode.equals(team.getCode())) {
-                if (teamRepository.findAll().stream()
-                        .anyMatch(t -> !t.getId().equals(id) && newCode.equalsIgnoreCase(t.getCode()))) {
-                    throw new IllegalStateException("Team code already exists: " + newCode);
-                }
+            String newCode = requireStringField(body, "code").toUpperCase(Locale.ROOT);
+            if (!newCode.equalsIgnoreCase(team.getCode())) {
+                assertCodeAvailable(newCode, id);
                 team.setCode(newCode);
             }
         }
         if (body.containsKey("name")) {
-            team.setName(requireText(body, "name"));
+            String newName = requireStringField(body, "name");
+            if (!newName.equalsIgnoreCase(team.getName())) {
+                assertNameAvailable(newName, id);
+            }
+            team.setName(newName);
         }
         if (body.containsKey("departmentId")) {
             Long departmentId = requireLong(body, "departmentId");
@@ -116,6 +117,24 @@ public class TeamController {
         }
         applyRules(team, body);
         return teamRepository.save(team);
+    }
+
+    private void assertCodeAvailable(String code, Long excludeId) {
+        boolean taken = excludeId == null
+                ? teamRepository.existsByCodeIgnoreCase(code)
+                : teamRepository.existsByCodeIgnoreCaseAndIdNot(code, excludeId);
+        if (taken) {
+            throw new IllegalStateException("Team code already exists");
+        }
+    }
+
+    private void assertNameAvailable(String name, Long excludeId) {
+        boolean taken = excludeId == null
+                ? teamRepository.existsByNameIgnoreCase(name)
+                : teamRepository.existsByNameIgnoreCaseAndIdNot(name, excludeId);
+        if (taken) {
+            throw new IllegalStateException("Team name already exists");
+        }
     }
 
     private void assertDepartmentExists(Long departmentId) {
@@ -157,12 +176,19 @@ public class TeamController {
         }
     }
 
-    private static String requireText(Map<String, Object> body, String key) {
+    private static String requireStringField(Map<String, Object> body, String key) {
         Object v = body.get(key);
-        if (v == null || String.valueOf(v).isBlank()) {
+        if (v != null && !(v instanceof String)) {
+            throw new IllegalArgumentException(key + " must be a string");
+        }
+        if (v == null || ((String) v).isBlank()) {
             throw new IllegalArgumentException(key + " is required");
         }
-        return String.valueOf(v).trim();
+        String s = ((String) v).trim();
+        if (s.isEmpty()) {
+            throw new IllegalArgumentException(key + " is required");
+        }
+        return s;
     }
 
     private static Long requireLong(Map<String, Object> body, String key) {

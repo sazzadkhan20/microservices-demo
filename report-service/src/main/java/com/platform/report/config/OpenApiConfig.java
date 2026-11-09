@@ -23,7 +23,7 @@ public class OpenApiConfig {
                 .info(new Info()
                         .title("Report Service API")
                         .description("""
-                                Report generation (CSV downloads) per tenant.
+                                Report generation (CSV downloads).
                                 Use Gateway Swagger: pick Report from the dropdown, Authorize with JWT.
                                 """)
                         .version("1.0"))
@@ -36,15 +36,7 @@ public class OpenApiConfig {
                                         .type(SecurityScheme.Type.HTTP)
                                         .scheme("bearer")
                                         .bearerFormat("JWT")
-                                        .description("Token from Registry POST /api/registry/token"))
-                        .addSecuritySchemes(
-                                "TenantHeader",
-                                new SecurityScheme()
-                                        .name("X-Tenant-ID")
-                                        .type(SecurityScheme.Type.APIKEY)
-                                        .in(SecurityScheme.In.HEADER)
-                                        .description("Direct :8085 debug only")))
-                .addSecurityItem(new SecurityRequirement().addList("GatewayJWT"))
-                .addSecurityItem(new SecurityRequirement().addList("TenantHeader"));
+                                        .description("Session token issued by the gateway (POST /api/auth/token)")))
+                .addSecurityItem(new SecurityRequirement().addList("GatewayJWT"));
     }
 }

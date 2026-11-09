@@ -36,7 +36,7 @@ function isCrossOriginMutation(req: NextRequest): boolean {
 }
 
 /**
- * Account-picker login → Registry JWT (jti) → httpOnly cookie.
+ * Account-picker login → gateway session JWT (jti) → httpOnly cookie.
  * OIDC deferred; cookie is never exposed to browser JS. Session rotates on each login.
  */
 export async function POST(req: NextRequest) {
@@ -52,11 +52,10 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return jsonError(400, "employeeId is required");
 
   try {
-    const tokenRaw = await gatewayJson("/api/registry/token", {
+    const tokenRaw = await gatewayJson("/api/auth/token", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...demoAuthHeaders() },
       body: JSON.stringify({
-        tenantId: config.tenantId,
         employeeId: Number(parsed.data.employeeId),
       }),
     });

@@ -1,8 +1,6 @@
 package com.platform.people.application;
 
 import com.platform.common.security.AuthContext;
-import com.platform.common.tenant.TenantContext;
-import com.platform.common.tenant.TenantIds;
 import com.platform.people.domain.Department;
 import com.platform.people.domain.Designation;
 import com.platform.people.domain.Employee;
@@ -38,14 +36,10 @@ public class AuthFacadeService {
     }
 
     /**
-     * Public account picker — tenant must already be bound by TenantFilter (header or ?tenantId=).
+     * Account picker list (demo login only; gateway gates it with X-Demo-Auth-Key).
      */
     @Transactional(readOnly = true)
-    public List<Map<String, Object>> listAccounts(String tenantId) {
-        String normalized = TenantIds.normalize(tenantId);
-        if (TenantContext.getTenantId() == null || TenantContext.getTenantId().isBlank()) {
-            TenantContext.setTenantId(normalized);
-        }
+    public List<Map<String, Object>> listAccounts() {
         List<Map<String, Object>> out = new ArrayList<>();
         for (Employee e : employeeRepository.findAll()) {
             if (!e.isActive()) continue;
@@ -56,7 +50,6 @@ public class AuthFacadeService {
             row.put("employeeId", String.valueOf(e.getId()));
             row.put("name", e.getFullName());
             row.put("email", e.getEmail());
-            row.put("tenantId", normalized);
             List<String> roles = rbacService.roleCodesFor(e.getId());
             row.put("role", roles.isEmpty() ? "employee" : String.join(", ", roles));
             departmentRepository.findById(e.getDepartmentId() == null ? -1L : e.getDepartmentId())
@@ -77,7 +70,6 @@ public class AuthFacadeService {
         m.put("employeeId", String.valueOf(e.getId()));
         m.put("name", e.getFullName());
         m.put("email", e.getEmail());
-        m.put("tenantId", TenantContext.getTenantId());
         m.put("roles", roles);
         m.put("permissions", new ArrayList<>(perms));
         m.put("scopes", rbacService.permissionScopesFor(employeeId));

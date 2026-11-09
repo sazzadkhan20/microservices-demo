@@ -4,7 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.InternalCalls;
-import com.platform.common.tenant.TenantContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -133,7 +132,6 @@ public class HrmsPayrollFactsClient {
                     .timeout(Duration.ofSeconds(8))
                     .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                     .header(InternalCalls.HEADER, internalKey)
-                    .header(PlatformHeaders.TENANT_ID, tenant())
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(json))
                     .build();
@@ -156,14 +154,8 @@ public class HrmsPayrollFactsClient {
                 .timeout(Duration.ofSeconds(8))
                 .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                 .header(InternalCalls.HEADER, internalKey)
-                .header(PlatformHeaders.TENANT_ID, tenant())
                 .GET()
                 .build();
-    }
-
-    private String tenant() {
-        String t = TenantContext.getTenantId();
-        return t == null ? "" : t;
     }
 
     private static String encode(String s) {

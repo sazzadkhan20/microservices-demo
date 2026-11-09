@@ -12,20 +12,19 @@ class JwtSupportTest {
     private final JwtSupport jwt = new JwtSupport("practice-jwt-secret-change-me-32chars-min");
 
     @Test
-    void roundtrip_tenant_and_employee_claims() {
-        String token = jwt.issueToken("emp-1", "qii_creative", 1L, 3600);
+    void roundtrip_employee_claims() {
+        String token = jwt.issueToken("emp-1", 1L, 3600);
         Claims c = jwt.parseAndValidate(token);
-        assertEquals("qii_creative", jwt.requireTenantId(c));
+        assertEquals(1L, jwt.requireEmployeeId(c));
+        assertNull(c.get("tenant_id"));
         assertEquals(1L, jwt.employeeIdOrNull(c));
         assertEquals("emp-1", c.getSubject());
         org.junit.jupiter.api.Assertions.assertFalse(jwt.requireJti(c).isBlank());
     }
 
     @Test
-    void employee_claim_optional() {
-        String token = jwt.issueToken("anon", "techshop_retail", 60);
-        Claims c = jwt.parseAndValidate(token);
-        assertNull(jwt.employeeIdOrNull(c));
+    void employee_claim_required_on_issue() {
+        assertThrows(IllegalArgumentException.class, () -> jwt.issueToken("anon", null, 60));
     }
 
     @Test

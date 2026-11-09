@@ -5,7 +5,6 @@ export const meSchema = z.object({
   employeeId: z.coerce.string(),
   name: z.string(),
   email: z.string().nullable().optional(),
-  tenantId: z.string().nullable().optional(),
   roles: z.array(z.string()).default([]),
   permissions: z.array(z.string()).default([]),
   /** feature:action → OWN | TEAM | ALL. Absent on older payloads. */

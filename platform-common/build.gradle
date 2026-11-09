@@ -1,6 +1,6 @@
 /**
  * Shared library — no Spring Boot fat jar.
- * Used by gateway, registry, HRMS, and Payroll for tenant identity + Redis contracts.
+ * Shared security, API, messaging contracts and config helpers for all services.
  */
 plugins {
     id 'java-library'

@@ -1,0 +1,9 @@
+databaseChangeLog:
+  - changeSet:
+      id: hrms-017-leave-type-code-len
+      author: platform
+      changes:
+        - modifyDataType:
+            tableName: leave_type
+            columnName: code
+            newDataType: VARCHAR(64)

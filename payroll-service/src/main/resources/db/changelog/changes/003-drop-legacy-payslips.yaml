@@ -1,0 +1,15 @@
+# CONTRACT step for 002 (docs/PAYROLL_SPEC.md §2.2). The legacy per-payslip model (payslip,
+# finalize_operation, payroll_config with late penalty / multipliers, salary_history) is replaced by
+# payroll_run / payroll_line / payroll_operation / payroll_settings / salary_record.
+# In production this changeset ships one release after 002, once no running instance reads them.
+databaseChangeLog:
+  - changeSet:
+      id: payroll-003-drop-legacy
+      author: qii-hrms
+      changes:
+        - sql:
+            sql: |
+              DROP TABLE IF EXISTS finalize_operation;
+              DROP TABLE IF EXISTS payslip;
+              DROP TABLE IF EXISTS payroll_config;
+              DROP TABLE IF EXISTS salary_history;

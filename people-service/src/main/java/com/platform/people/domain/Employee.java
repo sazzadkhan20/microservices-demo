@@ -75,6 +75,31 @@ public class Employee {
     @Column(name = "personal_email", length = 256)
     private String personalEmail;
 
+    /** MinIO storage key ({@code bucket/object}) for the employee photo. */
+    @Column(name = "photo_object_key", length = 512)
+    private String photoObjectKey;
+
+    @Column(name = "date_of_birth")
+    private java.time.LocalDate dateOfBirth;
+
+    @Column(length = 512)
+    private String address;
+
+    @Column(name = "emergency_name", length = 128)
+    private String emergencyName;
+
+    @Column(name = "emergency_relation", length = 64)
+    private String emergencyRelation;
+
+    @Column(name = "emergency_phone", length = 64)
+    private String emergencyPhone;
+
+    @Column(name = "exit_date")
+    private java.time.LocalDate exitDate;
+
+    @Column(name = "exit_reason", length = 512)
+    private String exitReason;
+
     @Column(length = 32)
     private String status = "Active";
 
@@ -175,6 +200,22 @@ public class Employee {
     public void setPayCurrency(String payCurrency) { this.payCurrency = payCurrency; }
     public String getPersonalEmail() { return personalEmail; }
     public void setPersonalEmail(String personalEmail) { this.personalEmail = personalEmail; }
+    public String getPhotoObjectKey() { return photoObjectKey; }
+    public void setPhotoObjectKey(String photoObjectKey) { this.photoObjectKey = photoObjectKey; }
+    public java.time.LocalDate getDateOfBirth() { return dateOfBirth; }
+    public void setDateOfBirth(java.time.LocalDate dateOfBirth) { this.dateOfBirth = dateOfBirth; }
+    public String getAddress() { return address; }
+    public void setAddress(String address) { this.address = address; }
+    public String getEmergencyName() { return emergencyName; }
+    public void setEmergencyName(String emergencyName) { this.emergencyName = emergencyName; }
+    public String getEmergencyRelation() { return emergencyRelation; }
+    public void setEmergencyRelation(String emergencyRelation) { this.emergencyRelation = emergencyRelation; }
+    public String getEmergencyPhone() { return emergencyPhone; }
+    public void setEmergencyPhone(String emergencyPhone) { this.emergencyPhone = emergencyPhone; }
+    public java.time.LocalDate getExitDate() { return exitDate; }
+    public void setExitDate(java.time.LocalDate exitDate) { this.exitDate = exitDate; }
+    public String getExitReason() { return exitReason; }
+    public void setExitReason(String exitReason) { this.exitReason = exitReason; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public String getPhone() { return phone; }

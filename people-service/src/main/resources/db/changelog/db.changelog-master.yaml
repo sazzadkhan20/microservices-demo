@@ -14,3 +14,7 @@ databaseChangeLog:
       file: db/changelog/changes/004-default-locations-darwin.yaml
   - include:
       file: db/changelog/changes/005-location-country-required.yaml
+  - include:
+      file: db/changelog/changes/006-employee-users-profile.yaml
+  - include:
+      file: db/changelog/changes/007-salary-permissions-appendix-b.yaml

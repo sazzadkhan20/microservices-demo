@@ -13,7 +13,8 @@ public class LeaveCategory {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "code", nullable = false, unique = true, length = 64)
+    /** Unique with period_start (see uk_leave_category_code_period_start) — renew keeps same code. */
+    @Column(name = "code", nullable = false, length = 64)
     private String code;
 
     @Column(name = "name", nullable = false, length = 128)
@@ -58,7 +59,7 @@ public class LeaveCategory {
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "applies_to", columnDefinition = "jsonb")
-    private String appliesTo;
+    private java.util.Map<String, Object> appliesTo;
 
     @Column(name = "pro_rata", nullable = false)
     private boolean proRata = false;

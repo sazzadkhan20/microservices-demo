@@ -7,9 +7,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { AssignEmployeeRolesModal } from "@/components/employees/AssignEmployeeRolesModal";
 import { EmployeeForm } from "@/components/employees/EmployeeForm";
+import { EmployeePhoto } from "@/components/employees/EmployeePhoto";
 import { PersonalContactForm } from "@/components/employees/PersonalContactForm";
 import { ScheduleEditorModal, parseDays } from "@/components/schedules/ScheduleEditorModal";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { SalaryPanel, useSalary } from "@/components/payroll/SalaryPanel";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { FormField } from "@/components/ui/FormField";
 import { Modal } from "@/components/ui/Modal";
@@ -42,18 +44,19 @@ import {
   pick,
   str,
 } from "@/lib/format";
+import {
+  DocumentScanPanel,
+  ScanStatusBadge,
+  isScanDownloadable,
+  isScanPending,
+  isScanRejected,
+  normalizeScanStatus,
+} from "@/components/files/ScanStatusBadge";
 import { DOC_TYPES, employeeSchema, type Employee } from "@/lib/schemas/employee";
+import { DOCUMENT_ACCEPT, validateDocumentFile } from "@/lib/uploadValidation";
 import { attendanceRowSchema, type AttendanceRow } from "@/lib/schemas/hrms";
 
 const rowSchema = z.object({ id: z.union([z.number(), z.string()]) }).passthrough();
-
-const salaryChangeSchema = z.object({
-  effectiveDate: z.string().min(1, "Required"),
-  amount: z.coerce.number("Enter an amount").positive("Must be > 0"),
-  payType: z.enum(["MONTHLY", "HOURLY"]),
-  currency: z.string().trim().min(1, "Required"),
-  note: z.string().optional(),
-});
 
 const TABS = [
   { id: "profile", label: "Overview" },
@@ -100,17 +103,25 @@ export default function EmployeeDetailPage() {
   const e = emp.data!;
   const isSelf = String(e.id) === String(me.employeeId);
   // Align with backend compensationAccess: self, salary:view/edit (HR), or payroll:view/run.
-  const showSalary =
-    isSelf || can("salary", "view") || can("salary", "edit") || can("payroll", "run") || can("payroll", "view");
-  const canRun = can("payroll", "run") || can("salary", "edit");
+  // FR-SAL-03 / NFR-05 — own pay with salary:view; anyone else's needs salary:edit or payroll:run (server-enforced).
+  const showSalary = isSelf ? can("salary", "view") : can("salary", "edit") || can("payroll", "run");
+  const canEditSalary = can("salary", "edit");
   const canAssignRoles = can("roles", "assign") && !isSelf;
   const tabs = showSalary ? TABS : TABS.filter((t) => t.id !== "salary");
   const activeTab = tab === "salary" && !showSalary ? "profile" : tab;
+  const photoFileId =
+    e.photoFileId ??
+    (e as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId;
 
   return (
     <div className="stack">
       <PageHeader
-        title={e.fullName || "Employee"}
+        title={
+          <span className="row" style={{ gap: 12, alignItems: "center" }}>
+            <EmployeePhoto photoFileId={photoFileId} fullName={e.fullName} size={48} />
+            <span>{e.fullName || "Employee"}</span>
+          </span>
+        }
         subtitle={
           <>
             <span className="mono">{e.employeeCode}</span> · {e.jobTitle || "—"}
@@ -149,9 +160,7 @@ export default function EmployeeDetailPage() {
         <SalaryTab
           empId={id}
           emp={e}
-          canRun={canRun}
-          canFinalize={can("payroll", "run")}
-          showSalary={showSalary}
+          canEdit={canEditSalary}
         />
       ) : null}
       {activeTab === "attendance" ? <AttendanceTab empId={id} /> : null}
@@ -181,24 +190,15 @@ function ProfileTab({
     if (d != null && String(d).trim()) return String(d);
     return cf?.[k] == null ? "—" : String(cf[k]);
   };
+  const photoFileId =
+    emp.photoFileId ??
+    (emp as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId;
+
   return (
     <div className="card stack">
       <div className="card-head">
         <div className="row">
-          <div
-            style={{
-              width: 44,
-              height: 44,
-              borderRadius: "50%",
-              background: "var(--accent-soft)",
-              color: "var(--accent)",
-              display: "grid",
-              placeItems: "center",
-              fontWeight: 700,
-            }}
-          >
-            {initials(emp.fullName)}
-          </div>
+          <EmployeePhoto photoFileId={photoFileId} fullName={emp.fullName} size={56} />
           <div>
             <h2>{emp.fullName}</h2>
             <p className="muted small">{emp.preferredName ? `Goes by ${emp.preferredName}` : "—"}</p>
@@ -339,12 +339,7 @@ function EmploymentTab({ emp, canEdit, showSalary }: EmpProp & { showSalary: boo
             <KV label="Probation end">{fmtDate(emp.probationEnd)}</KV>
             <KV label="Contract end">{fmtDate(emp.contractEnd)}</KV>
             <KV label="Pay currency">{str(emp.payCurrency)}</KV>
-            {showSalary ? (
-              <>
-                <KV label="Base salary">{fmtMoney(emp.baseSalary, emp.payCurrency)}</KV>
-                <KV label="Hourly rate">{fmtMoney(emp.hourlyRate, emp.payCurrency)}</KV>
-              </>
-            ) : null}
+            {showSalary ? <CurrentPayKV empId={String(emp.id)} /> : null}
             <KV label="Status">
               <StatusPill status={emp.status} />
             </KV>
@@ -453,256 +448,8 @@ function EmploymentTab({ emp, canEdit, showSalary }: EmpProp & { showSalary: boo
   );
 }
 
-function SalaryTab({
-  empId,
-  emp,
-  canRun,
-  canFinalize,
-  showSalary,
-}: {
-  empId: string;
-  emp: Employee;
-  canRun: boolean;
-  canFinalize: boolean;
-  showSalary: boolean;
-}) {
-  const qc = useQueryClient();
-  const toast = useToast();
-  const [open, setOpen] = useState(false);
-  const [confirmFinalize, setConfirmFinalize] = useState<Rec | null>(null);
-  const [form, setForm] = useState({
-    effectiveDate: new Date().toISOString().slice(0, 10),
-    amount: "",
-    payType: "MONTHLY" as "MONTHLY" | "HOURLY",
-    currency: emp.payCurrency || "BDT",
-    note: "",
-  });
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [err, setErr] = useState("");
-
-  const history = useQuery({
-    queryKey: ["salary-history", empId],
-    queryFn: ({ signal }) => apiFetch<Rec[]>(api.payroll(`salary-history/employee/${empId}`), { signal }),
-    enabled: showSalary,
-  });
-  const rows = rowsOf<Rec>(history.data);
-
-  const save = useMutation({
-    mutationFn: (body: Record<string, unknown>) => apiFetch(api.payroll("salary-history"), { method: "POST", body }),
-    onSuccess: () => {
-      toast.show("Salary change recorded");
-      setOpen(false);
-      setErr("");
-      void qc.invalidateQueries({ queryKey: ["salary-history", empId] });
-      void qc.invalidateQueries({ queryKey: ["employee", empId] });
-    },
-    onError: (e: Error) => setErr(e.message),
-  });
-
-  const finalize = useMutation({
-    mutationFn: (id: string | number) =>
-      apiFetch(api.payroll(`payslips/${id}/finalize`), { method: "POST", body: { confirm: true } }),
-    onSuccess: () => {
-      toast.show("Payslip finalized — employee notified");
-      setConfirmFinalize(null);
-      void qc.invalidateQueries({ queryKey: [`emp-payslips-${empId}`] });
-      void qc.invalidateQueries({ queryKey: ["payslips"] });
-    },
-    onError: (e: Error) => toast.error(e),
-  });
-
-  if (!showSalary) return <NoAccess what="salary information" />;
-
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    const parsed = salaryChangeSchema.safeParse(form);
-    if (!parsed.success) {
-      const next: Record<string, string> = {};
-      for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
-      return setErrors(next);
-    }
-    setErrors({});
-    save.mutate({
-      employeeId: Number(empId),
-      effectiveDate: parsed.data.effectiveDate,
-      amount: parsed.data.amount,
-      payType: parsed.data.payType,
-      currency: parsed.data.currency,
-      note: parsed.data.note || undefined,
-    });
-  }
-
-  return (
-    <div className="stack">
-      <div className="card stack">
-        <div className="card-head" style={{ marginBottom: 0 }}>
-          <h2>Salary history</h2>
-          {canRun ? (
-            <button
-              type="button"
-              className="btn primary"
-              onClick={() => {
-                setErr("");
-                setErrors({});
-                setForm({
-                  effectiveDate: new Date().toISOString().slice(0, 10),
-                  amount: "",
-                  payType: "MONTHLY",
-                  currency: emp.payCurrency || "BDT",
-                  note: "",
-                });
-                setOpen(true);
-              }}
-            >
-              Record salary change
-            </button>
-          ) : null}
-        </div>
-        <ErrorNote error={history.error} />
-        <div className="tbl-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Effective</th>
-                <th className="n">Amount</th>
-                <th>Type</th>
-                <th>Currency</th>
-                <th>Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="empty">
-                    {history.isLoading ? "Loading…" : "No salary changes recorded"}
-                  </td>
-                </tr>
-              ) : (
-                rows.map((r) => (
-                  <tr key={String(r.id)}>
-                    <td className="mono">{fmtDate(r.effectiveDate)}</td>
-                    <td className="n">{fmtMoney(r.amount, str(r.currency, emp.payCurrency || undefined))}</td>
-                    <td>{humanize(r.payType)}</td>
-                    <td className="mono">{str(r.currency)}</td>
-                    <td className="muted">{str(r.note)}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="card stack">
-        <h2>Payslips</h2>
-        <p className="muted small">
-          Finalizing a draft notifies only this employee (config: notifyPayslipFinalized + PAYSLIP_READY).
-        </p>
-        <DataTable<Rec>
-          queryKey={`emp-payslips-${empId}`}
-          path={api.payroll("payslips")}
-          itemSchema={rowSchema as never}
-          search={false}
-          filters={{ employeeId: empId }}
-          emptyText="No payslips for this employee"
-          rowKey={(r) => String(r.id)}
-          columns={[
-            { key: "periodLabel", header: "Period", className: "mono" },
-            {
-              key: "hours",
-              header: "Hours (reg / OT / wknd)",
-              className: "n",
-              render: (r) => `${fmtNumber(r.regularHours)} / ${fmtNumber(r.overtimeHours)} / ${fmtNumber(r.weekendHours)}`,
-            },
-            { key: "grossAmount", header: "Gross", className: "n", render: (r) => fmtMoney(r.grossAmount) },
-            {
-              key: "deductionAmount",
-              header: "Deductions",
-              className: "n",
-              render: (r) => fmtMoney(r.deductionAmount),
-            },
-            { key: "netAmount", header: "Net", className: "n", render: (r) => <b>{fmtMoney(r.netAmount)}</b> },
-            { key: "status", header: "Status", render: (r) => <StatusPill status={r.status} /> },
-            {
-              key: "actions",
-              header: "",
-              render: (r) =>
-                canFinalize && !/final/i.test(String(r.status)) ? (
-                  <button
-                    type="button"
-                    className="btn sm primary"
-                    disabled={finalize.isPending}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setConfirmFinalize(r);
-                    }}
-                  >
-                    Finalize
-                  </button>
-                ) : null,
-            },
-          ]}
-        />
-      </div>
-
-      <ConfirmModal
-        open={!!confirmFinalize}
-        title="Finalize payslip?"
-        confirmLabel="Finalize"
-        busy={finalize.isPending}
-        onCancel={() => setConfirmFinalize(null)}
-        onConfirm={() => {
-          if (confirmFinalize?.id != null) finalize.mutate(confirmFinalize.id as number);
-        }}
-      >
-        {`Finalize ${str(confirmFinalize?.periodLabel)} for this employee? They will receive an in-app notification; other employees will not.`}
-      </ConfirmModal>
-
-      <Modal open={open} onClose={() => setOpen(false)} title="Record salary change">
-        <form className="stack" onSubmit={submit} noValidate>
-          <div className="form-grid">
-            <FormField label="Effective date" required error={errors.effectiveDate}>
-              <input
-                type="date"
-                value={form.effectiveDate}
-                onChange={(e) => setForm({ ...form, effectiveDate: e.target.value })}
-              />
-            </FormField>
-            <FormField label="Amount" required error={errors.amount}>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={form.amount}
-                onChange={(e) => setForm({ ...form, amount: e.target.value })}
-              />
-            </FormField>
-            <FormField label="Pay type" required error={errors.payType}>
-              <select value={form.payType} onChange={(e) => setForm({ ...form, payType: e.target.value as "MONTHLY" | "HOURLY" })}>
-                <option value="MONTHLY">Monthly</option>
-                <option value="HOURLY">Hourly</option>
-              </select>
-            </FormField>
-            <FormField label="Currency" required error={errors.currency}>
-              <input type="text" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} />
-            </FormField>
-            <FormField label="Note" full>
-              <input type="text" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-            </FormField>
-          </div>
-          {err ? <div className="notice bad">{err}</div> : null}
-          <div className="modal-foot">
-            <button type="button" className="btn" onClick={() => setOpen(false)}>
-              Cancel
-            </button>
-            <button type="submit" className="btn primary" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </form>
-      </Modal>
-    </div>
-  );
+function SalaryTab({ empId, emp, canEdit }: { empId: string; emp: Employee; canEdit: boolean }) {
+  return <SalaryPanel employeeId={empId} defaultCurrency={emp.payCurrency} canEdit={canEdit} />;
 }
 
 function HistoryTab({ empId }: { empId: string }) {
@@ -752,6 +499,57 @@ function HistoryTab({ empId }: { empId: string }) {
   );
 }
 
+async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
+/** Poll file-service until scan leaves quarantine (guide §8) or timeout. */
+async function waitForScanRelease(
+  fileId: string | number,
+  opts?: {
+    minMs?: number;
+    onTick?: (meta: { scanStatus?: string; scanDetail?: string | null; downloadable?: boolean }) => void;
+  },
+): Promise<{
+  scanStatus?: string;
+  scanDetail?: string | null;
+  downloadable?: boolean;
+}> {
+  const started = Date.now();
+  const minMs = opts?.minMs ?? 2200;
+  let last: { scanStatus?: string; scanDetail?: string | null; downloadable?: boolean } = {
+    scanStatus: "SCANNING",
+  };
+  opts?.onTick?.(last);
+  for (let i = 0; i < 45; i++) {
+    try {
+      last = await apiFetch<{
+        scanStatus?: string;
+        scanDetail?: string | null;
+        downloadable?: boolean;
+      }>(api.files(String(fileId)));
+      // While still pending, keep the UI on SCANNING so the animation stays obvious.
+      if (isScanPending(last.scanStatus)) {
+        last = { ...last, scanStatus: last.scanStatus || "SCANNING" };
+      }
+      opts?.onTick?.(last);
+      const status = normalizeScanStatus(last.scanStatus);
+      if (!isScanPending(status)) {
+        const elapsed = Date.now() - started;
+        if (elapsed < minMs) await sleep(minMs - elapsed);
+        return last;
+      }
+    } catch {
+      /* keep waiting — metadata may briefly 403/404 during bind */
+      opts?.onTick?.({ scanStatus: "SCANNING" });
+    }
+    await sleep(900);
+  }
+  const elapsed = Date.now() - started;
+  if (elapsed < minMs) await sleep(minMs - elapsed);
+  return last;
+}
+
 function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -762,12 +560,29 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
   const [expiresAt, setExpiresAt] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [err, setErr] = useState("");
+  const [phase, setPhase] = useState<"form" | "uploading" | "scanning" | "ready" | "rejected">("form");
+  const [liveScan, setLiveScan] = useState<{ status?: string; detail?: string | null }>({});
 
   const docs = useQuery({
     queryKey: ["employee-docs", empId],
     queryFn: ({ signal }) => apiFetch(api.hrms(`employees/${empId}/documents`), { signal }),
+    refetchInterval: (q) => {
+      const rows = rowsOf<Rec>(q.state.data);
+      return rows.some((d) => isScanPending(d.scanStatus as string)) ? 2500 : false;
+    },
   });
   const rows = rowsOf<Rec>(docs.data);
+
+  function resetModal() {
+    setOpen(false);
+    setPhase("form");
+    setLiveScan({});
+    setName("");
+    setExpiresAt("");
+    setFile(null);
+    setErr("");
+    if (fileRef.current) fileRef.current.value = "";
+  }
 
   async function logAccess(fileId: string, action: "OPEN" | "DOWNLOAD") {
     try {
@@ -782,9 +597,12 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
 
   const attach = useMutation({
     mutationFn: async () => {
-      if (!file) throw new Error("Choose a file to upload (PDF, JPG, PNG or DOCX, max 10 MB).");
+      const invalid = validateDocumentFile(file);
+      if (invalid) throw new Error(invalid);
+      // Hold uploading long enough for the radar UI to paint (fast networks otherwise skip it).
+      await sleep(700);
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("file", file!);
       fd.append("employeeId", String(empId));
       fd.append("classification", "GENERAL");
       const uploaded = await apiFetch<{
@@ -795,8 +613,11 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
         method: "POST",
         body: fd,
       });
-      // Guide §8: file may still be QUARANTINED — attach metadata now; download stays locked until RELEASED.
-      return apiFetch(api.hrms(`employees/${empId}/documents`), {
+      setPhase("scanning");
+      setLiveScan({ status: uploaded.scanStatus || "SCANNING" });
+      await sleep(50);
+      // Guide §8: attach metadata while quarantined — download stays locked until RELEASED.
+      await apiFetch(api.hrms(`employees/${empId}/documents`), {
         method: "POST",
         body: {
           fileId: String(uploaded.id),
@@ -805,17 +626,40 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
           ...(expiresAt ? { expiresAt } : {}),
         },
       });
+      const scanned = await waitForScanRelease(uploaded.id, {
+        minMs: 2400,
+        onTick: (meta) => setLiveScan({ status: meta.scanStatus || "SCANNING", detail: meta.scanDetail }),
+      });
+      setLiveScan({ status: scanned.scanStatus, detail: scanned.scanDetail });
+      if (isScanRejected(scanned.scanStatus)) {
+        setPhase("rejected");
+        throw new Error(
+          scanned.scanDetail?.trim() ||
+            `File scan ${normalizeScanStatus(scanned.scanStatus).toLowerCase()} — document was attached but cannot be downloaded`,
+        );
+      }
+      if (isScanPending(scanned.scanStatus)) {
+        setPhase("scanning");
+      } else {
+        setPhase("ready");
+        await sleep(1200);
+      }
+      return scanned;
     },
-    onSuccess: () => {
-      toast.show("Document attached (scanning in background)");
-      setOpen(false);
-      setName("");
-      setExpiresAt("");
-      setFile(null);
-      setErr("");
+    onSuccess: (scanned) => {
+      void qc.invalidateQueries({ queryKey: ["employee-docs", empId] });
+      if (isScanPending(scanned.scanStatus)) {
+        toast.show("Document attached — malware scan still running");
+      } else {
+        toast.show("Document attached and scan released");
+      }
+      resetModal();
+    },
+    onError: (e: Error) => {
+      setErr(e.message);
+      setPhase((p) => (p === "rejected" ? p : "form"));
       void qc.invalidateQueries({ queryKey: ["employee-docs", empId] });
     },
-    onError: (e: Error) => setErr(e.message),
   });
 
   const [removeDoc, setRemoveDoc] = useState<{ id: string; name: string } | null>(null);
@@ -829,12 +673,23 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
     onError: (e: Error) => toast.error(e),
   });
 
+  const busy = attach.isPending || phase === "uploading" || phase === "scanning";
+
   return (
     <div className="card stack">
       <div className="card-head">
         <h2>Documents</h2>
         {canEdit ? (
-          <button type="button" className="btn primary" onClick={() => setOpen(true)}>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => {
+              setPhase("form");
+              setLiveScan({});
+              setErr("");
+              setOpen(true);
+            }}
+          >
             + Attach document
           </button>
         ) : null}
@@ -846,6 +701,7 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
             <tr>
               <th>Name</th>
               <th>Type</th>
+              <th>Scan</th>
               <th>Expires</th>
               <th>Uploaded</th>
               <th />
@@ -854,59 +710,79 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="empty">
+                <td colSpan={6} className="empty">
                   {docs.isLoading ? "Loading…" : "No documents attached"}
                 </td>
               </tr>
             ) : (
-              rows.map((d) => (
-                <tr key={String(d.fileId)}>
-                  <td>{str(d.name)}</td>
-                  <td>
-                    <span className="pill">{str(d.documentType ?? d.type)}</span>
-                  </td>
-                  <td className="muted small">{d.expiresAt ? fmtDate(d.expiresAt) : "—"}</td>
-                  <td className="muted small">{fmtDateTime(d.uploadedAt)}</td>
-                  <td>
-                    <div className="row" style={{ justifyContent: "flex-end" }}>
-                      <button
-                        type="button"
-                        className="btn sm"
-                        onClick={() =>
-                          void (async () => {
-                            try {
-                              await logAccess(String(d.fileId), "DOWNLOAD");
-                              // Guide §8: authorize then issue short-lived URL (blocked while quarantined).
-                              const issued = await apiFetch<{ url: string }>(
-                                api.files(`${d.fileId}/download-url`),
-                                { method: "POST" },
-                              );
-                              const path = issued.url.startsWith("/")
-                                ? issued.url
-                                : api.files(`${d.fileId}/content`);
-                              await downloadFile(path, undefined, String(d.name ?? "document"));
-                            } catch (er) {
-                              toast.error(er as Error);
-                            }
-                          })()
-                        }
-                      >
-                        Download
-                      </button>
-                      {canEdit ? (
+              rows.map((d) => {
+                const status = d.scanStatus as string | undefined;
+                const canDownload = isScanDownloadable(status, d.downloadable as boolean | undefined);
+                const pending = isScanPending(status);
+                const rejected = isScanRejected(status);
+                return (
+                  <tr key={String(d.fileId)}>
+                    <td>{str(d.name)}</td>
+                    <td>
+                      <span className="pill">{str(d.documentType ?? d.type)}</span>
+                    </td>
+                    <td>
+                      <ScanStatusBadge
+                        status={status}
+                        detail={typeof d.scanDetail === "string" ? d.scanDetail : null}
+                      />
+                    </td>
+                    <td className="muted small">{d.expiresAt ? fmtDate(d.expiresAt) : "—"}</td>
+                    <td className="muted small">{fmtDateTime(d.uploadedAt)}</td>
+                    <td>
+                      <div className="row" style={{ justifyContent: "flex-end" }}>
                         <button
                           type="button"
-                          className="btn sm danger"
-                          disabled={remove.isPending}
-                          onClick={() => setRemoveDoc({ id: String(d.fileId), name: str(d.name) })}
+                          className="btn sm"
+                          disabled={!canDownload || pending || rejected}
+                          title={
+                            pending
+                              ? "Download locked until malware scan releases the file"
+                              : rejected
+                                ? "File rejected by content scan"
+                                : undefined
+                          }
+                          onClick={() =>
+                            void (async () => {
+                              try {
+                                await logAccess(String(d.fileId), "DOWNLOAD");
+                                // Guide §8: authorize then issue short-lived URL (blocked while quarantined).
+                                const issued = await apiFetch<{ url: string }>(
+                                  api.files(`${d.fileId}/download-url`),
+                                  { method: "POST" },
+                                );
+                                const path = issued.url.startsWith("/")
+                                  ? issued.url
+                                  : api.files(`${d.fileId}/content`);
+                                await downloadFile(path, undefined, String(d.name ?? "document"));
+                              } catch (er) {
+                                toast.error(er as Error);
+                              }
+                            })()
+                          }
                         >
-                          Remove
+                          {pending ? "Scanning…" : "Download"}
                         </button>
-                      ) : null}
-                    </div>
-                  </td>
-                </tr>
-              ))
+                        {canEdit ? (
+                          <button
+                            type="button"
+                            className="btn sm danger"
+                            disabled={remove.isPending}
+                            onClick={() => setRemoveDoc({ id: String(d.fileId), name: str(d.name) })}
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -914,48 +790,86 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
 
       <Modal
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={() => {
+          if (!busy) resetModal();
+        }}
         title="Attach document"
-        subtitle="Types: Contract, NDA, Agreement, ID copy, Certificate, Other. Opens and downloads are logged."
+        subtitle="Uploads quarantine in MinIO, then async malware scan releases download (guide §8)."
         footer={
           <>
-            <button type="button" className="btn" onClick={() => setOpen(false)}>
-              Cancel
+            <button type="button" className="btn" onClick={() => resetModal()} disabled={busy && phase !== "rejected"}>
+              {phase === "ready" || phase === "rejected" ? "Close" : "Cancel"}
             </button>
-            <button type="button" className="btn primary" disabled={attach.isPending} onClick={() => attach.mutate()}>
-              {attach.isPending ? "Uploading…" : "Upload & attach"}
-            </button>
+            {phase === "form" || phase === "rejected" ? (
+              <button
+                type="button"
+                className="btn primary"
+                disabled={busy || !file || !!validateDocumentFile(file)}
+                onClick={() => {
+                  setErr("");
+                  // Switch to the animated panel immediately (before the mutation starts).
+                  setPhase("uploading");
+                  setLiveScan({ status: "QUARANTINED" });
+                  attach.mutate();
+                }}
+              >
+                Upload & attach
+              </button>
+            ) : null}
           </>
         }
       >
-        <div className="form-grid">
-          <label className="field">
-            <span>Type</span>
-            <select value={docType} onChange={(e) => setDocType(e.target.value)}>
-              {DOC_TYPES.map((t) => (
-                <option key={t}>{t}</option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span>Display name</span>
-            <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to file name" />
-          </label>
-          <label className="field">
-            <span>Expiry date (optional)</span>
-            <input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
-          </label>
-          <label className="field full">
-            <span>File</span>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".pdf,.jpg,.jpeg,.png,.docx"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        {phase !== "form" ? (
+          <div className="stack" style={{ gap: 12 }}>
+            <DocumentScanPanel
+              phase={
+                phase === "uploading" || phase === "scanning" || phase === "ready" || phase === "rejected"
+                  ? phase
+                  : "scanning"
+              }
+              fileName={file?.name}
+              status={liveScan.status || (phase === "scanning" ? "SCANNING" : phase === "uploading" ? "QUARANTINED" : liveScan.status)}
+              detail={liveScan.detail}
             />
-          </label>
-        </div>
-        {err ? <div className="notice bad">{err}</div> : null}
+            {err ? <div className="notice bad">{err}</div> : null}
+          </div>
+        ) : (
+          <div className="stack" style={{ gap: 12 }}>
+            <div className="form-grid">
+              <label className="field">
+                <span>Type</span>
+                <select value={docType} onChange={(e) => setDocType(e.target.value)}>
+                  {DOC_TYPES.map((t) => (
+                    <option key={t}>{t}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Display name</span>
+                <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="Defaults to file name" />
+              </label>
+              <label className="field">
+                <span>Expiry date (optional)</span>
+                <input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+              </label>
+              <label className="field full">
+                <span>File (PDF, JPG, PNG or DOCX — max 10 MB)</span>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept={DOCUMENT_ACCEPT}
+                  onChange={(e) => {
+                    const next = e.target.files?.[0] ?? null;
+                    setFile(next);
+                    const invalid = validateDocumentFile(next);
+                    setErr(invalid && next ? invalid : "");
+                  }}
+                />
+              </label>
+            </div>
+            {err ? <div className="notice bad">{err}</div> : null}
+          </div>
+        )}
       </Modal>
 
       <ConfirmModal
@@ -1082,12 +996,14 @@ function WorkLogTab({ empId }: { empId: string }) {
   const canSee = can("attendance", "view") || can("worklogs", "view");
   const logs = useQuery({
     queryKey: ["emp-worklog-14", empId],
-    queryFn: ({ signal }) =>
-      apiFetch<Rec[]>(api.hrms(`work-logs/employee/${empId}`), { query: { days: 14 }, signal }),
+    queryFn: async ({ signal }) => {
+      const raw = await apiFetch(api.hrms(`work-logs/employee/${empId}`), { query: { days: 14 }, signal });
+      return rowsOf<Rec>(raw);
+    },
     enabled: canSee,
   });
   if (!canSee) return <NoAccess what="work logs" />;
-  const rows = Array.isArray(logs.data) ? logs.data : [];
+  const rows = logs.data ?? [];
   return (
     <div className="card stack">
       <h2>Work log — last 14 days</h2>
@@ -1114,8 +1030,14 @@ function WorkLogTab({ empId }: { empId: string }) {
                 <tr key={String(r.id)}>
                   <td className="mono">{fmtDate(r.workDate)}</td>
                   <td>{str(r.taskTitle, `Task ${r.taskId}`)}</td>
-                  <td className="n">{fmtNumber(Number(r.minutes || 0) / 60, 2)} h</td>
-                  <td>{str(r.note, "")}</td>
+                  <td className="n">
+                    {fmtNumber(Number(r.minutes || 0) / 60, 2)} h
+                    {r.flagged ? <span className="pill warn" style={{ marginLeft: 6 }}>Flagged</span> : null}
+                  </td>
+                  <td>
+                    {str(r.note, "")}
+                    {r.flagReason ? <div className="small muted">{String(r.flagReason)}</div> : null}
+                  </td>
                 </tr>
               ))
             )}
@@ -1148,5 +1070,19 @@ function NotesTab({ emp }: { emp: Employee }) {
         this record.
       </p>
     </div>
+  );
+}
+
+/** Current pay from Payroll (salary owner) — never People's legacy salary columns. */
+function CurrentPayKV({ empId }: { empId: string }) {
+  const salary = useSalary(empId);
+  const cur = (salary.data?.current ?? null) as Rec | null;
+  if (!cur) return <KV label="Pay">{salary.isLoading ? "Loading…" : "No salary record"}</KV>;
+  const hourly = String(cur.payType) === "HOURLY";
+  return (
+    <>
+      <KV label="Pay type">{hourly ? "Hourly" : "Monthly"}</KV>
+      <KV label={hourly ? "Hourly rate" : "Monthly gross"}>{fmtMoney(cur.amount, str(cur.currency, ""))}</KV>
+    </>
   );
 }

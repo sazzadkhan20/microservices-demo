@@ -72,6 +72,18 @@ spring:
         jdbc:
           time_zone: UTC
 
+# FR-EMP-10 — deferred manager/approval handover after exitDate (daily 02:00 Asia/Dhaka by default).
+# Reporting-line due job — same cron/zone: flip future-dated manager_id + move that applicant's pending approvals.
+people:
+  offboarding:
+    handover-job-enabled: ${PEOPLE_OFFBOARDING_HANDOVER_JOB_ENABLED:true}
+    handover-cron: ${PEOPLE_OFFBOARDING_HANDOVER_CRON:0 0 2 * * *}
+    handover-zone: ${PEOPLE_OFFBOARDING_HANDOVER_ZONE:Asia/Dhaka}
+  reporting-line:
+    due-job-enabled: ${PEOPLE_REPORTING_LINE_DUE_JOB_ENABLED:true}
+    due-cron: ${PEOPLE_REPORTING_LINE_DUE_CRON:${PEOPLE_OFFBOARDING_HANDOVER_CRON:0 0 2 * * *}}
+    due-zone: ${PEOPLE_REPORTING_LINE_DUE_ZONE:${PEOPLE_OFFBOARDING_HANDOVER_ZONE:Asia/Dhaka}}
+
 platform:
   gateway-base-url: ${GATEWAY_BASE_URL:http://127.0.0.1:8090}
   leave-base-url: ${LEAVE_BASE_URL:http://127.0.0.1:8086}

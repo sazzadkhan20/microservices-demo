@@ -10,10 +10,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.client.RestClient;
 
 import javax.sql.DataSource;
+import java.time.Clock;
 
 
 @Configuration
 public class PeopleConfig {
+
+    /** Injectable clock so offboarding deferred-handover tests can freeze "today". */
+    @Bean
+    public Clock clock() {
+        return Clock.systemDefaultZone();
+    }
 
     @Bean
     public JdbcTemplate jdbcTemplate(DataSource dataSource) {

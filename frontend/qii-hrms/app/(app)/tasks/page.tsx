@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -10,12 +10,12 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { ErrorNote } from "@/components/ui/QueryState";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
-import { api, apiFetch, listParams } from "@/lib/api/client";
+import { api, apiFetch, DEFAULT_PAGE_SIZE, listParams } from "@/lib/api/client";
 import { useDirectory } from "@/lib/api/directory";
 import { fieldErrors, type FieldErrors } from "@/lib/admin";
 import { fmtDate, fmtNumber, humanize, isoDate, todayIso } from "@/lib/format";
 import { taskRowSchema, type TaskRow } from "@/lib/schemas/admin";
-import { rowsOf } from "@/lib/api/lookups";
+import { pageResponseSchema } from "@/lib/schemas/page";
 
 const STATUSES = ["OPEN", "IN_PROGRESS", "DONE"];
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH"];
@@ -36,40 +36,80 @@ type TaskView = TaskRow & {
   overdue?: boolean;
   assigneeIds?: Array<string | number>;
   priority?: string | null;
+  createdBy?: string | number | null;
+};
+
+type Candidate = {
+  id: string | number;
+  fullName?: string | null;
+  employeeCode?: string | null;
 };
 
 export default function TasksPage() {
   const { can } = useAuth();
   const canCreate = can("tasks", "create");
   const canEdit = can("tasks", "edit");
-  const dir = useDirectory(can("employees", "view"));
+  const canView = can("tasks", "view") || canCreate;
+  const dir = useDirectory(can("employees", "view") || canView);
+
   const [status, setStatus] = useState("");
+  const [qDraft, setQDraft] = useState("");
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [open, setOpen] = useState(false);
   const [edit, setEdit] = useState<TaskView | null>(null);
 
+  // Debounced search — no Search button.
+  useEffect(() => {
+    const t = window.setTimeout(() => setQ(qDraft.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [qDraft]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [status, q, size]);
+
   const tasks = useQuery({
-    queryKey: ["tasks-admin", status],
+    queryKey: ["tasks-admin", status, q, page, size],
     queryFn: async ({ signal }) => {
       const raw = await apiFetch(api.hrms("tasks"), {
-        query: listParams({ page: 1, size: 200, ...(status ? { status } : {}) }),
+        query: listParams({
+          page,
+          size,
+          q: q || undefined,
+          filters: status ? { status } : undefined,
+        }),
         signal,
       });
-      return rowsOf<TaskView>(raw).map((t) => taskRowSchema.passthrough().parse(t) as TaskView);
+      const parsed = pageResponseSchema(taskRowSchema.passthrough()).safeParse(raw);
+      if (parsed.success) {
+        return {
+          content: parsed.data.content as TaskView[],
+          page: parsed.data.page,
+          size: parsed.data.size,
+          totalElements: parsed.data.totalElements,
+          totalPages: Math.max(parsed.data.totalPages, 1),
+        };
+      }
+      // Fallback if envelope drifts
+      const content = Array.isArray((raw as { content?: unknown })?.content)
+        ? ((raw as { content: TaskView[] }).content ?? [])
+        : [];
+      return { content, page: 1, size: content.length, totalElements: content.length, totalPages: 1 };
     },
-    enabled: can("tasks", "view") || canCreate,
+    enabled: canView,
   });
 
-  const shown = useMemo(() => {
-    const rows = tasks.data ?? [];
-    if (!status) return rows;
-    return rows.filter((t) => String(t.status).toUpperCase() === status);
-  }, [tasks.data, status]);
+  const rows = tasks.data?.content ?? [];
+  const totalPages = Math.max(tasks.data?.totalPages ?? 1, 1);
+  const totalElements = tasks.data?.totalElements ?? rows.length;
 
   return (
     <div className="stack">
       <PageHeader
         title="Tasks"
-        subtitle="Work items people log time against. Assignees must be in your task-create scope."
+        subtitle="Work items people log time against. Assignees are limited to your reporting team. Logged hours and overdue flags update from work logs."
         actions={
           canCreate ? (
             <button type="button" className="btn primary" onClick={() => setOpen(true)}>
@@ -79,7 +119,17 @@ export default function TasksPage() {
         }
       />
       <ErrorNote error={tasks.error} />
-      <div className="filters">
+      <div className="filters" style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "end" }}>
+        <div className="field">
+          <span>Search</span>
+          <input
+            type="search"
+            placeholder="Title, client, or external id…"
+            value={qDraft}
+            onChange={(e) => setQDraft(e.target.value)}
+            style={{ width: 260 }}
+          />
+        </div>
         <div className="field">
           <span>Status</span>
           <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ width: 160 }}>
@@ -92,6 +142,7 @@ export default function TasksPage() {
           </select>
         </div>
       </div>
+
       <div className="tbl-wrap">
         <table>
           <thead>
@@ -107,30 +158,35 @@ export default function TasksPage() {
             </tr>
           </thead>
           <tbody>
-            {shown.length === 0 ? (
+            {rows.length === 0 ? (
               <tr>
                 <td colSpan={canEdit ? 8 : 7} className="empty">
-                  {tasks.isLoading ? "Loading…" : "No tasks yet"}
+                  {tasks.isLoading ? "Loading…" : "No tasks match this view"}
                 </td>
               </tr>
             ) : (
-              shown.map((t) => {
+              rows.map((t) => {
                 const assignees = (t.assigneeIds ?? []).map((id) => dir.nameOf(id)).filter(Boolean);
+                const loggedH = t.loggedHours ?? (t.loggedMinutes ?? 0) / 60;
                 return (
-                  <tr key={String(t.id)}>
+                  <tr key={String(t.id)} className={t.overdue ? "warn-row" : undefined}>
                     <td>
                       <b>{t.title}</b>
-                      {t.priority ? (
-                        <div className="small muted">{humanize(t.priority)}</div>
-                      ) : null}
+                      {t.priority ? <div className="small muted">{humanize(t.priority)}</div> : null}
                     </td>
                     <td>{t.clientName || <span className="muted">—</span>}</td>
                     <td>
                       <StatusPill status={t.status} />
-                      {t.overdue ? <span className="pill bad" style={{ marginLeft: 6 }}>Overdue</span> : null}
+                      {t.overdue ? (
+                        <span className="pill bad" style={{ marginLeft: 6 }}>
+                          Overdue
+                        </span>
+                      ) : null}
                     </td>
-                    <td className="small">{assignees.length ? assignees.join(", ") : <span className="muted">—</span>}</td>
-                    <td className="n">{fmtNumber(t.loggedHours ?? (t.loggedMinutes ?? 0) / 60, 2)} h</td>
+                    <td className="small">
+                      {assignees.length ? assignees.join(", ") : <span className="muted">—</span>}
+                    </td>
+                    <td className="n mono">{fmtNumber(loggedH, 2)} h</td>
                     <td className="mono">{t.dueDate ? fmtDate(isoDate(t.dueDate)) : "—"}</td>
                     <td className="mono small">{t.externalRef || <span className="muted">—</span>}</td>
                     {canEdit ? (
@@ -147,10 +203,43 @@ export default function TasksPage() {
           </tbody>
         </table>
       </div>
-      {open ? <TaskModal mode="create" onClose={() => setOpen(false)} employees={dir.employees} /> : null}
-      {edit ? (
-        <TaskModal mode="edit" initial={edit} onClose={() => setEdit(null)} employees={dir.employees} />
-      ) : null}
+
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <span className="small muted">
+          {totalElements} total · page {Math.min(page, totalPages)}/{totalPages}
+        </span>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <label className="small muted row" style={{ gap: 6, alignItems: "center" }}>
+            Per page
+            <select
+              value={size}
+              onChange={(e) => setSize(Number(e.target.value))}
+              style={{ width: 72 }}
+              aria-label="Rows per page"
+            >
+              {[10, 20, 50, 100].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="btn sm" disabled={page <= 1 || tasks.isFetching} onClick={() => setPage((p) => p - 1)}>
+            Previous
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            disabled={page >= totalPages || tasks.isFetching}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+          </button>
+        </div>
+      </div>
+
+      {open ? <TaskModal mode="create" onClose={() => setOpen(false)} /> : null}
+      {edit ? <TaskModal mode="edit" initial={edit} onClose={() => setEdit(null)} /> : null}
     </div>
   );
 }
@@ -159,15 +248,19 @@ function TaskModal({
   mode,
   initial,
   onClose,
-  employees,
 }: {
   mode: "create" | "edit";
   initial?: TaskView;
   onClose: () => void;
-  employees: { id: string | number; fullName?: string | null; employeeCode?: string | null }[];
 }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const candidates = useQuery({
+    queryKey: ["task-assignee-candidates"],
+    queryFn: ({ signal }) => apiFetch<Candidate[]>(api.hrms("tasks/assignee-candidates"), { signal }),
+  });
+  const people = useMemo(() => candidates.data ?? [], [candidates.data]);
+
   const [form, setForm] = useState({
     title: initial?.title ?? "",
     clientName: initial?.clientName ?? "",
@@ -178,6 +271,8 @@ function TaskModal({
     assigneeIds: (initial?.assigneeIds ?? []).map(String),
   });
   const [errors, setErrors] = useState<FieldErrors>({});
+  const [assigneeFilter, setAssigneeFilter] = useState("");
+
   const save = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       mode === "create"
@@ -191,6 +286,14 @@ function TaskModal({
     },
     onError: (e) => toast.error(e),
   });
+
+  const filteredPeople = useMemo(() => {
+    const needle = assigneeFilter.trim().toLowerCase();
+    if (!needle) return people;
+    return people.filter((e) =>
+      `${e.fullName ?? ""} ${e.employeeCode ?? ""}`.toLowerCase().includes(needle),
+    );
+  }, [people, assigneeFilter]);
 
   function toggleAssignee(id: string) {
     setForm((f) => ({
@@ -219,6 +322,7 @@ function TaskModal({
     <Modal
       open
       title={mode === "create" ? "New task" : "Edit task"}
+      subtitle="Assignees are limited to people under you in the reporting line (plus yourself)."
       onClose={onClose}
       footer={
         <>
@@ -259,7 +363,11 @@ function TaskModal({
         <FormField label="Due date" error={errors.dueDate}>
           <input type="date" min={todayIso()} value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
         </FormField>
-        <FormField label="External id" hint="Stable id for the future project module (FR-TSK-04)" error={errors.externalRef}>
+        <FormField
+          label="External id"
+          hint="Stable project-module id (FR-TSK-04). Changing it never drops work logs (logs use task id)."
+          error={errors.externalRef}
+        >
           <input
             type="text"
             className="mono"
@@ -269,8 +377,20 @@ function TaskModal({
           />
         </FormField>
         <FormField label="Assignees" required full error={errors.assigneeIds}>
+          <input
+            type="search"
+            placeholder="Filter people…"
+            value={assigneeFilter}
+            onChange={(e) => setAssigneeFilter(e.target.value)}
+            style={{ marginBottom: 8 }}
+          />
+          {candidates.isLoading ? <div className="small muted">Loading your team…</div> : null}
+          {candidates.error ? <div className="notice bad">{(candidates.error as Error).message}</div> : null}
+          {!candidates.isLoading && people.length === 0 ? (
+            <div className="notice">No assignable people in your reporting team.</div>
+          ) : null}
           <div className="stack" style={{ maxHeight: 180, overflow: "auto", gap: 6 }}>
-            {employees.map((e) => {
+            {filteredPeople.map((e) => {
               const id = String(e.id);
               return (
                 <label key={id} className="row" style={{ gap: 8 }}>

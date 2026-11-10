@@ -127,15 +127,14 @@ async function main() {
 
   // Payroll permission: emp calculate/list others
   {
-    const r = await req("GET", `${GW}/payroll/api/payslips?page=1&size=20`, { headers: auth(tEmp) });
-    const rows = r.json?.content || r.json || [];
+    const r = await req("GET", `${GW}/payroll/api/payroll/runs/2026-10/lines?size=50`, { headers: auth(tEmp) });
+    const rows = r.status === 200 ? (r.json?.content || []) : [];
     const others = Array.isArray(rows) ? rows.filter((p) => String(p.employeeId) !== "9" && p.employeeId != 9) : [];
     if (r.status === 200 && others.length > 0) {
       find("Critical", "RBAC", "PAYROLL-LIST-ALL", "Employee sees other employees' payslips", { status: r.status, others: others.length, sample: others[0] }, "Payroll confidentiality broken");
     }
-    const calc = await req("POST", `${GW}/payroll/api/payslips/calculate`, {
+    const calc = await req("POST", `${GW}/payroll/api/payroll/runs/2026-10/calculate`, {
       headers: auth(tEmp),
-      body: { employeeId: 1, year: 2026, month: 10 },
     });
     if (calc.status >= 200 && calc.status < 300) {
       find("Critical", "RBAC", "PAYROLL-CALC-EMP", "Employee can trigger payroll calculate for others", { status: calc.status, body: (calc.raw || "").slice(0, 200) }, "Unauthorized payroll mutation");

@@ -64,6 +64,8 @@ public class LeaveApplicationService {
     private final DataScopeService dataScopeService;
     private final ApprovalAuthorityService approvalAuthorityService;
     private final TimeWorkScheduleGateway workScheduleService;
+    private final LeaveAppliesToService leaveAppliesToService;
+    private final LeaveCategoryService leaveCategoryService;
 
     public LeaveApplicationService(
             PeopleEmployeeGateway employeeRepository,
@@ -81,7 +83,9 @@ public class LeaveApplicationService {
             LeaveNotificationHook notificationHook,
             DataScopeService dataScopeService,
             ApprovalAuthorityService approvalAuthorityService,
-            TimeWorkScheduleGateway workScheduleService) {
+            TimeWorkScheduleGateway workScheduleService,
+            LeaveAppliesToService leaveAppliesToService,
+            LeaveCategoryService leaveCategoryService) {
         this.employeeRepository = employeeRepository;
         this.applicationRepository = applicationRepository;
         this.approvalRepository = approvalRepository;
@@ -98,6 +102,8 @@ public class LeaveApplicationService {
         this.dataScopeService = dataScopeService;
         this.approvalAuthorityService = approvalAuthorityService;
         this.workScheduleService = workScheduleService;
+        this.leaveAppliesToService = leaveAppliesToService;
+        this.leaveCategoryService = leaveCategoryService;
     }
 
     /** Unscoped (internal use only). HTTP callers must use {@link #listForCaller()}. */
@@ -208,23 +214,76 @@ public class LeaveApplicationService {
         result.put("warnings", ctx.warnings());
         result.put("teamClashAlert", ctx.teamClashAlert());
 
-        // Approver preview
-        List<Map<String, Object>> policy_chain = resolveApprovalChain(ctx.category(), ctx.policy());
+        // Approver preview — same skip rules as createApprovalSteps
+        List<Map<String, Object>> policyChain = resolveApprovalChain(ctx.category(), ctx.policy());
+        result.put("approvers", previewApprovers(ctx.employee(), policyChain));
+        if (ctx.category() != null) {
+            result.put("attachmentMode", ctx.category().getAttachmentMode());
+            result.put("attachmentAfterDays", ctx.category().getAttachmentAfterDays());
+            result.put("noticeDays", ctx.category().getNoticeDays());
+            result.put("maxPerRequest", ctx.category().getMaxPerRequest());
+            result.put("halfDayAllowed", ctx.category().isHalfDayAllowed());
+        }
+        result.put("noticeGiven", ctx.noticeGiven());
+        result.put("noticeRequired", ctx.noticeRequired());
+        result.put("canSubmit", true);
+        return result;
+    }
+
+    private List<Map<String, Object>> previewApprovers(EmployeeView employee, List<Map<String, Object>> chain) {
         List<Map<String, Object>> approvers = new ArrayList<>();
-        for (Map<String, Object> step : policy_chain) {
+        Long requesterId = employee == null ? null : employee.getId();
+        Long prevExpectedId = null;
+        int stepNum = 1;
+        for (Map<String, Object> item : chain) {
+            if (stepNum > 4) break;
+            String resolver = item.get("resolver") != null
+                    ? String.valueOf(item.get("resolver")).trim().toUpperCase(Locale.ROOT) : "";
+            String role = item.get("role") != null ? String.valueOf(item.get("role")).trim() : "HR";
+            if (resolver.isEmpty()) resolver = resolverFromRole(role);
+            Long expectedId = resolveExpectedApprover(employee, item);
+            // Skip: holds no one / inactive / requester / same as previous step
+            if (isPersonBoundResolver(resolver, role)) {
+                if (expectedId == null) continue;
+                EmployeeView exp = employeeRepository.findById(expectedId).orElse(null);
+                if (exp == null || !exp.isActive()) continue;
+                if (expectedId.equals(requesterId)) continue;
+                if (expectedId.equals(prevExpectedId)) continue;
+            } else if (expectedId != null) {
+                EmployeeView exp = employeeRepository.findById(expectedId).orElse(null);
+                if (exp == null || !exp.isActive()) continue;
+                if (expectedId.equals(requesterId)) continue;
+                if (expectedId.equals(prevExpectedId)) continue;
+            }
             Map<String, Object> a = new LinkedHashMap<>();
-            a.put("role", step.get("role"));
-            a.put("resolver", step.get("resolver"));
-            a.put("step", step.get("step"));
-            Long expectedId = resolveExpectedApprover(ctx.employee(), step);
+            a.put("role", role);
+            a.put("resolver", resolver);
+            a.put("step", stepNum);
             a.put("expectedEmployeeId", expectedId);
             if (expectedId != null) {
                 a.put("expectedName", employeeRepository.findById(expectedId).map(EmployeeView::getFullName).orElse(null));
+            } else {
+                a.put("expectedName", role.isBlank() ? "Approver" : role);
             }
             approvers.add(a);
+            prevExpectedId = expectedId;
+            stepNum++;
         }
-        result.put("approvers", approvers);
-        return result;
+        return approvers;
+    }
+
+    /** Resolvers that require a concrete person — empty/inactive means skip the step. */
+    private static boolean isPersonBoundResolver(String resolver, String role) {
+        String r = resolver == null ? "" : resolver.trim().toUpperCase(Locale.ROOT);
+        String roleU = role == null ? "" : role.trim().toUpperCase(Locale.ROOT);
+        return ApprovalAuthorityService.RESOLVER_REPORTING_MANAGER.equals(r)
+                || ApprovalAuthorityService.RESOLVER_REPORTING_MANAGER_AND_DESIGNATION.equals(r)
+                || ApprovalAuthorityService.RESOLVER_MANAGER_OF_MANAGER.equals(r)
+                || ApprovalAuthorityService.RESOLVER_NAMED_EMPLOYEE.equals(r)
+                || "MANAGER".equals(roleU)
+                || "STORE_MANAGER".equals(roleU)
+                || "MANAGER_OF_MANAGER".equals(roleU)
+                || "NAMED_EMPLOYEE".equals(roleU);
     }
 
     private LeaveApplicationResponse doApply(LeaveApplyRequest request, boolean previewOnly) {
@@ -385,28 +444,32 @@ public class LeaveApplicationService {
         }
 
         LeaveType leaveType = resolveLeaveType(request.leaveTypeCode(), policy);
-        LeaveCategory category = leaveCategoryRepository.findByCodeAndActiveTrue(leaveType.getCode()).orElse(null);
+        LeaveCategory category = leaveCategoryService
+                .resolveForCodeOn(leaveType.getCode(), request.startDate())
+                .orElse(null);
 
-        // FR-LV-01: applies_to eligibility
-        if (category != null && category.getAppliesTo() != null && !category.getAppliesTo().isBlank()) {
-            checkAppliesTo(employee, category);
+        // Prefer a category that covers the whole request window when period bounds exist.
+        if (category != null && request.endDate() != null
+                && !leaveCategoryService.covers(category, request.endDate())) {
+            category = leaveCategoryService.resolveForCodeOn(leaveType.getCode(), request.endDate()).orElse(null);
         }
 
-        // FR-LV-03: hourly staff (employment type or schedule mode) cannot take categories that block hourly.
-        boolean hourlyEmployment = employee.getEmploymentType() != null
-                && "HOURLY".equalsIgnoreCase(employee.getEmploymentType().trim());
-        boolean hourlySchedule = workScheduleService.resolveForEmployee(employee)
-                .map(s -> s.getMode() != null && "HOURLY".equalsIgnoreCase(s.getMode().trim()))
-                .orElse(false);
-        if ((hourlyEmployment || hourlySchedule) && categoryBlocksHourly(category, leaveType)) {
+        boolean hasAnyCategory = !leaveCategoryService.findAllByCode(leaveType.getCode()).isEmpty();
+        if (hasAnyCategory && category == null) {
             throw new IllegalStateException(
-                    "Hourly employees cannot request " + leaveType.getCode()
-                            + "; this category is not available on an hourly schedule");
+                    "No active leave category covers these dates for " + leaveType.getCode()
+                            + ". Choose dates inside the category period.");
         }
 
-        // FR-LV-11: period eligibility
+        // FR-LV-01 / FR-LV-03 — applies_to + hourly never get leave categories.
         if (category != null) {
-            LocalDate now = LocalDate.now();
+            leaveAppliesToService.requireEligible(employee, category);
+        } else if (leaveAppliesToService.isHourly(employee)) {
+            throw new IllegalStateException("Hourly employees cannot request leave categories");
+        }
+
+        // FR-LV-11: period eligibility (open-ended when start/end null)
+        if (category != null) {
             if (category.getPeriodStart() != null && request.startDate().isBefore(category.getPeriodStart())) {
                 throw new IllegalStateException("Leave start is before category period start " + category.getPeriodStart());
             }
@@ -428,23 +491,20 @@ public class LeaveApplicationService {
         List<LocalDate> workingDates = workingDaysCalculator.listWorkingDates(
                 request.startDate(), request.endDate(), personWorkingDays, locationHolidays);
 
-        // FR-LV-08: halfDay handling
+        // FR-LV-08: halfDay handling (0.5 on a working day only)
         String halfDayPart = resolveHalfDayPart(request);
         BigDecimal daysCounted;
-        if (!"FULL".equals(halfDayPart)) {
+        boolean half = !"FULL".equals(halfDayPart) || Boolean.TRUE.equals(request.halfDay());
+        if (half) {
             if (category != null && !category.isHalfDayAllowed()) {
                 throw new IllegalStateException("Half-day leave not allowed for category " + leaveType.getCode());
             }
             if (!request.startDate().equals(request.endDate())) {
                 throw new IllegalStateException("Half-day leave must be a single date (startDate == endDate)");
             }
-            daysCounted = new BigDecimal("0.5");
-        } else if (Boolean.TRUE.equals(request.halfDay())) {
-            if (category != null && !category.isHalfDayAllowed()) {
-                throw new IllegalStateException("Half-day leave not allowed for category " + leaveType.getCode());
-            }
-            if (!request.startDate().equals(request.endDate())) {
-                throw new IllegalStateException("Half-day leave must be a single date (startDate == endDate)");
+            if (workingDates.isEmpty() || !workingDates.contains(request.startDate())) {
+                throw new IllegalStateException(
+                        "Half-day leave must fall on a working day (not a weekly day off or holiday)");
             }
             daysCounted = new BigDecimal("0.5");
         } else {
@@ -476,36 +536,49 @@ public class LeaveApplicationService {
                             + " (notice_mode=" + policy.getNoticeMode() + ")");
         }
 
-        // FR-LV-11: overlap check
-        List<?> overlapping = applicationRepository.findOverlappingForEmployee(
-                employee.getId(), request.startDate(), request.endDate(), null);
+        // FR-LV-11: overlap check (own pending/approved only — not team clash)
+        String requestHalf = halfDayPart == null ? "FULL" : halfDayPart.trim().toUpperCase(Locale.ROOT);
+        List<LeaveApplication> overlapping = applicationRepository.findOverlappingForEmployee(
+                        employee.getId(), request.startDate(), request.endDate(), null)
+                .stream()
+                .filter(existing -> !isComplementaryHalfDay(existing, request.startDate(), request.endDate(), requestHalf))
+                .toList();
         if (!overlapping.isEmpty()) {
-            throw new IllegalStateException("Leave overlaps with an existing PENDING or APPROVED leave application");
+            LeaveApplication clash = overlapping.get(0);
+            throw new IllegalStateException(
+                    "Leave overlaps with your existing " + clash.getStatus()
+                            + " request #" + clash.getId()
+                            + " (" + clash.getLeaveTypeCode()
+                            + " " + clash.getStartDate() + " → " + clash.getEndDate()
+                            + "). Withdraw or cancel that request first, or choose other dates.");
         }
 
-        // FR-LV-11: attachment check
+        // FR-LV-11: attachment check (FE uses AFTER_DAYS; legacy AFTER_N accepted)
         if (category != null && category.getAttachmentMode() != null) {
-            switch (category.getAttachmentMode().toUpperCase(Locale.ROOT)) {
+            String mode = category.getAttachmentMode().trim().toUpperCase(Locale.ROOT);
+            boolean missing = request.attachmentRef() == null || request.attachmentRef().isBlank();
+            switch (mode) {
                 case "ALWAYS" -> {
-                    if (request.attachmentRef() == null || request.attachmentRef().isBlank()) {
+                    if (missing) {
                         throw new IllegalStateException("Attachment required for category " + category.getCode());
                     }
                 }
-                case "AFTER_N" -> {
-                    if (daysCounted.compareTo(BigDecimal.valueOf(category.getAttachmentAfterDays())) > 0
-                            && (request.attachmentRef() == null || request.attachmentRef().isBlank())) {
+                case "AFTER_DAYS", "AFTER_N" -> {
+                    int after = Math.max(0, category.getAttachmentAfterDays());
+                    if (daysCounted.compareTo(BigDecimal.valueOf(after)) > 0 && missing) {
                         throw new IllegalStateException("Attachment required when leave exceeds "
-                                + category.getAttachmentAfterDays() + " days for category " + category.getCode());
+                                + after + " days for category " + category.getCode());
                     }
                 }
                 default -> { /* NEVER — no check */ }
             }
         }
 
-        // FR-LV-14: team clash
+        // FR-LV-14: team clash — only on working days in the request
         Map<String, Object> warnings = new HashMap<>();
         boolean teamClashAlert = false;
-        LeaveTeamClashService.ClashResult clashResult = teamClashService.check(employee, request.startDate(), request.endDate());
+        LeaveTeamClashService.ClashResult clashResult = teamClashService.check(
+                employee, request.startDate(), request.endDate(), workingDates);
         if (clashResult.blocked()) {
             throw new IllegalStateException(clashResult.message());
         }
@@ -522,7 +595,9 @@ public class LeaveApplicationService {
             throw new IllegalStateException("Leave overlaps blackout: " + blackouts.get(0).getReason());
         }
 
-        int year = request.startDate().getYear();
+        int year = category != null
+                ? leaveCategoryService.balanceYear(category)
+                : request.startDate().getYear();
         // FR-LV-11: use availableAfterPending for balance check; negativeCap
         BigDecimal availableAfterPending = leaveBalanceService.availableAfterPending(employee.getId(), leaveType.getCode(), year);
         if (leaveType.isRequiresBalance() && !leaveType.isAllowWhenZeroBalance()) {
@@ -582,7 +657,10 @@ public class LeaveApplicationService {
 
         LeavePolicy policy = configLoader.loadLeavePolicyOrDefault();
         LeaveCategory category = app.getLeaveTypeCode() != null
-                ? leaveCategoryRepository.findByCodeAndActiveTrue(app.getLeaveTypeCode()).orElse(null) : null;
+                ? leaveCategoryService.resolveForCodeOn(
+                        app.getLeaveTypeCode(),
+                        app.getStartDate() != null ? app.getStartDate() : LocalDate.now()).orElse(null)
+                : null;
         EmployeeView employee = employeeRepository.findById(app.getEmployeeId()).orElse(null);
         List<Map<String, Object>> chain = resolveApprovalChain(category, policy);
         assertReportingManagerPresent(employee, chain);
@@ -598,81 +676,6 @@ public class LeaveApplicationService {
                 Map.of("status", LeaveApplication.STATUS_APPROVED),
                 Map.of("status", LeaveApplication.STATUS_PENDING_CANCEL));
         return get(applicationId);
-    }
-
-    /**
-     * Day-entitlement categories (Casual and the same class: quota &gt; 0, or an explicit
-     * {@code applies_to.blockHourly} flag) are refused for hourly staff. Unpaid / zero-quota
-     * categories stay available unless the flag says otherwise.
-     */
-    private boolean categoryBlocksHourly(LeaveCategory category, LeaveType leaveType) {
-        if (category != null && category.getAppliesTo() != null && !category.getAppliesTo().isBlank()) {
-            try {
-                Map<String, Object> applies = new ObjectMapper().readValue(category.getAppliesTo(), new TypeReference<>() {});
-                if (applies.containsKey("blockHourly")) {
-                    Object v = applies.get("blockHourly");
-                    if (v instanceof Boolean b) {
-                        return b;
-                    }
-                    return v != null && Boolean.parseBoolean(String.valueOf(v));
-                }
-            } catch (Exception ignored) {
-                // fall through to the quota rule
-            }
-        }
-        if (category != null && category.getQuotaDays() != null && category.getQuotaDays().signum() > 0) {
-            return true;
-        }
-        return leaveType != null && leaveType.isRequiresBalance();
-    }
-
-    /** FR-LV-01 — employee must match at least one non-empty applies_to list. Empty = everyone. */
-    @SuppressWarnings("unchecked")
-    private void checkAppliesTo(EmployeeView employee, LeaveCategory category) {
-        String raw = category.getAppliesTo();
-        if (raw == null || raw.isBlank()) {
-            return;
-        }
-        Map<String, Object> appliesTo;
-        try {
-            appliesTo = new ObjectMapper().readValue(raw, new TypeReference<>() {});
-        } catch (Exception e) {
-            return; // invalid JSON → no restriction
-        }
-        List<Object> locations = asList(appliesTo.get("locations"));
-        List<Object> employmentTypes = asList(appliesTo.get("employmentTypes"));
-        List<Object> teams = asList(appliesTo.get("teams"));
-        List<Object> employeeIds = asList(appliesTo.get("employeeIds"));
-
-        boolean anyRestriction = !locations.isEmpty() || !employmentTypes.isEmpty()
-                || !teams.isEmpty() || !employeeIds.isEmpty();
-        if (!anyRestriction) {
-            return; // no restrictions → everyone
-        }
-
-        boolean matched = false;
-        if (!locations.isEmpty() && employee.getLocationId() != null) {
-            matched |= locations.stream().anyMatch(v -> String.valueOf(v).equals(String.valueOf(employee.getLocationId())));
-        }
-        if (!employmentTypes.isEmpty() && employee.getEmploymentType() != null) {
-            matched |= employmentTypes.stream().anyMatch(v -> String.valueOf(v).equalsIgnoreCase(employee.getEmploymentType()));
-        }
-        if (!teams.isEmpty() && employee.getTeamId() != null) {
-            matched |= teams.stream().anyMatch(v -> String.valueOf(v).equals(String.valueOf(employee.getTeamId())));
-        }
-        if (!employeeIds.isEmpty()) {
-            matched |= employeeIds.stream().anyMatch(v -> String.valueOf(v).equals(String.valueOf(employee.getId())));
-        }
-        if (!matched) {
-            throw new IllegalStateException("EmployeeView is not eligible for category " + category.getCode()
-                    + " (applies_to restriction)");
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static List<Object> asList(Object val) {
-        if (val instanceof List<?> l) return (List<Object>) l;
-        return List.of();
     }
 
     private Set<LocalDate> buildHolidaySet(Long locationId, LocalDate start, LocalDate end) {
@@ -692,6 +695,39 @@ public class LeaveApplicationService {
             return "FIRST_HALF";
         }
         return "FULL";
+    }
+
+    /**
+     * Same calendar day + opposite half (FIRST vs SECOND) do not overlap.
+     * Full-day leave always conflicts with any leave on that day.
+     */
+    private static boolean isComplementaryHalfDay(
+            LeaveApplication existing,
+            LocalDate requestStart,
+            LocalDate requestEnd,
+            String requestHalf) {
+        if (existing == null || requestStart == null || requestEnd == null) {
+            return false;
+        }
+        if (!requestStart.equals(requestEnd)) {
+            return false;
+        }
+        if (existing.getStartDate() == null || existing.getEndDate() == null) {
+            return false;
+        }
+        if (!existing.getStartDate().equals(existing.getEndDate())
+                || !existing.getStartDate().equals(requestStart)) {
+            return false;
+        }
+        String existingHalf = existing.getHalfDayPart() == null
+                ? "FULL"
+                : existing.getHalfDayPart().trim().toUpperCase(Locale.ROOT);
+        String req = requestHalf == null ? "FULL" : requestHalf.trim().toUpperCase(Locale.ROOT);
+        if ("FULL".equals(existingHalf) || "FULL".equals(req)) {
+            return false;
+        }
+        return ("FIRST_HALF".equals(existingHalf) && "SECOND_HALF".equals(req))
+                || ("SECOND_HALF".equals(existingHalf) && "FIRST_HALF".equals(req));
     }
 
     @Transactional
@@ -1094,7 +1130,10 @@ public class LeaveApplicationService {
         }
         LeavePolicy policy = configLoader.loadLeavePolicyOrDefault();
         LeaveCategory category = app.getLeaveTypeCode() != null
-                ? leaveCategoryRepository.findByCodeAndActiveTrue(app.getLeaveTypeCode()).orElse(null) : null;
+                ? leaveCategoryService.resolveForCodeOn(
+                        app.getLeaveTypeCode(),
+                        app.getStartDate() != null ? app.getStartDate() : LocalDate.now()).orElse(null)
+                : null;
         EmployeeView employee = employeeRepository.findById(app.getEmployeeId()).orElse(null);
         List<Map<String, Object>> chain = resolveApprovalChain(category, policy);
         assertReportingManagerPresent(employee, chain);
@@ -1147,14 +1186,17 @@ public class LeaveApplicationService {
             }
             // For RBAC_ROLE and DESIGNATION_OR_RBAC, expectedId stays null (any matching user)
 
-            // Skip conditions
-            if (expectedId != null) {
-                // null/inactive
+            // Skip: holds no one / inactive / requester / same as previous step
+            if (isPersonBoundResolver(resolver, role)) {
+                if (expectedId == null) continue;
                 EmployeeView exp = employeeRepository.findById(expectedId).orElse(null);
                 if (exp == null || !exp.isActive()) continue;
-                // equals requester
                 if (expectedId.equals(requesterId)) continue;
-                // equals previous step's expected approver
+                if (expectedId.equals(prevExpectedId)) continue;
+            } else if (expectedId != null) {
+                EmployeeView exp = employeeRepository.findById(expectedId).orElse(null);
+                if (exp == null || !exp.isActive()) continue;
+                if (expectedId.equals(requesterId)) continue;
                 if (expectedId.equals(prevExpectedId)) continue;
             }
 

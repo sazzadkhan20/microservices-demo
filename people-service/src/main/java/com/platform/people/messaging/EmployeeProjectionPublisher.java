@@ -78,11 +78,20 @@ public class EmployeeProjectionPublisher {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCommit() {
-                    relay.drainBatch();
+                    try {
+                        relay.drainBatch();
+                    } catch (Exception e) {
+                        // Never fail the business API after a successful commit — scheduled poll retries.
+                        log.warn("Outbox drain after employee projection failed: {}", e.getMessage());
+                    }
                 }
             });
         } else {
-            relay.drainBatch();
+            try {
+                relay.drainBatch();
+            } catch (Exception e) {
+                log.warn("Outbox drain failed: {}", e.getMessage());
+            }
         }
     }
 

@@ -1,0 +1,11 @@
+{
+  "name": "microservices-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "offboarding-handover": "node scripts/run-offboarding-handover.mjs",
+    "reporting-line-due": "node scripts/run-reporting-line-due.mjs",
+    "deferred-people": "node scripts/run-reporting-line-due.mjs /api/internal/jobs/deferred-people",
+    "test:reporting-line": "node scripts/test-reporting-line-loops.mjs"
+  }
+}

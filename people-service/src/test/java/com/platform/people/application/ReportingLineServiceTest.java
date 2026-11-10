@@ -4,15 +4,17 @@ import com.platform.people.domain.Employee;
 import com.platform.people.extension.config.TenantConfigLoader;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
 import com.platform.people.infrastructure.persistence.ReportingLineHistoryRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Clock;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Optional;
 
@@ -29,7 +31,17 @@ class ReportingLineServiceTest {
     @Mock EmployeeRepository employeeRepository;
     @Mock ReportingLineHistoryRepository historyRepository;
     @Mock TenantConfigLoader configLoader;
-    @InjectMocks ReportingLineService service;
+
+    private ReportingLineService service;
+
+    @BeforeEach
+    void setUp() {
+        Clock clock = Clock.fixed(
+                LocalDate.of(2026, 11, 10).atStartOfDay(ZoneOffset.UTC).toInstant(),
+                ZoneOffset.UTC);
+        service = new ReportingLineService(
+                employeeRepository, historyRepository, configLoader, clock, "UTC");
+    }
 
     private static Employee emp(long id, Long managerId) {
         Employee e = new Employee();
@@ -75,7 +87,7 @@ class ReportingLineServiceTest {
     @Test
     void refusesPastEffectiveDateByDefault() {
         when(configLoader.loadSettingsMap()).thenReturn(Map.of());
-        LocalDate today = LocalDate.now();
+        LocalDate today = service.businessToday();
         ReportingLineService.ReportingLineRules rules = service.loadRules();
         IllegalArgumentException ex = assertThrows(
                 IllegalArgumentException.class,
@@ -86,7 +98,7 @@ class ReportingLineServiceTest {
     @Test
     void allowsTodayAndFutureByDefault() {
         when(configLoader.loadSettingsMap()).thenReturn(Map.of());
-        LocalDate today = LocalDate.now();
+        LocalDate today = service.businessToday();
         ReportingLineService.ReportingLineRules rules = service.loadRules();
         assertEquals(today, service.resolveAndValidateEffectiveDate(today, today, rules));
         assertEquals(today.plusDays(7), service.resolveAndValidateEffectiveDate(today.plusDays(7), today, rules));
@@ -97,7 +109,7 @@ class ReportingLineServiceTest {
         when(configLoader.loadSettingsMap()).thenReturn(Map.of(
                 "reportingLine", Map.of("requireEffectiveDate", true)
         ));
-        LocalDate today = LocalDate.now();
+        LocalDate today = service.businessToday();
         ReportingLineService.ReportingLineRules rules = service.loadRules();
         IllegalArgumentException ex = assertThrows(
                 IllegalArgumentException.class,
@@ -113,7 +125,7 @@ class ReportingLineServiceTest {
                         "maxPastDays", 30
                 )
         ));
-        LocalDate today = LocalDate.now();
+        LocalDate today = service.businessToday();
         ReportingLineService.ReportingLineRules rules = service.loadRules();
         assertEquals(today.minusDays(10), service.resolveAndValidateEffectiveDate(today.minusDays(10), today, rules));
         assertThrows(

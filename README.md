@@ -34,7 +34,7 @@ Redis: gateway session revocation only. MinIO: private document storage.
 | `people-service` | Employees, org, reporting lines, RBAC, company settings |
 | `leave-service` | Leave types/policies, approval chains, balances, immutable ledger, payroll leave cover |
 | `time-work-service` | Schedules, holidays, attendance, corrections, tasks, work logs |
-| `payroll-service` | Salary history, payslips, async finalize/reopen workflow |
+| `payroll-service` | Salary records, monthly payroll runs (live draft → finalise → reopen), payslip revisions, async leave-cover workflow |
 | `file-service` | Document metadata, quarantine/scan, ACL, short-lived downloads |
 | `notification-service` | In-app notifications, dedupe |
 | `report-service` | Attendance exports |
@@ -96,6 +96,13 @@ staging/production.
 
 ```bash
 ./gradlew test
+```
+
+Payroll (rules, design and evidence: [docs/PAYROLL_SPEC.md](docs/PAYROLL_SPEC.md)):
+
+```bash
+FORCE=1 bash scripts/seed-payroll-scenarios.sh   # dev only: Sep–Nov 2026 scenarios (absences, half days, unpaid leave, hourly, joiner/leaver)
+node scripts/test-payroll-e2e.mjs                # calculate → finalise → reopen → re-finalise, with every amount checked
 ```
 
 Production-readiness findings and their remediation order: [docs/BACKEND_PRODUCTION_READINESS_AUDIT.md](docs/BACKEND_PRODUCTION_READINESS_AUDIT.md).

@@ -45,7 +45,7 @@ const tAdm = await token(ADMIN), tHr = await token(HR), tMgr = await token(MGR),
 }
 
 // ---- direct service bypass (internal ports) ----
-for (const [n, url] of [["hrms", "http://127.0.0.1:8081/api/employees?page=0&size=2"], ["payroll", "http://127.0.0.1:8082/api/payroll/payslips"], ["notif", "http://127.0.0.1:8083/api/notifications"], ["files", "http://127.0.0.1:8084/api/files"], ["reports", "http://127.0.0.1:8085/api/reports/exports"]]) {
+for (const [n, url] of [["hrms", "http://127.0.0.1:8081/api/employees?page=0&size=2"], ["payroll", "http://127.0.0.1:8082/api/payroll/runs"], ["notif", "http://127.0.0.1:8083/api/notifications"], ["files", "http://127.0.0.1:8084/api/files"], ["reports", "http://127.0.0.1:8085/api/reports/exports"]]) {
   const r = await req("GET", url, { headers: { "X-Employee-ID": "1" } });
   check(`DIRECT-${n}-NO-SERVICE-KEY`, r.status === 401 || r.status === 403, `status=${r.status}`, "Critical");
   const r2 = await req("GET", url, { headers: { "X-Employee-ID": "1", "X-Service-Key": DEMO } });
@@ -68,12 +68,12 @@ const idor = [
   ["GET", `${H}/leave/employee/1`, "other leave list"],
   ["GET", `${H}/employees/1/documents`, "other documents"],
   ["GET", `${H}/work-logs/employee/1`, "other work logs"],
-  ["GET", `${H}/payroll-facts/employee/1?month=2026-09`, "payroll facts"],
-  ["GET", `${P}/payroll/salary-history/employee/1`, "other salary history"],
-  ["GET", `${P}/payroll/payslips/employee/1`, "other payslips"],
-  ["GET", `${P}/payroll/payslips`, "all payslips"],
-  ["GET", `${P}/payroll/export.csv?month=2026-09`, "payroll CSV"],
-  ["GET", `${P}/payroll/config`, "payroll config"],
+  ["GET", `${H}/internal/payroll/employees?period=2026-09`, "payroll employment facts (internal)"],
+  ["GET", `${P}/payroll/salary/employees/1`, "other salary history"],
+  ["GET", `${P}/payroll/runs/2026-09/lines/1`, "other payslips"],
+  ["GET", `${P}/payroll/runs/2026-09/lines`, "all payslips"],
+  ["GET", `${P}/payroll/runs/2026-09/export.csv`, "payroll CSV"],
+  ["GET", `${P}/payroll/settings`, "payroll rules"],
   ["GET", `${H}/audit`, "audit log"],
   ["GET", `${H}/dashboard/admin`, "admin dashboard"],
   ["GET", `${H}/reports/leave-balances.csv`, "leave balances CSV"],
@@ -138,7 +138,7 @@ for (const [m, url, what] of idor) {
     ["GET", `${H}/employees?sort=fullName;drop`],
     ["POST", `${H}/leave-applications`, "{bad json"],
     ["POST", `${H}/attendance/check-in`, { note: "x".repeat(20000) }],
-    ["GET", `${P}/payroll/export.csv?month=2026-13`],
+    ["GET", `${P}/payroll/runs/2026-13/export.csv`],
     ["GET", `${H}/dashboard/work-hours?period=xyz&date=notadate`],
   ];
   for (const [m, url, body] of cases) {

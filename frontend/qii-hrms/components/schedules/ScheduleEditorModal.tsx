@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { FormField } from "@/components/ui/FormField";
@@ -40,17 +40,66 @@ function parseDays(v: unknown): string[] {
   return [];
 }
 
+function toMinutes(hhmm: string): number | null {
+  if (!/^\d{2}:\d{2}$/.test(hhmm)) return null;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (h > 23 || m > 59) return null;
+  return h * 60 + m;
+}
+
+function fromMinutes(total: number): string {
+  const t = ((total % (24 * 60)) + 24 * 60) % (24 * 60);
+  const h = Math.floor(t / 60);
+  const m = t % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** Minutes from `from` forward to `to` (0..1439), wrapping midnight. */
+export function minutesFrom(from: string, to: string): number | null {
+  const a = toMinutes(from);
+  const b = toMinutes(to);
+  if (a == null || b == null) return null;
+  return (b - a + 24 * 60) % (24 * 60);
+}
+
+/** Default cut-off = end + 6h, clamped before next office start. */
+export function defaultCutoffAfterEnd(start: string, end: string): string {
+  const endM = toMinutes(end);
+  if (endM == null) return "23:59";
+  const plus6 = fromMinutes(endM + 6 * 60);
+  const fromEnd = minutesFrom(end, plus6);
+  let untilStart = minutesFrom(end, start);
+  if (untilStart == null) return plus6;
+  if (untilStart <= 0) untilStart = 24 * 60;
+  if (fromEnd != null && fromEnd >= untilStart) {
+    const startM = toMinutes(start);
+    if (startM == null) return plus6;
+    return fromMinutes(startM - 1);
+  }
+  return plus6;
+}
+
+export function isCutoffInWindow(start: string, end: string, cutoff: string): boolean {
+  const fromEnd = minutesFrom(end, cutoff);
+  let untilStart = minutesFrom(end, start);
+  if (fromEnd == null || untilStart == null) return false;
+  if (untilStart <= 0) untilStart = 24 * 60;
+  return fromEnd >= 0 && fromEnd < untilStart;
+}
+
 function blankForm(rules?: Rules, prefer?: { scopeType?: string; scopeId?: string }) {
+  const start = "10:00";
+  const end = "18:00";
   return {
     scopeType: (prefer?.scopeType || "TEAM").toUpperCase(),
     scopeId: prefer?.scopeId ? String(prefer.scopeId) : "",
     mode: "FIXED",
     workingDays: ["SUN", "MON", "TUE", "WED", "THU"] as string[],
-    startTime: "10:00",
-    endTime: "18:00",
+    startTime: start,
+    endTime: end,
     graceMinutes: String(rules?.defaultGraceMinutes ?? 15),
     halfDayHours: String(rules?.defaultHalfDayHours ?? 4),
-    checkoutCutoff: String(rules?.defaultCheckoutCutoff ?? "23:59"),
+    checkoutCutoff: defaultCutoffAfterEnd(start, end),
     weeklyHours: "40",
   };
 }
@@ -59,9 +108,7 @@ type Props = {
   open: boolean;
   target: ScheduleEditorTarget | null;
   onClose: () => void;
-  /** Called after successful save. */
   onSaved?: () => void;
-  /** Limit which scopes can be chosen when creating. */
   allowScopes?: ScheduleScope[];
 };
 
@@ -95,6 +142,8 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
   const [lockedScope, setLockedScope] = useState(false);
+  /** When false, changing end time refreshes cut-off to end+6h. */
+  const cutoffTouched = useRef(false);
 
   const modes = (rulesQ.data?.modes?.length ? rulesQ.data.modes : ["FIXED", "HOURLY"]).map((m) =>
     String(m).toUpperCase(),
@@ -108,23 +157,27 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
     if (!open || !target) return;
     setErr("");
     setErrors({});
+    cutoffTouched.current = false;
 
     if (target.mode === "edit") {
       const r = target.row;
       setEditingId(String(r.id));
       setLockedScope(true);
+      const start = str(r.startTime, "10:00");
+      const end = str(r.endTime, "18:00");
       setForm({
         scopeType: str(r.scopeType, "LOCATION").toUpperCase(),
         scopeId: String(r.scopeId ?? ""),
         mode: str(r.mode, "FIXED").toUpperCase() === "HOURLY" ? "HOURLY" : "FIXED",
         workingDays: parseDays(r.workingDays),
-        startTime: str(r.startTime, "10:00"),
-        endTime: str(r.endTime, "18:00"),
+        startTime: start,
+        endTime: end,
         graceMinutes: String(r.graceMinutes ?? 15),
         halfDayHours: r.halfDayHours == null ? "" : String(r.halfDayHours),
-        checkoutCutoff: str(r.checkoutCutoff, "23:59"),
+        checkoutCutoff: str(r.checkoutCutoff, defaultCutoffAfterEnd(start, end)),
         weeklyHours: r.weeklyHours == null ? "" : String(r.weeklyHours),
       });
+      cutoffTouched.current = true;
       return;
     }
 
@@ -134,39 +187,44 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
       setLockedScope(true);
       if (resolved && String(source).toUpperCase() === "EMPLOYEE" && resolved.id != null) {
         setEditingId(String(resolved.id));
+        const start = str(resolved.startTime, "10:00");
+        const end = str(resolved.endTime, "18:00");
         setForm({
           scopeType: "EMPLOYEE",
           scopeId: String(target.employeeId),
           mode: str(resolved.mode, "FIXED").toUpperCase() === "HOURLY" ? "HOURLY" : "FIXED",
           workingDays: parseDays(resolved.workingDays),
-          startTime: str(resolved.startTime, "10:00"),
-          endTime: str(resolved.endTime, "18:00"),
+          startTime: start,
+          endTime: end,
           graceMinutes: String(resolved.graceMinutes ?? 15),
           halfDayHours: resolved.halfDayHours == null ? "" : String(resolved.halfDayHours),
-          checkoutCutoff: str(resolved.checkoutCutoff, "23:59"),
+          checkoutCutoff: str(resolved.checkoutCutoff, defaultCutoffAfterEnd(start, end)),
           weeklyHours: resolved.weeklyHours == null ? "" : String(resolved.weeklyHours),
         });
+        cutoffTouched.current = true;
       } else {
         setEditingId(null);
         const base = resolved ?? {};
+        const start = str(base.startTime, "10:00");
+        const end = str(base.endTime, "18:00");
         setForm({
           ...blankForm(rulesQ.data, { scopeType: "EMPLOYEE", scopeId: String(target.employeeId) }),
           mode: str(base.mode, "FIXED").toUpperCase() === "HOURLY" ? "HOURLY" : "FIXED",
           workingDays: parseDays(base.workingDays).length
             ? parseDays(base.workingDays)
             : ["SUN", "MON", "TUE", "WED", "THU"],
-          startTime: str(base.startTime, "10:00"),
-          endTime: str(base.endTime, "18:00"),
+          startTime: start,
+          endTime: end,
           graceMinutes: String(base.graceMinutes ?? rulesQ.data?.defaultGraceMinutes ?? 15),
           halfDayHours: String(base.halfDayHours ?? rulesQ.data?.defaultHalfDayHours ?? 4),
-          checkoutCutoff: str(base.checkoutCutoff, rulesQ.data?.defaultCheckoutCutoff ?? "23:59"),
+          checkoutCutoff: str(base.checkoutCutoff, defaultCutoffAfterEnd(start, end)),
           weeklyHours: base.weeklyHours == null ? "40" : String(base.weeklyHours),
         });
+        cutoffTouched.current = !!base.checkoutCutoff;
       }
       return;
     }
 
-    // new
     setEditingId(null);
     setLockedScope(false);
     setForm(
@@ -202,8 +260,42 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
             }
             if (!v.startTime) ctx.addIssue({ code: "custom", path: ["startTime"], message: "Start time is required" });
             if (!v.endTime) ctx.addIssue({ code: "custom", path: ["endTime"], message: "End time is required" });
-            if (v.startTime && v.endTime && v.endTime <= v.startTime) {
+            const startM = toMinutes(v.startTime);
+            const endM = toMinutes(v.endTime);
+            if (startM != null && endM != null && endM <= startM) {
               ctx.addIssue({ code: "custom", path: ["endTime"], message: "End must be after start" });
+            }
+            if (startM != null && endM != null && endM > startM) {
+              const workMinutes = endM - startM;
+              const workHours = workMinutes / 60;
+              if (v.checkoutCutoff) {
+                if (!isCutoffInWindow(v.startTime, v.endTime, v.checkoutCutoff)) {
+                  ctx.addIssue({
+                    code: "custom",
+                    path: ["checkoutCutoff"],
+                    message: "Must be at/after office end and before next office start (may cross midnight)",
+                  });
+                }
+              }
+              if (v.halfDayHours !== "") {
+                const hd = Number(v.halfDayHours);
+                if (Number.isNaN(hd) || hd < 0) {
+                  ctx.addIssue({ code: "custom", path: ["halfDayHours"], message: "Must be a number ≥ 0" });
+                } else if (hd >= workHours) {
+                  ctx.addIssue({
+                    code: "custom",
+                    path: ["halfDayHours"],
+                    message: `Must be less than office day length (${workHours} h)`,
+                  });
+                }
+              }
+              if (v.graceMinutes >= workMinutes) {
+                ctx.addIssue({
+                  code: "custom",
+                  path: ["graceMinutes"],
+                  message: `Must be less than office day length (${workMinutes} min)`,
+                });
+              }
             }
           } else if (v.weeklyHours && (Number.isNaN(Number(v.weeklyHours)) || Number(v.weeklyHours) < 0)) {
             ctx.addIssue({ code: "custom", path: ["weeklyHours"], message: "Must be a number ≥ 0" });
@@ -216,6 +308,26 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
     if (type === "LOCATION") return (locations.data ?? []).map((l) => ({ id: String(l.id), label: l.name }));
     if (type === "TEAM") return (teams.data ?? []).map((l) => ({ id: String(l.id), label: l.name }));
     return (employees.data ?? []).map((l) => ({ id: String(l.id), label: l.fullName || `#${l.id}` }));
+  }
+
+  function setOfficeEnd(end: string) {
+    setForm((prev) => {
+      const next = { ...prev, endTime: end };
+      if (!cutoffTouched.current && prev.startTime && end) {
+        next.checkoutCutoff = defaultCutoffAfterEnd(prev.startTime, end);
+      }
+      return next;
+    });
+  }
+
+  function setOfficeStart(start: string) {
+    setForm((prev) => {
+      const next = { ...prev, startTime: start };
+      if (!cutoffTouched.current && start && prev.endTime) {
+        next.checkoutCutoff = defaultCutoffAfterEnd(start, prev.endTime);
+      }
+      return next;
+    });
   }
 
   const save = useMutation({
@@ -271,7 +383,7 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
       open={open && !!target}
       onClose={onClose}
       title={title}
-      subtitle="A person’s schedule overrides their team’s, and a team’s overrides the location’s. Changes are audited."
+      subtitle="Person overrides team, team overrides location. Saving location/team never changes an existing personal schedule."
     >
       <form className="stack" onSubmit={submit} noValidate>
         <div className="form-grid">
@@ -351,14 +463,10 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
                 <small className="muted">Any number of days — 5-day and 6-day people can share a team.</small>
               </div>
               <FormField label="Office start" required error={errors.startTime}>
-                <input
-                  type="time"
-                  value={form.startTime}
-                  onChange={(e) => setForm({ ...form, startTime: e.target.value })}
-                />
+                <input type="time" value={form.startTime} onChange={(e) => setOfficeStart(e.target.value)} />
               </FormField>
               <FormField label="Office end" required error={errors.endTime}>
-                <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} />
+                <input type="time" value={form.endTime} onChange={(e) => setOfficeEnd(e.target.value)} />
               </FormField>
               <FormField label="Late grace (minutes)" error={errors.graceMinutes}>
                 <input
@@ -377,11 +485,18 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
                   onChange={(e) => setForm({ ...form, halfDayHours: e.target.value })}
                 />
               </FormField>
-              <FormField label="Missing check-out cut-off">
+              <FormField
+                label="Missing check-out cut-off"
+                error={errors.checkoutCutoff}
+                hint="Auto-fills office end + 6 hours. Must stay at/after end and before next office start (may cross midnight)."
+              >
                 <input
                   type="time"
                   value={form.checkoutCutoff}
-                  onChange={(e) => setForm({ ...form, checkoutCutoff: e.target.value })}
+                  onChange={(e) => {
+                    cutoffTouched.current = true;
+                    setForm({ ...form, checkoutCutoff: e.target.value });
+                  }}
                 />
               </FormField>
             </>

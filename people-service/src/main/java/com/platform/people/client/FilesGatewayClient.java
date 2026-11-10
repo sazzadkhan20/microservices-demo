@@ -65,4 +65,24 @@ public class FilesGatewayClient {
             throw new IllegalStateException("Cannot attach rejected/infected file fileId=" + fileId);
         }
     }
+
+    /** Bind uploaded file to the employee so they (and directory viewers) can download the photo. */
+    public void bindEmployee(Long fileId, Long employeeId) {
+        if (fileId == null || employeeId == null) {
+            return;
+        }
+        try {
+            client.post()
+                    .uri("/api/internal/files/{id}/bind-employee", fileId)
+                    .header(PlatformHeaders.SERVICE_KEY, serviceKey)
+                    .header(InternalCalls.HEADER, internalKey)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of("employeeId", employeeId))
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (RestClientResponseException e) {
+            throw new IllegalStateException(
+                    "File-service bind-employee failed for fileId=" + fileId + ": " + e.getStatusCode().value(), e);
+        }
+    }
 }

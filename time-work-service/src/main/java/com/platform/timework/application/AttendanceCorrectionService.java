@@ -49,7 +49,17 @@ public class AttendanceCorrectionService {
         if (workDate == null) {
             throw new IllegalArgumentException("workDate is required");
         }
-        if (workDate.isAfter(LocalDate.now().plusDays(1))) {
+        var emp = employeeRepository.findById(actorId)
+                .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + actorId));
+        java.time.ZoneId zone;
+        try {
+            zone = (emp.getLocationTimeZone() != null && !emp.getLocationTimeZone().isBlank())
+                    ? java.time.ZoneId.of(emp.getLocationTimeZone().trim())
+                    : java.time.ZoneId.of("Asia/Dhaka");
+        } catch (Exception e) {
+            zone = java.time.ZoneId.of("Asia/Dhaka");
+        }
+        if (workDate.isAfter(LocalDate.now(zone).plusDays(1))) {
             throw new IllegalArgumentException("workDate cannot be in the future");
         }
         if (checkIn == null && checkOut == null) {
@@ -61,8 +71,6 @@ public class AttendanceCorrectionService {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("reason is required");
         }
-        employeeRepository.findById(actorId)
-                .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + actorId));
         if (repository.existsByEmployeeIdAndWorkDateAndStatus(actorId, workDate, AttendanceCorrection.STATUS_PENDING)) {
             throw new IllegalStateException("A pending correction already exists for " + workDate);
         }
@@ -165,6 +173,27 @@ public class AttendanceCorrectionService {
         m.put("originalCheckIn", c.getOriginalCheckIn() == null ? null : c.getOriginalCheckIn().toString());
         m.put("originalCheckOut", c.getOriginalCheckOut() == null ? null : c.getOriginalCheckOut().toString());
         m.put("originalStatusCode", c.getOriginalStatusCode());
+        // Location-local wall times for UI (DR-01) — originals + requested.
+        employeeRepository.findById(c.getEmployeeId()).ifPresent(emp -> {
+            try {
+                java.time.ZoneId z = (emp.getLocationTimeZone() != null && !emp.getLocationTimeZone().isBlank())
+                        ? java.time.ZoneId.of(emp.getLocationTimeZone().trim())
+                        : java.time.ZoneId.of("Asia/Dhaka");
+                m.put("timeZone", z.getId());
+                if (c.getOriginalCheckIn() != null) {
+                    m.put("originalCheckInLocal", java.time.LocalTime.ofInstant(c.getOriginalCheckIn(), z).toString());
+                }
+                if (c.getOriginalCheckOut() != null) {
+                    m.put("originalCheckOutLocal", java.time.LocalTime.ofInstant(c.getOriginalCheckOut(), z).toString());
+                }
+                if (c.getRequestedCheckIn() != null) {
+                    m.put("requestedCheckInLocal", java.time.LocalTime.ofInstant(c.getRequestedCheckIn(), z).toString());
+                }
+                if (c.getRequestedCheckOut() != null) {
+                    m.put("requestedCheckOutLocal", java.time.LocalTime.ofInstant(c.getRequestedCheckOut(), z).toString());
+                }
+            } catch (Exception ignored) { /* keep ISO only */ }
+        });
         m.put("reason", c.getReason());
         m.put("status", c.getStatus());
         m.put("reviewerId", c.getReviewerId());

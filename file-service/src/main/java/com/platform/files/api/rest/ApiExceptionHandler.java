@@ -30,7 +30,9 @@ public class ApiExceptionHandler {
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     public ResponseEntity<Map<String, String>> tooBig(MaxUploadSizeExceededException ex) {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
-                .body(Map.of("error", "File exceeds maximum allowed upload size of 10 MB"));
+                .body(Map.of(
+                        "error",
+                        "File exceeds maximum allowed upload size (documents 10 MB; photos 2 MB)"));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

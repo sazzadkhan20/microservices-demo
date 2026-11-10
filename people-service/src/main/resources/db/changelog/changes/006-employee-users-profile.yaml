@@ -1,0 +1,145 @@
+databaseChangeLog:
+  # FR-EMP profile columns + login users table (OIDC-ready google_sub).
+  # Note: never use PostgreSQL jsonb "?" in Liquibase SQL — it becomes a bind placeholder.
+  - changeSet:
+      id: people-006-employee-profile-columns
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: employee
+      changes:
+        - sql:
+            splitStatements: true
+            sql: |
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS photo_object_key VARCHAR(512);
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS date_of_birth DATE;
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS address VARCHAR(512);
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS emergency_name VARCHAR(128);
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS emergency_relation VARCHAR(64);
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS emergency_phone VARCHAR(64);
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS exit_date DATE;
+              ALTER TABLE employee ADD COLUMN IF NOT EXISTS exit_reason VARCHAR(512);
+
+  - changeSet:
+      id: people-006-employee-profile-backfill
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - columnExists:
+            tableName: employee
+            columnName: address
+      changes:
+        - sql:
+            splitStatements: true
+            sql: |
+              UPDATE employee SET
+                address = COALESCE(address, NULLIF(btrim(custom_fields->>'address'), '')),
+                emergency_name = COALESCE(emergency_name, NULLIF(btrim(custom_fields->>'emergencyName'), '')),
+                emergency_relation = COALESCE(
+                  emergency_relation,
+                  NULLIF(btrim(COALESCE(custom_fields->>'emergencyRelation', custom_fields->>'emergencyRelationship')), '')
+                ),
+                emergency_phone = COALESCE(emergency_phone, NULLIF(btrim(custom_fields->>'emergencyPhone'), '')),
+                exit_date = COALESCE(
+                  exit_date,
+                  CASE
+                    WHEN NULLIF(btrim(custom_fields->>'exitDate'), '') IS NOT NULL
+                      THEN (custom_fields->>'exitDate')::date
+                    ELSE NULL
+                  END
+                ),
+                exit_reason = COALESCE(exit_reason, NULLIF(btrim(custom_fields->>'exitReason'), ''));
+              CREATE UNIQUE INDEX IF NOT EXISTS uq_employee_email_ci ON employee (lower(email));
+
+  - changeSet:
+      id: people-006-users-login-table
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: employee
+        - not:
+            - tableExists:
+                tableName: users
+      changes:
+        - createTable:
+            tableName: users
+            columns:
+              - column:
+                  name: id
+                  type: BIGSERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: employee_id
+                  type: BIGINT
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: google_sub
+                  type: VARCHAR(128)
+                  constraints:
+                    unique: true
+              - column:
+                  name: email
+                  type: VARCHAR(256)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: last_login_at
+                  type: TIMESTAMPTZ
+              - column:
+                  name: last_login_ip
+                  type: VARCHAR(64)
+              - column:
+                  name: last_login_location
+                  type: VARCHAR(256)
+              - column:
+                  name: last_user_agent
+                  type: VARCHAR(512)
+              - column:
+                  name: is_active
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+                  constraints:
+                    nullable: false
+              - column:
+                  name: created_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+              - column:
+                  name: updated_at
+                  type: TIMESTAMPTZ
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: users
+            baseColumnNames: employee_id
+            referencedTableName: employee
+            referencedColumnNames: id
+            constraintName: fk_users_employee
+            onDelete: CASCADE
+        - createIndex:
+            tableName: users
+            indexName: idx_users_email_ci
+            columns:
+              - column:
+                  name: email
+        - sql:
+            sql: |
+              INSERT INTO users (employee_id, email, is_active, created_at, updated_at)
+              SELECT e.id, e.email, e.active, COALESCE(e.created_at, NOW()), COALESCE(e.updated_at, NOW())
+              FROM employee e
+              WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.employee_id = e.id);
+
+  - changeSet:
+      id: people-006-drop-contractor-alias
+      author: platform
+      changes:
+        - sql:
+            sql: |
+              UPDATE employee SET employment_type = 'CONTRACT'
+               WHERE upper(employment_type) = 'CONTRACTOR';

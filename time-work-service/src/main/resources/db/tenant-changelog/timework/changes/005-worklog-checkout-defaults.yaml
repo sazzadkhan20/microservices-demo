@@ -1,0 +1,23 @@
+databaseChangeLog:
+  # FR-ATT-04 / Q6 — ensure checkout BLOCK defaults survive packs that only set businessPack.
+  - changeSet:
+      id: timework-005-worklog-checkout-defaults
+      author: platform
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              UPDATE timework_settings
+              SET settings = COALESCE(settings, '{}'::jsonb)
+                || jsonb_build_object(
+                     'workLogRule', COALESCE(NULLIF(TRIM(settings->>'workLogRule'), ''), 'BLOCK'),
+                     'workLogMinPercent', COALESCE(
+                       NULLIF(TRIM(settings->>'workLogMinPercent'), '')::numeric,
+                       80
+                     ),
+                     'workLogPercentOf', COALESCE(NULLIF(TRIM(settings->>'workLogPercentOf'), ''), 'WORKED'),
+                     'workLogEditDaysBack', COALESCE(
+                       NULLIF(TRIM(settings->>'workLogEditDaysBack'), '')::int,
+                       7
+                     )
+                   );

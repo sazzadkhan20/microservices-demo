@@ -13,6 +13,8 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
@@ -45,12 +47,17 @@ public class OutboxRelay {
             RabbitTemplate rabbitTemplate,
             ObjectMapper objectMapper,
             MessagingProperties properties,
-            TransactionTemplate transactionTemplate) {
+            PlatformTransactionManager transactionManager) {
         this.repository = repository;
         this.rabbitTemplate = rabbitTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
-        this.transactionTemplate = transactionTemplate;
+        // REQUIRES_NEW is mandatory: drainBatch is often called from afterCommit, where
+        // PROPAGATION_REQUIRED would join the completed outer txn and blow up with
+        // "no transaction is in progress" on @Modifying queries.
+        TransactionTemplate tt = new TransactionTemplate(transactionManager);
+        tt.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        this.transactionTemplate = tt;
     }
 
     @Scheduled(fixedDelayString = "${platform.messaging.outbox-poll-ms:1000}")

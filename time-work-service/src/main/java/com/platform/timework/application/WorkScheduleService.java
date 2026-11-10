@@ -20,7 +20,6 @@ import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalTime;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -86,10 +85,11 @@ public class WorkScheduleService {
     }
 
     /**
-     * FR-EMP-12 + FR-SCH-03 — when an employee’s work pattern is not LOCATION_DEFAULT,
-     * upsert an EMPLOYEE-scoped schedule from scheduleRules.patternTemplates so 5-day / 6-day /
-     * hourly people coexist under one location/team without manual schedule rows.
-     * LOCATION_DEFAULT clears the auto employee override so location/team wins.
+     * FR-EMP-12 + FR-SCH-03 — pattern sync for onboard / explicit workPattern change.
+     * Resolve precedence is always EMPLOYEE → TEAM → LOCATION (never push location/team into
+     * an existing personal row). LOCATION_DEFAULT only clears a personal row when the pattern
+     * is explicitly that fallback. If an EMPLOYEE schedule already exists for any other pattern,
+     * leave it untouched so a later team/location schedule cannot override it.
      */
     @Transactional
     public void syncFromWorkPattern(EmployeeView emp) {
@@ -98,8 +98,10 @@ public class WorkScheduleService {
         }
         Rules rules = loadRules();
         String pattern = emp.getWorkPattern() == null ? "" : emp.getWorkPattern().trim().toUpperCase(Locale.ROOT);
+        Optional<WorkSchedule> existingEmp = repository.findByScopeTypeAndScopeId("EMPLOYEE", emp.getId());
+
         if (pattern.isBlank() || "LOCATION_DEFAULT".equals(pattern)) {
-            repository.findByScopeTypeAndScopeId("EMPLOYEE", emp.getId()).ifPresent(existing -> {
+            existingEmp.ifPresent(existing -> {
                 Map<String, Object> before = snapshot(existing);
                 repository.delete(existing);
                 auditService.record(AuthContext.getEmployeeId(), "DELETE", "WorkSchedule",
@@ -107,6 +109,11 @@ public class WorkScheduleService {
                                 "reason", "workPattern=LOCATION_DEFAULT",
                                 "employeeId", emp.getId()));
             });
+            return;
+        }
+
+        // Personal schedule already set — resolve-only: do not rewrite from team/location/pattern sync.
+        if (existingEmp.isPresent()) {
             return;
         }
 
@@ -118,10 +125,9 @@ public class WorkScheduleService {
         }
 
         String mode = normalizeMode(str(tpl.get("mode"), "FIXED"));
-        WorkSchedule target = repository.findByScopeTypeAndScopeId("EMPLOYEE", emp.getId())
-                .orElseGet(WorkSchedule::new);
-        boolean creating = target.getId() == null;
-        Map<String, Object> before = creating ? null : snapshot(target);
+        WorkSchedule target = new WorkSchedule();
+        boolean creating = true;
+        Map<String, Object> before = null;
 
         target.setScopeType("EMPLOYEE");
         target.setScopeId(emp.getId());
@@ -184,6 +190,7 @@ public class WorkScheduleService {
     @Transactional
     public WorkSchedule create(WorkSchedule incoming) {
         Rules rules = loadRules();
+        applyDefaults(incoming, rules);
         normalizeAndValidate(incoming, rules, true);
         if (rules.requireUniqueScope()) {
             repository.findByScopeTypeAndScopeId(incoming.getScopeType(), incoming.getScopeId())
@@ -194,7 +201,6 @@ public class WorkScheduleService {
                                         + " (id=" + existing.getId() + "). Edit that row instead.");
                     });
         }
-        applyDefaults(incoming, rules);
         WorkSchedule saved = repository.save(incoming);
         auditService.record(AuthContext.getEmployeeId(), "CREATE", "WorkSchedule",
                 String.valueOf(saved.getId()), null, snapshot(saved));
@@ -219,6 +225,7 @@ public class WorkScheduleService {
         if (patch.getCheckoutCutoff() != null) existing.setCheckoutCutoff(blankToNull(patch.getCheckoutCutoff()));
         if (patch.getWeeklyHours() != null) existing.setWeeklyHours(patch.getWeeklyHours());
 
+        applyDefaults(existing, rules);
         normalizeAndValidate(existing, rules, false);
         if (rules.requireUniqueScope()) {
             repository.findByScopeTypeAndScopeId(existing.getScopeType(), existing.getScopeId())
@@ -298,9 +305,10 @@ public class WorkScheduleService {
     }
 
     /**
-     * FR-SCH-05 / FR-SCH-06 — expected hours for one calendar day for an employee.
+     * FR-SCH-05 / FR-SCH-06 / FR-HOL-02 — expected hours for one calendar day.
+     * Non-optional location holidays → 0 for every schedule mode (FIXED and HOURLY).
      * FIXED: end−start on working days; 0 off/holiday/full leave; half on half-day leave.
-     * HOURLY: weeklyHours / 7 (pro-rata per calendar day).
+     * HOURLY: weeklyHours / 7 on non-holiday days (pro-rata per calendar day).
      */
     @Transactional(readOnly = true)
     public BigDecimal expectedHoursForDay(EmployeeView emp, LocalDate day) {
@@ -319,6 +327,11 @@ public class WorkScheduleService {
             return BigDecimal.ZERO;
         }
 
+        // FR-HOL-02 — non-optional holidays never contribute expected hours (payroll-safe).
+        if (isHoliday(emp.getLocationId(), day)) {
+            return BigDecimal.ZERO;
+        }
+
         if ("HOURLY".equals(mode)) {
             BigDecimal weekly = schedule.getWeeklyHours() == null ? BigDecimal.ZERO : schedule.getWeeklyHours();
             BigDecimal daily = weekly.divide(BigDecimal.valueOf(7), 4, RoundingMode.HALF_UP);
@@ -328,9 +341,6 @@ public class WorkScheduleService {
         }
 
         // FIXED (and legacy SHIFT/FLEXIBLE)
-        if (isHoliday(emp.getLocationId(), day)) {
-            return BigDecimal.ZERO;
-        }
         if (!isWorkingDay(schedule, day)) {
             return BigDecimal.ZERO;
         }
@@ -340,22 +350,17 @@ public class WorkScheduleService {
                 : full;
     }
 
-    /** Period expected hours (sum of daily for FIXED; weekly×days/7 for HOURLY). */
+    /**
+     * Period expected hours — always the sum of daily expected hours so holidays,
+     * weekly offs, and leave impacts stay consistent for payroll.
+     */
     @Transactional(readOnly = true)
     public BigDecimal expectedHoursForPeriod(EmployeeView emp, LocalDate from, LocalDate to) {
         if (emp == null || from == null || to == null || to.isBefore(from)) {
             return BigDecimal.ZERO;
         }
-        Optional<WorkSchedule> opt = resolveForEmployee(emp);
-        if (opt.isEmpty()) {
+        if (resolveForEmployee(emp).isEmpty()) {
             return BigDecimal.ZERO;
-        }
-        WorkSchedule schedule = opt.get();
-        if ("HOURLY".equals(normalizeMode(schedule.getMode()))) {
-            BigDecimal weekly = schedule.getWeeklyHours() == null ? BigDecimal.ZERO : schedule.getWeeklyHours();
-            long days = ChronoUnit.DAYS.between(from, to) + 1;
-            return weekly.multiply(BigDecimal.valueOf(days))
-                    .divide(BigDecimal.valueOf(7), 4, RoundingMode.HALF_UP);
         }
         BigDecimal sum = BigDecimal.ZERO;
         for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
@@ -499,6 +504,12 @@ public class WorkScheduleService {
             if (s.getWeeklyHours() != null && s.getWeeklyHours().signum() < 0) {
                 throw new IllegalArgumentException("weeklyHours must be ≥ 0");
             }
+            if (s.getGraceMinutes() != null && (s.getGraceMinutes() < 0 || s.getGraceMinutes() > 240)) {
+                throw new IllegalArgumentException("graceMinutes must be between 0 and 240");
+            }
+            if (s.getHalfDayHours() != null && s.getHalfDayHours().signum() < 0) {
+                throw new IllegalArgumentException("halfDayHours must be ≥ 0");
+            }
         } else {
             if (days.isEmpty()) {
                 throw new IllegalArgumentException("workingDays is required for FIXED schedules (any count of days)");
@@ -521,26 +532,92 @@ public class WorkScheduleService {
             if (!end.isAfter(start)) {
                 throw new IllegalArgumentException("endTime must be after startTime");
             }
-            s.setStartTime(String.format("%02d:%02d", start.getHour(), start.getMinute()));
-            s.setEndTime(String.format("%02d:%02d", end.getHour(), end.getMinute()));
-        }
+            s.setStartTime(formatHm(start));
+            s.setEndTime(formatHm(end));
 
-        if (s.getGraceMinutes() != null && (s.getGraceMinutes() < 0 || s.getGraceMinutes() > 240)) {
-            throw new IllegalArgumentException("graceMinutes must be between 0 and 240");
-        }
-        if (s.getHalfDayHours() != null && s.getHalfDayHours().signum() < 0) {
-            throw new IllegalArgumentException("halfDayHours must be ≥ 0");
-        }
-        if (s.getCheckoutCutoff() != null && !s.getCheckoutCutoff().isBlank()) {
+            long workMinutes = Duration.between(start, end).toMinutes();
+            BigDecimal workHours = BigDecimal.valueOf(workMinutes)
+                    .divide(BigDecimal.valueOf(60), 4, RoundingMode.HALF_UP);
+
+            // Auto cut-off = end + 6h (clamped so it never reaches next day's start).
+            if (s.getCheckoutCutoff() == null || s.getCheckoutCutoff().isBlank()) {
+                s.setCheckoutCutoff(formatHm(defaultCutoffAfterEnd(start, end)));
+            }
+            LocalTime cutoff;
             try {
-                LocalTime.parse(s.getCheckoutCutoff().trim());
+                cutoff = LocalTime.parse(s.getCheckoutCutoff().trim());
             } catch (Exception e) {
                 throw new IllegalArgumentException("checkoutCutoff must be HH:mm");
             }
+            s.setCheckoutCutoff(formatHm(cutoff));
+            validateCutoffWindow(start, end, cutoff);
+
+            if (s.getHalfDayHours() != null) {
+                if (s.getHalfDayHours().signum() < 0) {
+                    throw new IllegalArgumentException("halfDayHours must be ≥ 0");
+                }
+                if (s.getHalfDayHours().compareTo(workHours) >= 0) {
+                    throw new IllegalArgumentException(
+                            "halfDayHours must be less than the office day length ("
+                                    + workHours.stripTrailingZeros().toPlainString() + " hours)");
+                }
+            }
+            if (s.getGraceMinutes() != null) {
+                if (s.getGraceMinutes() < 0 || s.getGraceMinutes() > 240) {
+                    throw new IllegalArgumentException("graceMinutes must be between 0 and 240");
+                }
+                if (s.getGraceMinutes() >= workMinutes) {
+                    throw new IllegalArgumentException(
+                            "graceMinutes must be less than the office day length (" + workMinutes + " minutes)");
+                }
+            }
         }
         if (creating && s.getScopeType() != null) {
-            // touch unused to keep creating flag meaningful for future hooks
+            // creating kept for callers / future hooks
         }
+    }
+
+    /**
+     * Cut-off must be at/after office end and must not reach the next day's office start
+     * (overnight window after end, may cross midnight).
+     */
+    static void validateCutoffWindow(LocalTime start, LocalTime end, LocalTime cutoff) {
+        int fromEnd = minutesFrom(end, cutoff);
+        int untilNextStart = minutesFrom(end, start);
+        if (untilNextStart <= 0) {
+            untilNextStart = 24 * 60;
+        }
+        if (fromEnd < 0 || fromEnd >= untilNextStart) {
+            throw new IllegalArgumentException(
+                    "checkoutCutoff must be at or after office end and before the next office start"
+                            + " (overnight window after end; may cross midnight)");
+        }
+    }
+
+    /** Minutes from {@code from} forward to {@code to}, wrapping at midnight (0..1439). */
+    static int minutesFrom(LocalTime from, LocalTime to) {
+        int a = from.getHour() * 60 + from.getMinute();
+        int b = to.getHour() * 60 + to.getMinute();
+        return (b - a + 24 * 60) % (24 * 60);
+    }
+
+    /** Default missing check-out cut-off: office end + 6 hours, clamped before next start. */
+    static LocalTime defaultCutoffAfterEnd(LocalTime start, LocalTime end) {
+        LocalTime plus6 = end.plusHours(6);
+        int fromEnd = minutesFrom(end, plus6);
+        int untilNextStart = minutesFrom(end, start);
+        if (untilNextStart <= 0) {
+            untilNextStart = 24 * 60;
+        }
+        if (fromEnd >= untilNextStart) {
+            // Clamp to one minute before next office start.
+            return start.minusMinutes(1);
+        }
+        return plus6;
+    }
+
+    private static String formatHm(LocalTime t) {
+        return String.format("%02d:%02d", t.getHour(), t.getMinute());
     }
 
     private void applyDefaults(WorkSchedule s, Rules rules) {
@@ -551,6 +628,16 @@ public class WorkScheduleService {
             s.setHalfDayHours(rules.defaultHalfDayHours());
         }
         if ((s.getCheckoutCutoff() == null || s.getCheckoutCutoff().isBlank())
+                && "FIXED".equals(normalizeMode(s.getMode()))
+                && s.getStartTime() != null && s.getEndTime() != null) {
+            try {
+                s.setCheckoutCutoff(formatHm(defaultCutoffAfterEnd(
+                        LocalTime.parse(s.getStartTime().trim()),
+                        LocalTime.parse(s.getEndTime().trim()))));
+            } catch (Exception e) {
+                s.setCheckoutCutoff(rules.defaultCheckoutCutoff());
+            }
+        } else if ((s.getCheckoutCutoff() == null || s.getCheckoutCutoff().isBlank())
                 && "FIXED".equals(normalizeMode(s.getMode()))) {
             s.setCheckoutCutoff(rules.defaultCheckoutCutoff());
         }

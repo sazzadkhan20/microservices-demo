@@ -1,0 +1,8 @@
+databaseChangeLog:
+  - changeSet:
+      id: 022-drop-leave-approval-delegate
+      author: platform
+      comment: Remove unused leave approval covering-delegate feature
+      changes:
+        - sql:
+            sql: DROP TABLE IF EXISTS leave_approval_delegate CASCADE;

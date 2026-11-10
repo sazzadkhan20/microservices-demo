@@ -27,6 +27,11 @@ const MAP: Record<string, Tone> = {
   // payroll
   draft: "warn",
   finalized: "good",
+  finalizing: "info",
+  reopening: "info",
+  action_required: "bad",
+  succeeded: "good",
+  failed: "bad",
   final: "good",
   // tasks
   open: "info",

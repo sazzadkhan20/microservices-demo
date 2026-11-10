@@ -50,21 +50,4 @@ public class TimeWorkClient {
             log.warn("Time&Work schedule sync failed for employee {}: {}", employeeId, e.getMessage());
         }
     }
-
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> attendanceFacts(Long employeeId, String period) {
-        try {
-            Map<?, ?> body = client.get()
-                    .uri(uri -> uri.path("/api/internal/attendance-facts/{id}")
-                            .queryParam("period", period)
-                            .build(employeeId))
-                    .header(InternalCalls.HEADER, internalKey)
-                    .retrieve()
-                    .body(Map.class);
-            return body == null ? Map.of() : (Map<String, Object>) body;
-        } catch (Exception e) {
-            log.warn("Attendance facts fetch failed: {}", e.getMessage());
-            throw new IllegalStateException("Time&Work service unavailable for payroll facts", e);
-        }
-    }
 }

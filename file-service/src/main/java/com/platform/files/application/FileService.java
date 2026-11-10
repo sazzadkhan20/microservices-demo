@@ -67,15 +67,23 @@ public class FileService {
     public static final String SCAN_REJECTED = "REJECTED";
     public static final String SCAN_FAILED = "FAILED";
 
-    private static final long MAX_SIZE_BYTES = 10L * 1024 * 1024;
+    /** Guide §8 / FR-EMP-08 — HR documents. */
+    public static final long MAX_DOCUMENT_BYTES = 10L * 1024 * 1024;
+    /** Employee profile photos — tighter than general documents. */
+    public static final long MAX_PHOTO_BYTES = 2L * 1024 * 1024;
     private static final String PREFIX_QUARANTINE = "quarantine/";
     private static final String PREFIX_RELEASED = "released/";
 
-    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
+    private static final Set<String> DOCUMENT_CONTENT_TYPES = Set.of(
             "application/pdf",
             "image/jpeg",
             "image/png",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+
+    private static final Set<String> PHOTO_CONTENT_TYPES = Set.of(
+            "image/jpeg",
+            "image/png"
     );
 
     private final FileObjectRepository repository;
@@ -125,16 +133,12 @@ public class FileService {
         if (file.isEmpty()) {
             throw new IllegalArgumentException("Uploaded file must not be empty");
         }
-        if (file.getSize() > MAX_SIZE_BYTES) {
-            throw new IllegalArgumentException(
-                    "File exceeds maximum allowed size of 10 MB (got " + file.getSize() + " bytes)");
-        }
+        String resolvedClassification = normalizeClassification(classification);
         String contentType = normalizeContentType(file.getContentType(), file.getOriginalFilename());
-        if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType)) {
-            throw new IllegalArgumentException(
-                    "Unsupported content type '" + file.getContentType() + "'. Allowed: PDF, JPG, PNG, DOCX");
-        }
+        assertUploadConstraints(resolvedClassification, contentType, file.getSize(), file.getContentType());
         byte[] bytes = file.getBytes();
+        // Defense in depth: re-check against actual byte length (client Content-Length can lie).
+        assertUploadConstraints(resolvedClassification, contentType, bytes.length, file.getContentType());
         assertMagicMatches(contentType, bytes);
         assertDocumentStructure(contentType, bytes);
 
@@ -146,7 +150,7 @@ public class FileService {
                 // non-numeric uploader identity is not a valid employee actor
             }
         }
-        assertCanUpload(actorId, subjectEmployeeId, classification);
+        assertCanUpload(actorId, subjectEmployeeId, resolvedClassification);
 
         String objectUuid = UUID.randomUUID().toString();
         String objectKey = PREFIX_QUARANTINE + objectUuid;
@@ -164,7 +168,7 @@ public class FileService {
             fo.setStorageKey(bucket + "/" + objectKey);
             fo.setUploadedBy(uploadedBy);
             fo.setScanStatus(SCAN_QUARANTINED);
-            fo.setClassification(normalizeClassification(classification));
+            fo.setClassification(resolvedClassification);
             Long emp = subjectEmployeeId;
             if (emp == null && uploadedBy != null && !uploadedBy.isBlank()) {
                 try {
@@ -242,6 +246,11 @@ public class FileService {
         out.put("sizeBytes", fo.getSizeBytes());
         out.put("objectPresent", objectPresent);
         out.put("downloadable", isDownloadable(fo.getScanStatus()) && objectPresent);
+        out.put("scanDetail", fo.getScanDetail());
+        out.put("scannedAt", fo.getScannedAt() == null ? null : fo.getScannedAt().toString());
+        out.put("releasedAt", fo.getReleasedAt() == null ? null : fo.getReleasedAt().toString());
+        // S2S only — People stores photo_object_key / document links from this key.
+        out.put("storageKey", fo.getStorageKey());
         return out;
     }
 
@@ -495,13 +504,27 @@ public class FileService {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Employee identity required");
         }
         String c = normalizeClassification(classification);
-        if (isSensitiveClassification(c) && !hasPermission(actorId, "documents", "create")) {
+        boolean docsCreate = hasPermission(actorId, "documents", "create");
+        boolean empEdit = hasPermission(actorId, "employees", "edit")
+                || hasPermission(actorId, "employees", "create");
+        boolean selfPhoto = isPhotoClassification(c)
+                && (subjectEmployeeId == null || subjectEmployeeId.equals(actorId))
+                && hasPermission(actorId, "profile_personal", "edit");
+        if (isSensitiveClassification(c) && !docsCreate) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Forbidden: documents:create required to upload " + c + " files");
         }
+        if (isPhotoClassification(c)) {
+            if (!docsCreate && !empEdit && !selfPhoto) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                        "Forbidden: cannot upload employee photo");
+            }
+        } else if (!docsCreate && !empEdit) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "Forbidden: documents:create or employees:edit required to upload files");
+        }
         if (subjectEmployeeId != null && !subjectEmployeeId.equals(actorId)
-                && !hasPermission(actorId, "employees", "edit")
-                && !hasPermission(actorId, "documents", "create")) {
+                && !empEdit && !docsCreate) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Forbidden: cannot upload documents for another employee");
         }
@@ -525,6 +548,13 @@ public class FileService {
             return;
         }
         String classification = fo.getClassification() == null ? "GENERAL" : fo.getClassification();
+        // Profile photos are identity assets — anyone who can view employees may see them in
+        // header / directory / details (unlike confidential HR documents).
+        if (isPhotoClassification(classification)
+                && (hasPermission(requesterEmployeeId, "employees", "view")
+                || hasPermission(requesterEmployeeId, "employees", "edit"))) {
+            return;
+        }
         // DOC-01: employees:view alone must NOT unlock all documents.
         if ("PUBLIC".equalsIgnoreCase(classification) && hasPermission(requesterEmployeeId, "documents", "view")) {
             return;
@@ -535,6 +565,21 @@ public class FileService {
         throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                 forDownload ? "Forbidden: file belongs to another user"
                         : "Forbidden: cannot view another user's file metadata");
+    }
+
+    /**
+     * People attach — bind a PHOTO (or document) to the employee record so the subject
+     * can always download even when HR uploaded before the employee id existed.
+     */
+    @Transactional
+    public Map<String, Object> bindEmployee(Long fileId, Long employeeId) {
+        if (employeeId == null || employeeId <= 0) {
+            throw new IllegalArgumentException("employeeId is required");
+        }
+        FileObject fo = findFile(fileId);
+        fo.setEmployeeId(employeeId);
+        repository.save(fo);
+        return internalDescribe(fileId);
     }
 
     /** HR / confidential document access requires documents:view (not employees:view). */
@@ -700,13 +745,41 @@ public class FileService {
         return ct.isBlank() ? null : ct;
     }
 
+    /**
+     * Guide §8 upload gates — size + MIME by classification.
+     * Documents: PDF/JPG/PNG/DOCX ≤ 10 MB. Photos: JPG/PNG ≤ 2 MB.
+     */
+    static void assertUploadConstraints(
+            String classification, String contentType, long sizeBytes, String rawContentType) {
+        boolean photo = isPhotoClassification(classification);
+        long max = photo ? MAX_PHOTO_BYTES : MAX_DOCUMENT_BYTES;
+        if (sizeBytes > max) {
+            throw new IllegalArgumentException(photo
+                    ? "Photo exceeds maximum allowed size of 2 MB (got " + sizeBytes + " bytes)"
+                    : "File exceeds maximum allowed size of 10 MB (got " + sizeBytes + " bytes)");
+        }
+        Set<String> allowed = photo ? PHOTO_CONTENT_TYPES : DOCUMENT_CONTENT_TYPES;
+        if (contentType == null || !allowed.contains(contentType)) {
+            String shown = rawContentType == null || rawContentType.isBlank() ? contentType : rawContentType;
+            throw new IllegalArgumentException(photo
+                    ? "Unsupported photo type '" + shown + "'. Allowed: JPG, PNG (max 2 MB)"
+                    : "Unsupported content type '" + shown + "'. Allowed: PDF, JPG, PNG, DOCX (max 10 MB)");
+        }
+    }
+
+    static boolean isPhotoClassification(String classification) {
+        String c = classification == null ? "" : classification.trim().toUpperCase(Locale.ROOT);
+        return "PHOTO".equals(c) || "AVATAR".equals(c) || "PROFILE_PHOTO".equals(c);
+    }
+
     private static String normalizeClassification(String raw) {
         if (raw == null || raw.isBlank()) {
             return "GENERAL";
         }
         String c = raw.trim().toUpperCase(Locale.ROOT);
         return switch (c) {
-            case "GENERAL", "PUBLIC", "INTERNAL", "CONFIDENTIAL", "HR_ONLY", "SENSITIVE" -> c;
+            case "GENERAL", "PUBLIC", "INTERNAL", "CONFIDENTIAL", "HR_ONLY", "SENSITIVE", "PAYROLL" -> c;
+            case "PHOTO", "AVATAR", "PROFILE_PHOTO" -> "PHOTO";
             default -> "GENERAL";
         };
     }

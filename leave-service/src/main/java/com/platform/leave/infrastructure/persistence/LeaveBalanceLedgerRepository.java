@@ -10,4 +10,6 @@ public interface LeaveBalanceLedgerRepository extends JpaRepository<LeaveBalance
     List<LeaveBalanceLedger> findByEmployeeIdOrderByCreatedAtDesc(Long employeeId);
 
     Optional<LeaveBalanceLedger> findByOperationKey(String operationKey);
+
+    List<LeaveBalanceLedger> findByOperationKeyStartingWithOrderByIdAsc(String prefix);
 }

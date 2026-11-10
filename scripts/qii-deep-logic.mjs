@@ -203,66 +203,23 @@ async function main() {
   });
 
   // ---- Payroll corners ----
+  // Payroll moved to month runs (docs/PAYROLL_SPEC.md). Full money/finalise/reopen coverage lives in
+  // scripts/test-payroll-e2e.mjs — this section only checks RBAC and read paths (no data written).
   await section('PAYROLL', async () => {
-    const period = `2027-0${(stamp % 8) + 1}`;
-    const calc = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
-      headers: auth(tokA),
-      body: {
-        employeeId: idE,
-        periodLabel: period,
-        useHrmsAttendance: false,
-        regularHours: 160,
-        overtimeHours: 8,
-        weekendHours: 4,
-      },
-    });
-    const gross = Number(calc.json?.grossAmount || 0);
-    const payslipId = calc.json?.payslipId || calc.json?.id;
-    check('calc-with-ot-weekend', (calc.status === 200 || calc.status === 201) && gross > 0,
-      `status=${calc.status} gross=${gross} id=${payslipId}`);
-
-    // Emp cannot calc
-    const forbid = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
-      headers: auth(tokE),
-      body: { employeeId: idE, periodLabel: period, useHrmsAttendance: false, regularHours: 10 },
-    });
-    check('calc-emp-403', forbid.status === 403, `status=${forbid.status}`);
-
-    if (payslipId) {
-      const fin = await req('POST', `${GW}/payroll/api/payroll/payslips/${payslipId}/finalize`, {
-        headers: auth(tokA),
-      });
-      check('finalize', fin.status === 200 || fin.status === 201 || fin.status === 409,
-        `status=${fin.status}`);
-
-      // Recalc while finalized must fail closed
-      const recalc = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
-        headers: auth(tokA),
-        body: {
-          employeeId: idE,
-          periodLabel: period,
-          useHrmsAttendance: false,
-          regularHours: 100,
-        },
-      });
-      const locked = recalc.status === 409 || recalc.status === 400
-        || (recalc.status === 200 && Number(recalc.json?.grossAmount) === gross);
-      check('finalize-locks-recalc',
-        fin.status === 409 ? true : (fin.status < 300 ? locked : true),
-        `recalcStatus=${recalc.status} gross=${recalc.json?.grossAmount}`);
-
-      if (fin.status === 200 || fin.status === 201) {
-        const reopen = await req('POST', `${GW}/payroll/api/payroll/payslips/${payslipId}/reopen`, {
-          headers: auth(tokA),
-        });
-        check('reopen', reopen.status === 200 || reopen.status === 201, `status=${reopen.status}`);
-      } else {
-        check('reopen', true, 'skipped');
-      }
-    }
+    const settings = await req('GET', `${GW}/payroll/api/payroll/settings`, { headers: auth(tokA) });
+    check('payroll-settings', settings.status === 200 && settings.json?.absenceRule != null, `status=${settings.status}`);
+    const runs = await req('GET', `${GW}/payroll/api/payroll/runs`, { headers: auth(tokA) });
+    check('payroll-runs-list', runs.status === 200, `status=${runs.status}`);
+    const empRuns = await req('GET', `${GW}/payroll/api/payroll/runs`, { headers: auth(tokE) });
+    check('payroll-runs-emp-403', empRuns.status === 403, `status=${empRuns.status}`);
+    const empCalc = await req('POST', `${GW}/payroll/api/payroll/runs/2026-09/calculate`, { headers: auth(tokE) });
+    check('payroll-calc-emp-403', empCalc.status === 403, `status=${empCalc.status}`);
+    const own = await req('GET', `${GW}/payroll/api/payroll/me/payslips`, { headers: auth(tokE) });
+    check('payroll-own-payslips', own.status === 200 && Array.isArray(own.json), `status=${own.status}`);
+    const other = await req('GET', `${GW}/payroll/api/payroll/salary/employees/1`, { headers: auth(tokE) });
+    check('salary-other-403', other.status === 403, `status=${other.status}`);
   });
 
-  // ---- Files / reports / notif ----
   await section('SATELLITES', async () => {
     const fd = new FormData();
     fd.append('file', new Blob(['%PDF-1.4 deep'], { type: 'application/pdf' }), `deep-${stamp}.pdf`);
@@ -353,7 +310,7 @@ async function main() {
     let ok = 0;
     let last = 0;
     for (let i = 0; i < 8; i++) {
-      const r = await req('GET', `${GW}/payroll/api/payroll/config`, { headers: auth(tokA) });
+      const r = await req('GET', `${GW}/payroll/api/payroll/settings`, { headers: auth(tokA) });
       last = r.status;
       if (r.status === 200) ok++;
     }

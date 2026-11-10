@@ -16,6 +16,8 @@ import java.util.Map;
  * Empty {@code roleCodes} on create applies {@code defaultCreateRoleCodes} (e.g. EMPLOYEE).
  * {@code managerEffectiveFrom} — when managerId changes, reporting-line history starts on this date
  * (defaults to today). Future dates keep the current manager until then.
+ * {@code photoFileId} resolves to {@code photoObjectKey} via file-service (MinIO key).
+ * {@code emergencyRelationship} is accepted as an alias for {@code emergencyRelation}.
  */
 public record EmployeeRequest(
         String employeeCode,
@@ -41,9 +43,14 @@ public record EmployeeRequest(
         String phone,
         String personalEmail,
         String address,
+        LocalDate dateOfBirth,
         String emergencyName,
+        String emergencyRelation,
+        /** Alias accepted from older clients / FE forms. */
         String emergencyRelationship,
         String emergencyPhone,
+        String photoObjectKey,
+        Long photoFileId,
         /** FR-EMP-10 offboarding */
         LocalDate exitDate,
         String exitReason,
@@ -55,4 +62,13 @@ public record EmployeeRequest(
         List<String> roleCodes,
         Map<String, Object> customFields
 ) {
+    public String resolvedEmergencyRelation() {
+        if (emergencyRelation != null && !emergencyRelation.isBlank()) {
+            return emergencyRelation.trim();
+        }
+        if (emergencyRelationship != null && !emergencyRelationship.isBlank()) {
+            return emergencyRelationship.trim();
+        }
+        return null;
+    }
 }

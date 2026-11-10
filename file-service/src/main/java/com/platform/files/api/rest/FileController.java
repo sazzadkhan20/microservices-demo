@@ -39,8 +39,12 @@ public class FileController {
      * Multipart upload — quarantines bytes, validates signature/structure, enqueues async scan.
      * Download stays locked until scan RELEASED (guide §8 / DOC01).
      */
+    /**
+     * AuthZ is enforced in {@link FileService} (documents:create / employees:edit / photo self-edit).
+     * Annotation kept loose so PHOTO uploads work for HR create/edit without a separate documents grant.
+     */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @RequiresPermission(feature = "documents", action = "create")
+    @RequiresPermission(feature = "employees", action = "view")
     public ResponseEntity<FileUploadResponse> upload(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "classification", required = false) String classification,
@@ -64,8 +68,12 @@ public class FileController {
         return ResponseEntity.ok(service.list(empId, page, size, all));
     }
 
+    /**
+     * Metadata — employees:view so profile photos work for directory/header viewers.
+     * Fine-grained ACL (owner / subject / PHOTO+employees:view / documents:view) is in FileService.
+     */
     @GetMapping("/{id}")
-    @RequiresPermission(feature = "documents", action = "view")
+    @RequiresPermission(feature = "employees", action = "view")
     public ResponseEntity<FileMetadataResponse> metadata(@PathVariable Long id) {
         Long empId = AuthContext.getEmployeeId();
         return ResponseEntity.ok(service.getMetadata(id, empId));
@@ -76,7 +84,7 @@ public class FileController {
      * Issuance is audited separately from byte access.
      */
     @PostMapping("/{id}/download-url")
-    @RequiresPermission(feature = "documents", action = "view")
+    @RequiresPermission(feature = "employees", action = "view")
     public ResponseEntity<DownloadUrlResponse> downloadUrl(@PathVariable Long id) {
         Long empId = AuthContext.getEmployeeId();
         return ResponseEntity.ok(service.issueDownloadUrl(id, empId));
@@ -95,11 +103,12 @@ public class FileController {
     }
 
     /**
-     * Session download fallback — still blocked while quarantined (DOC01).
-     * Prefer {@code POST /{id}/download-url} then {@code GET /{id}/content}.
+     * Session download — used by header / directory / employee photo avatars.
+     * Coarse gate is employees:view; FileService.assertCanAccess enforces PHOTO vs document ACL.
+     * Still blocked while quarantined (DOC01).
      */
     @GetMapping("/{id}/download")
-    @RequiresPermission(feature = "documents", action = "view")
+    @RequiresPermission(feature = "employees", action = "view")
     public ResponseEntity<InputStreamResource> download(@PathVariable Long id) throws IOException {
         Long empId = AuthContext.getEmployeeId();
         FileMetadataResponse meta = service.getMetadata(id, empId);

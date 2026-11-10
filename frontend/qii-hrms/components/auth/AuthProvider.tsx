@@ -1,8 +1,9 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api/client";
+import { setAppTimeZone } from "@/lib/format";
 import { meSchema, type Me } from "@/lib/schemas/me";
 import {
   hasPermission,
@@ -16,6 +17,8 @@ import { canAccessRoute, visibleNav, type NavSection } from "@/lib/auth/routes";
 
 type AuthContextValue = {
   me: Me;
+  /** IANA zone for the employee's org location (attendance clock + UI dates/times). */
+  locationTimeZone: string | null;
   can: (feature: Feature | string, action: Action | string) => boolean;
   canAny: (rule: AccessRule) => boolean;
   canAccessRoute: (pathname: string) => boolean;
@@ -39,6 +42,12 @@ export function AuthProvider({ initialMe, children }: { initialMe: Me; children:
     refetchOnWindowFocus: true,
   });
   const me = data ?? initialMe;
+  const locationTimeZone = me.locationTimeZone?.trim() || null;
+
+  useEffect(() => {
+    setAppTimeZone(locationTimeZone);
+    return () => setAppTimeZone(null);
+  }, [locationTimeZone]);
 
   const perms = useMemo(() => toPermissionSet(me.permissions), [me.permissions]);
 
@@ -59,6 +68,7 @@ export function AuthProvider({ initialMe, children }: { initialMe: Me; children:
   const value = useMemo<AuthContextValue>(
     () => ({
       me,
+      locationTimeZone,
       can: (feature, action) => hasPermission(perms, feature, action),
       canAny: (rule) => satisfies(perms, rule),
       canAccessRoute: (pathname) => canAccessRoute(perms, pathname, me.scopes),
@@ -66,7 +76,7 @@ export function AuthProvider({ initialMe, children }: { initialMe: Me; children:
       refresh,
       signOut,
     }),
-    [me, perms, refresh, signOut],
+    [me, locationTimeZone, perms, refresh, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

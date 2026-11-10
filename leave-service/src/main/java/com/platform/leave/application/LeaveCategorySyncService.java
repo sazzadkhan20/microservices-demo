@@ -15,7 +15,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.Locale;
 
 /**
@@ -30,21 +29,26 @@ public class LeaveCategorySyncService {
     private final LeaveBalanceRepository leaveBalanceRepository;
     private final LeaveBalanceLedgerRepository leaveBalanceLedgerRepository;
     private final PeopleEmployeeGateway employeeRepository;
+    private final LeaveAppliesToService leaveAppliesToService;
+    private final LeaveCategoryService leaveCategoryService;
 
     public LeaveCategorySyncService(
             LeaveTypeRepository leaveTypeRepository,
             LeaveCategoryRepository leaveCategoryRepository,
             LeaveBalanceRepository leaveBalanceRepository,
             LeaveBalanceLedgerRepository leaveBalanceLedgerRepository,
-            PeopleEmployeeGateway employeeRepository) {
+            PeopleEmployeeGateway employeeRepository,
+            LeaveAppliesToService leaveAppliesToService,
+            LeaveCategoryService leaveCategoryService) {
         this.leaveTypeRepository = leaveTypeRepository;
         this.leaveCategoryRepository = leaveCategoryRepository;
         this.leaveBalanceRepository = leaveBalanceRepository;
         this.leaveBalanceLedgerRepository = leaveBalanceLedgerRepository;
         this.employeeRepository = employeeRepository;
+        this.leaveAppliesToService = leaveAppliesToService;
+        this.leaveCategoryService = leaveCategoryService;
     }
 
-    /** Ensure every active category has a matching leave_type row (repairs orphans). */
     @Transactional
     public void syncAllActiveCategories() {
         for (LeaveCategory c : leaveCategoryRepository.findAll()) {
@@ -55,10 +59,6 @@ public class LeaveCategorySyncService {
         }
     }
 
-    /**
-     * Upsert leave_type from category. When {@code seedBalances} and quota &gt; 0,
-     * creates current-year balances for active employees that lack a row.
-     */
     @Transactional
     public LeaveType upsertLeaveType(LeaveCategory category, boolean seedBalances) {
         String code = category.getCode() == null ? "" : category.getCode().trim().toUpperCase(Locale.ROOT);
@@ -68,10 +68,14 @@ public class LeaveCategorySyncService {
         LeaveType type = leaveTypeRepository.findByCodeIgnoreCase(code).orElseGet(LeaveType::new);
         boolean isNew = type.getId() == null;
         type.setCode(code);
-        type.setName(category.getName() == null || category.getName().isBlank() ? code : category.getName().trim());
+        // Prefer current-period category name when syncing; renew keeps same name anyway.
+        if (isNew || leaveCategoryService.isCurrentPeriod(category) || type.getName() == null || type.getName().isBlank()) {
+            type.setName(category.getName() == null || category.getName().isBlank() ? code : category.getName().trim());
+        }
         type.setPaid(category.isPaid());
-        type.setActive(category.isActive());
-        // Unpaid / zero-quota categories: still requestable; balance rules follow paid flag.
+        // leave_type stays active if ANY period row is active
+        boolean anyActive = leaveCategoryService.findAllByCode(code).stream().anyMatch(LeaveCategory::isActive);
+        type.setActive(anyActive);
         boolean unpaid = !category.isPaid();
         type.setRequiresBalance(!unpaid);
         type.setAllowWhenZeroBalance(unpaid);
@@ -89,44 +93,45 @@ public class LeaveCategorySyncService {
         if (seedBalances && category.isActive()
                 && category.getQuotaDays() != null
                 && category.getQuotaDays().compareTo(BigDecimal.ZERO) > 0) {
-            seedOpeningBalances(code, category.getQuotaDays());
+            seedOpeningBalances(category, code);
         }
         return saved;
     }
 
-    private void seedOpeningBalances(String leaveTypeCode, BigDecimal quota) {
-        int year = LocalDate.now().getYear();
+    private void seedOpeningBalances(LeaveCategory category, String leaveTypeCode) {
+        int year = leaveCategoryService.balanceYear(category);
         Instant now = Instant.now();
         for (EmployeeView e : employeeRepository.findAll()) {
             if (!e.isActive()) {
+                continue;
+            }
+            if (!leaveAppliesToService.isEligible(e, category)) {
                 continue;
             }
             if (leaveBalanceRepository.findByEmployeeIdAndLeaveTypeCodeAndYear(e.getId(), leaveTypeCode, year)
                     .isPresent()) {
                 continue;
             }
+            BigDecimal grant = leaveCategoryService.effectiveQuota(category, e);
+            if (grant.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
             LeaveBalance b = new LeaveBalance();
             b.setEmployeeId(e.getId());
             b.setLeaveTypeCode(leaveTypeCode);
             b.setYear(year);
-            b.setBalanceDays(quota);
+            b.setBalanceDays(grant);
             b.setUpdatedAt(now);
             leaveBalanceRepository.save(b);
 
-            // LV-01 — opening quota must have a matching ledger row
-            if (quota != null && quota.compareTo(BigDecimal.ZERO) != 0) {
-                LeaveBalanceLedger ledger = new LeaveBalanceLedger();
-                ledger.setEmployeeId(e.getId());
-                ledger.setLeaveTypeCode(leaveTypeCode);
-                ledger.setYear(year);
-                ledger.setDeltaDays(quota);
-                ledger.setReason("Opening quota");
-                ledger.setCreatedAt(now);
-                ledger.setOperationKey("OPENING:" + e.getId() + ":" + leaveTypeCode + ":" + year);
-                ledger.setSourceType(LeaveBalanceLedger.SOURCE_OPENING);
-                ledger.setSourceId(leaveTypeCode);
-                leaveBalanceLedgerRepository.save(ledger);
-            }
-        }
-    }
-}
+            LeaveBalanceLedger ledger = new LeaveBalanceLedger();
+            ledger.setEmployeeId(e.getId());
+            ledger.setLeaveTypeCode(leaveTypeCode);
+            ledger.setYear(year);
+            ledger.setDeltaDays(grant);
+            ledger.setReason(category.isProRata() ? "Opening quota (pro-rata)" : "Opening quota");
+            ledger.setCreatedAt(now);
+            ledger.setOperationKey("OPENING:" + e.getId() + ":" + leaveTypeCode + ":" + year);
+            ledger.setSourceType(LeaveBalanceLedger.SOURCE_OPENING);
+            ledger.setSourceId(leaveTypeCode);
+            leaveBalanceLedgerRepository.save(ledger);

@@ -64,7 +64,8 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/team/work-logs",
     title: "Team work logs",
     nav: { group: "Team", label: "Team work logs" },
-    rule: anyOf(["leave", "approve"], ["attendance", "correct"], ["employees", "view"]),
+    // Managers/admins in scope — not OWN-only employees (FR-WL-07).
+    rule: anyOf(["worklogs", "view"], ["leave", "approve"], ["attendance", "correct"], ["employees", "view"]),
   },
   {
     path: "/tasks",
@@ -139,6 +140,12 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/settings/schedules",
     title: "Work schedules",
     nav: { group: "Settings", label: "Work schedules" },
+    rule: anyOf(["attendance_settings", "view"], ["attendance_settings", "edit"]),
+  },
+  {
+    path: "/settings/work-log",
+    title: "Work log rules",
+    nav: { group: "Settings", label: "Work log rules" },
     rule: anyOf(["attendance_settings", "view"], ["attendance_settings", "edit"]),
   },
   {

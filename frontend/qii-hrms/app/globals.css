@@ -907,6 +907,193 @@ a.org-name:hover {
   }
 }
 
+/* Document malware-scan animation (guide §8 quarantine → release) */
+@keyframes scan-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes scan-sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+@keyframes scan-pulse-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 35%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+.scan-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: scan-spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+.scan-spinner--lg {
+  width: 28px;
+  height: 28px;
+  border-width: 3px;
+}
+.scan-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  overflow: hidden;
+}
+.scan-pill--active {
+  animation: scan-pulse-ring 1.6s ease-in-out infinite;
+}
+.scan-pulse {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    color-mix(in srgb, #fff 45%, transparent) 50%,
+    transparent 70%
+  );
+  animation: scan-sweep 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+.scan-panel {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--sunk);
+}
+.scan-panel--active {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+.scan-panel--good {
+  border-color: var(--good);
+  background: var(--good-soft);
+}
+.scan-panel--bad {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+}
+.scan-panel__ring,
+.scan-radar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+.scan-panel--active .scan-panel__ring,
+.scan-panel--active .scan-radar {
+  border-color: var(--warn);
+  animation: scan-pulse-ring 1.6s ease-in-out infinite;
+}
+.scan-radar__disc {
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  border: 1px dashed color-mix(in srgb, var(--warn) 55%, var(--line));
+}
+.scan-radar__beam {
+  display: none;
+}
+.scan-radar--on .scan-radar__beam {
+  display: block;
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(from 0deg, transparent 0deg, color-mix(in srgb, var(--warn) 55%, transparent) 50deg, transparent 90deg);
+  animation: scan-spin 1.25s linear infinite;
+}
+.scan-radar__core {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--surface);
+}
+.scan-panel__copy {
+  min-width: 0;
+  flex: 1;
+}
+.scan-panel__copy strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 1.05rem;
+}
+.scan-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.scan-steps span {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--surface);
+}
+.scan-steps span.on {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--surface));
+  font-weight: 600;
+}
+.scan-steps span.done {
+  border-color: var(--good);
+  color: var(--good);
+}
+.scan-bar {
+  margin-top: 12px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 20%, var(--line));
+  overflow: hidden;
+  position: relative;
+}
+.scan-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: var(--warn);
+  border-radius: inherit;
+  animation: scan-sweep 1.1s ease-in-out infinite;
+}
+.scan-check,
+.scan-x {
+  font-weight: 700;
+  font-size: 18px;
+  line-height: 1;
+}
+.scan-check {
+  color: var(--good);
+}
+.scan-x {
+  color: var(--bad);
+}
+
 @media (max-width: 960px) {
   .g3,
   .g4 {

@@ -65,9 +65,15 @@ export default function HomePage() {
     queryFn: ({ signal }) => apiFetch(api.notifications(""), { query: { page: 0, size: 5 }, signal }),
     retry: false,
   });
-  const myCurrent = useQuery({
-    queryKey: ["payroll-me-current"],
-    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll("me/current"), { signal }),
+  // FR-SAL-03 — own finalised payslips + live month-to-date estimate (Payroll self-service).
+  const myEstimate = useQuery({
+    queryKey: ["payroll-me-estimate"],
+    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll("me/estimate"), { signal }),
+    enabled: canViewPay,
+  });
+  const myPayslips = useQuery({
+    queryKey: ["payroll-me-payslips"],
+    queryFn: ({ signal }) => apiFetch<Rec[]>(api.payroll("me/payslips"), { signal }),
     enabled: canViewPay,
   });
   const unread = useQuery({
@@ -269,44 +275,41 @@ export default function HomePage() {
                 Payslips
               </Link>
             </div>
-            <ErrorNote error={myCurrent.error} />
-            {myCurrent.isLoading ? <p className="muted">Loading…</p> : null}
-            {myCurrent.data ? (
-              <>
-                <div className="row" style={{ gap: 24 }}>
-                  <div className="stat">
-                    <span className="s">Current pay</span>
-                    <span className="v">{fmtMoney((myCurrent.data as Rec).currentPay)}</span>
+            <ErrorNote error={myEstimate.error ?? myPayslips.error} />
+            {myEstimate.isLoading ? <p className="muted">Loading…</p> : null}
+            {(() => {
+              const est = (myEstimate.data?.estimate ?? null) as Rec | null;
+              const slips = rowsOf<Rec>(myPayslips.data);
+              return (
+                <>
+                  <div className="row" style={{ gap: 24 }}>
+                    <div className="stat">
+                      <span className="s">This month so far (estimate)</span>
+                      <span className="v">{est ? fmtMoney(est.netPay, str(est.currency, "")) : "—"}</span>
+                    </div>
+                    <div className="stat">
+                      <span className="s">Last payslip</span>
+                      <span className="v">{slips[0] ? fmtMoney(slips[0].netPay, str(slips[0].currency, "")) : "—"}</span>
+                    </div>
                   </div>
-                  <div className="stat">
-                    <span className="s">MTD estimate</span>
-                    <span className="v">
-                      {fmtMoney(
-                        ((myCurrent.data as Rec).mtdEstimate as Rec | undefined)?.netAmount ??
-                          (myCurrent.data as Rec).mtdEstimate,
-                      )}
-                    </span>
-                  </div>
-                </div>
-                {rowsOf<Rec>((myCurrent.data as Rec).payslips).length > 0 ? (
-                  <div className="stack" style={{ gap: 6 }}>
-                    {rowsOf<Rec>((myCurrent.data as Rec).payslips)
-                      .slice(0, 3)
-                      .map((p, i) => (
-                        <div key={String(p.id ?? i)} className="row between">
-                          <span className="mono small">{str(p.periodLabel)}</span>
+                  {slips.length > 0 ? (
+                    <div className="stack" style={{ gap: 6 }}>
+                      {slips.slice(0, 3).map((p) => (
+                        <div key={String(p.period)} className="row between">
+                          <span className="mono small">{str(p.period)}</span>
                           <span className="row" style={{ gap: 8 }}>
-                            <b>{fmtMoney(p.netAmount)}</b>
+                            <b>{fmtMoney(p.netPay, str(p.currency, ""))}</b>
                             <StatusPill status={p.status} />
                           </span>
                         </div>
                       ))}
-                  </div>
-                ) : (
-                  <p className="muted small">No payslips yet (draft or finalized).</p>
-                )}
-              </>
-            ) : null}
+                    </div>
+                  ) : (
+                    <p className="muted small">No finalised payslips yet.</p>
+                  )}
+                </>
+              );
+            })()}
           </section>
         </div>
       ) : null}

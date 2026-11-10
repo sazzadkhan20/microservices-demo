@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -17,10 +18,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -29,7 +32,8 @@ import java.util.Map;
  * <p>The gateway is the only component that signs and verifies session JWTs. Issuance is gated by
  * {@code X-Demo-Auth-Key} (held only by the Next.js BFF) and is disabled unless
  * {@code platform.demo-auth.enabled=true}; production must use OIDC instead (guide §4).
- * The employee must exist and be active in People before a token is issued.
+ * The employee must exist and be active in People before a token is issued; each mint records
+ * login audit on People {@code users} (google_sub reserved for OIDC).
  */
 @RestController
 @RequestMapping("/api/auth")
@@ -56,7 +60,8 @@ public class AuthTokenController {
     @PostMapping(value = "/token", produces = MediaType.APPLICATION_JSON_VALUE)
     public Mono<ResponseEntity<Map<String, Object>>> token(
             @RequestHeader(value = PlatformHeaders.DEMO_AUTH_KEY, required = false) String demoKey,
-            @RequestBody(required = false) TokenRequest request) {
+            @RequestBody(required = false) TokenRequest request,
+            ServerWebExchange exchange) {
         GatewayProperties.DemoAuth demo = properties.getDemoAuth();
         if (!demo.isEnabled()) {
             return Mono.just(error(HttpStatus.NOT_FOUND, "Not found"));
@@ -69,7 +74,14 @@ public class AuthTokenController {
             return Mono.just(error(HttpStatus.BAD_REQUEST, "employeeId is required"));
         }
         Long employeeId = request.employeeId();
-        return isActiveEmployee(employeeId)
+        ServerHttpRequest http = exchange.getRequest();
+        Map<String, String> loginBody = new LinkedHashMap<>();
+        loginBody.put("ip", clientIp(http));
+        String ua = http.getHeaders().getFirst("User-Agent");
+        if (ua != null) {
+            loginBody.put("userAgent", ua);
+        }
+        return recordLogin(employeeId, loginBody)
                 .map(active -> {
                     if (!active) {
                         return error(HttpStatus.UNAUTHORIZED, "Employee not found or inactive: " + employeeId);
@@ -88,27 +100,40 @@ public class AuthTokenController {
                 });
     }
 
-    /** Fail closed: People unreachable / non-2xx means no session. */
-    private Mono<Boolean> isActiveEmployee(Long employeeId) {
-        return people.get()
-                .uri("/api/internal/employees/{id}/auth-check", employeeId)
+    /** Fail closed: People unreachable / non-2xx means no session. Records login on success. */
+    private Mono<Boolean> recordLogin(Long employeeId, Map<String, String> loginBody) {
+        return people.post()
+                .uri("/api/internal/employees/{id}/login", employeeId)
                 .header(PlatformHeaders.SERVICE_KEY, properties.getSecurity().getServiceKey())
                 .header(InternalCalls.HEADER, properties.getSecurity().getInternalKey())
+                .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
+                .bodyValue(loginBody)
                 .retrieve()
                 .bodyToMono(Map.class)
                 .timeout(PEOPLE_TIMEOUT)
                 .map(body -> Boolean.TRUE.equals(body.get("active")))
                 .onErrorResume(WebClientResponseException.class, e -> {
                     if (e.getStatusCode().value() >= 500) {
-                        log.warn("People auth-check failed for employee {}: HTTP {}", employeeId, e.getStatusCode());
+                        log.warn("People login record failed for employee {}: HTTP {}", employeeId, e.getStatusCode());
                     }
                     return Mono.just(false);
                 })
                 .onErrorResume(e -> {
-                    log.warn("People auth-check unavailable for employee {}: {}", employeeId, e.getMessage());
+                    log.warn("People login unavailable for employee {}: {}", employeeId, e.getMessage());
                     return Mono.just(false);
                 });
+    }
+
+    private static String clientIp(ServerHttpRequest request) {
+        List<String> xff = request.getHeaders().get("X-Forwarded-For");
+        if (xff != null && !xff.isEmpty() && xff.get(0) != null && !xff.get(0).isBlank()) {
+            return xff.get(0).split(",")[0].trim();
+        }
+        if (request.getRemoteAddress() != null && request.getRemoteAddress().getAddress() != null) {
+            return request.getRemoteAddress().getAddress().getHostAddress();
+        }
+        return null;
     }
 
     private static ResponseEntity<Map<String, Object>> error(HttpStatus status, String message) {

@@ -55,7 +55,8 @@ public class InternalLeaveBridgeController {
     @GetMapping("/approvals/pending-for/{employeeId}")
     public Map<String, Object> pendingFor(@PathVariable Long employeeId, HttpServletRequest request) {
         requireInternal(request);
-        return Map.of("pending", hasPendingApprovals(employeeId));
+        int count = countPendingApprovals(employeeId);
+        return Map.of("pending", count > 0, "count", count);
     }
 
     @PostMapping("/approvals/reassign")
@@ -67,54 +68,21 @@ public class InternalLeaveBridgeController {
         return Map.of("updated", updated);
     }
 
-    /** PAY-01 / LV-05 — real period leave facts (not a stub). */
-    @GetMapping("/leave-facts/{employeeId}")
-    public Map<String, Object> leaveFacts(
-            @PathVariable Long employeeId,
-            @RequestParam String period,
-            HttpServletRequest request) {
+    /**
+     * Move pending approval steps on one applicant's leave apps from old manager → new manager
+     * (used when a reporting-line change becomes effective).
+     */
+    @PostMapping("/approvals/reassign-for-applicant")
+    public Map<String, Object> reassignForApplicant(
+            @RequestBody Map<String, Object> body, HttpServletRequest request) {
         requireInternal(request);
-        YearMonth ym = YearMonth.parse(period.substring(0, Math.min(7, period.length())));
-        LocalDate from = ym.atDay(1);
-        LocalDate to = ym.atEndOfMonth();
-
-        BigDecimal leaveDays = BigDecimal.ZERO;
-        BigDecimal unpaidLeaveDays = BigDecimal.ZERO;
-        Map<String, BigDecimal> consumedByType = new LinkedHashMap<>();
-        for (LeaveApplication a : applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId)) {
-            if (!LeaveApplication.STATUS_APPROVED.equalsIgnoreCase(a.getStatus())) {
-                continue;
-            }
-            if (a.getStartDate() == null || a.getEndDate() == null) {
-                continue;
-            }
-            if (a.getEndDate().isBefore(from) || a.getStartDate().isAfter(to)) {
-                continue;
-            }
-            BigDecimal days = a.getWorkingDaysCounted() == null ? BigDecimal.ZERO : a.getWorkingDaysCounted();
-            leaveDays = leaveDays.add(days);
-            if (!a.isPaid()) {
-                unpaidLeaveDays = unpaidLeaveDays.add(days);
-            }
-            String type = a.getLeaveTypeCode() == null ? "UNKNOWN" : a.getLeaveTypeCode().toUpperCase(Locale.ROOT);
-            consumedByType.merge(type, days, BigDecimal::add);
-        }
-
-        Map<String, BigDecimal> leaveBalances = new LinkedHashMap<>();
-        for (LeaveBalance bal : balanceRepository.findByEmployeeIdAndYear(employeeId, ym.getYear())) {
-            String type = bal.getLeaveTypeCode() == null ? "UNKNOWN" : bal.getLeaveTypeCode().toUpperCase(Locale.ROOT);
-            leaveBalances.put(type, bal.getBalanceDays() == null ? BigDecimal.ZERO : bal.getBalanceDays());
-        }
-
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("employeeId", employeeId);
-        out.put("period", period);
-        out.put("leaveDays", leaveDays);
-        out.put("unpaidLeaveDays", unpaidLeaveDays);
-        out.put("consumedByType", consumedByType);
-        out.put("leaveBalances", leaveBalances);
-        return out;
+        Long applicantId = asLong(body.get("applicantId"));
+        Long fromApproverId = asLong(body.get("fromApproverId"));
+        Long toApproverId = asLong(body.get("toApproverId"));
+        int updated = reassignPendingApprovalsForApplicant(applicantId, fromApproverId, toApproverId);
+        return Map.of("updated", updated);
     }
+
 
     @GetMapping("/approved-leave/{employeeId}")
     public List<Map<String, Object>> approvedLeave(
@@ -141,6 +109,7 @@ public class InternalLeaveBridgeController {
             row.put("endDate", a.getEndDate().toString());
             row.put("workingDaysCounted", a.getWorkingDaysCounted());
             row.put("paid", a.isPaid());
+            row.put("halfDayPart", a.getHalfDayPart() == null ? "FULL" : a.getHalfDayPart());
             row.put("status", a.getStatus());
             out.add(row);
         }
@@ -155,6 +124,14 @@ public class InternalLeaveBridgeController {
     }
 
     private boolean hasPendingApprovals(Long leavingId) {
+        return countPendingApprovals(leavingId) > 0;
+    }
+
+    private int countPendingApprovals(Long leavingId) {
+        if (leavingId == null) {
+            return 0;
+        }
+        int n = 0;
         for (LeaveApplication app : applicationRepository.findAll()) {
             String st = app.getStatus() == null ? "" : app.getStatus().toUpperCase(Locale.ROOT);
             if (!st.contains("PENDING") && !"SUBMITTED".equals(st) && !"IN_REVIEW".equals(st)) {
@@ -163,11 +140,11 @@ public class InternalLeaveBridgeController {
             for (LeaveApproval step : approvalRepository.findByApplicationIdOrderByStepOrderAsc(app.getId())) {
                 if (LeaveApproval.STATUS_PENDING.equals(step.getStatus())
                         && leavingId.equals(step.getApproverEmployeeId())) {
-                    return true;
+                    n++;
                 }
             }
         }
-        return false;
+        return n;
     }
 
     private int reassignPendingApprovals(Long leavingId, Long newApproverId) {
@@ -186,6 +163,35 @@ public class InternalLeaveBridgeController {
                 }
                 if (leavingId.equals(step.getApproverEmployeeId())) {
                     step.setApproverEmployeeId(newApproverId);
+                    approvalRepository.save(step);
+                    n++;
+                }
+            }
+        }
+        return n;
+    }
+
+    /** Only apps owned by {@code applicantId}, pending steps still on {@code fromApproverId}. */
+    private int reassignPendingApprovalsForApplicant(
+            Long applicantId, Long fromApproverId, Long toApproverId) {
+        if (applicantId == null || fromApproverId == null || toApproverId == null) {
+            return 0;
+        }
+        if (fromApproverId.equals(toApproverId)) {
+            return 0;
+        }
+        int n = 0;
+        for (LeaveApplication app : applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(applicantId)) {
+            String st = app.getStatus() == null ? "" : app.getStatus().toUpperCase(Locale.ROOT);
+            if (!st.contains("PENDING") && !"SUBMITTED".equals(st) && !"IN_REVIEW".equals(st)) {
+                continue;
+            }
+            for (LeaveApproval step : approvalRepository.findByApplicationIdOrderByStepOrderAsc(app.getId())) {
+                if (!LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
+                    continue;
+                }
+                if (fromApproverId.equals(step.getApproverEmployeeId())) {
+                    step.setApproverEmployeeId(toApproverId);
                     approvalRepository.save(step);
                     n++;
                 }

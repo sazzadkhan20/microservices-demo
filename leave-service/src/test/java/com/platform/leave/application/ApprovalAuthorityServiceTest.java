@@ -6,7 +6,6 @@ import com.platform.leave.domain.LeaveApproval;
 import com.platform.leave.domain.LeavePolicy;
 import com.platform.leave.extension.config.TenantConfigLoader;
 import com.platform.leave.client.people.PeopleEmployeeGateway;
-import com.platform.leave.infrastructure.persistence.LeaveApprovalDelegateRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -37,7 +36,6 @@ class ApprovalAuthorityServiceTest {
     @Mock PeopleEmployeeGateway employeeRepository;
     @Mock TenantConfigLoader configLoader;
     @Mock PeopleAuthzClient rbacService;
-    @Mock LeaveApprovalDelegateRepository delegateRepository;
     @InjectMocks ApprovalAuthorityService service;
 
     private EmployeeView applicant;
@@ -63,8 +61,6 @@ class ApprovalAuthorityServiceTest {
                 "approvalAuthority", ApprovalAuthorityService.defaultApprovalAuthority()
         ));
         when(employeeRepository.findById(1L)).thenReturn(Optional.of(applicant));
-        when(delegateRepository.findActiveDelegate(anyLong(), org.mockito.ArgumentMatchers.any()))
-                .thenReturn(Optional.empty());
     }
 
     @Test
@@ -90,12 +86,25 @@ class ApprovalAuthorityServiceTest {
     }
 
     @Test
-    @DisplayName("HR with leave:manage still cannot decide MANAGER step (not reporting manager)")
-    void hrLeaveManage_cannotSkipManagerStep() {
+    @DisplayName("HR with leave:manage may approve on the approver's behalf (FR-LV-16 admin override)")
+    void hrLeaveManage_mayActOnBehalf() {
         EmployeeView hr = emp(20L, null, 200L, "HR");
         when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr));
         when(rbacService.hasWildcard(20L)).thenReturn(false);
         when(rbacService.hasPermission(eq(20L), eq("leave"), eq("manage"))).thenReturn(true);
+        when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
+
+        LeaveApproval step = step(1, "MANAGER");
+        assertDoesNotThrow(() -> service.assertCanApprove(20L, step, app));
+    }
+
+    @Test
+    @DisplayName("HR without leave:manage cannot decide MANAGER step")
+    void hrWithoutManage_cannotSkipManagerStep() {
+        EmployeeView hr = emp(20L, null, 200L, "HR");
+        when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr));
+        when(rbacService.hasWildcard(20L)).thenReturn(false);
+        when(rbacService.hasPermission(eq(20L), eq("leave"), eq("manage"))).thenReturn(false);
         when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
 
         LeaveApproval step = step(1, "MANAGER");

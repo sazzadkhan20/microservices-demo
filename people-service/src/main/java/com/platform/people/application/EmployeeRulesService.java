@@ -23,19 +23,22 @@ public class EmployeeRulesService {
             "Active", "On leave", "Inactive", "Resigned", "Terminated");
     public static final List<String> DEFAULT_OFFBOARD = List.of("Resigned", "Terminated");
     public static final List<String> DEFAULT_INACTIVE = List.of("Inactive", "Resigned", "Terminated");
-    public static final List<String> DEFAULT_CONTRACT_TYPES = List.of("CONTRACT", "CONTRACTOR", "INTERN");
+    public static final List<String> DEFAULT_CONTRACT_TYPES = List.of("CONTRACT", "INTERN");
+    public static final List<String> DEFAULT_EMPLOYMENT_TYPES = List.of(
+            "FULL_TIME", "PART_TIME", "CONTRACT", "CASUAL", "INTERN");
     public static final List<String> DEFAULT_WORK_PATTERNS = List.of(
             "LOCATION_DEFAULT", "DAYS_5", "DAYS_6", "HOURLY");
     public static final List<String> DEFAULT_DOC_TYPES = List.of(
             "Contract", "NDA", "Agreement", "ID copy", "Certificate", "Other");
     public static final List<String> DEFAULT_SELF_EDIT = List.of(
-            "phone", "personalEmail", "address", "emergencyName", "emergencyRelationship", "emergencyPhone");
+            "phone", "personalEmail", "address", "emergencyName", "emergencyRelation",
+            "emergencyRelationship", "emergencyPhone");
     public static final List<String> DEFAULT_EMPLOYMENT_TRACKED = List.of(
             "fullName", "email", "preferredName", "jobTitle", "departmentId", "designationId",
             "managerId", "teamId", "locationId", "employmentType", "startDate", "probationEnd",
             "contractEnd", "payCurrency", "workPattern", "baseSalary", "hourlyRate", "status",
-            "phone", "personalEmail", "address", "emergencyName", "emergencyRelationship",
-            "emergencyPhone", "exitDate", "exitReason");
+            "phone", "personalEmail", "address", "dateOfBirth", "emergencyName", "emergencyRelation",
+            "emergencyRelationship", "emergencyPhone", "photoObjectKey", "exitDate", "exitReason");
 
     private final TenantConfigLoader configLoader;
 
@@ -56,13 +59,24 @@ public class EmployeeRulesService {
                 domains.add(a.trim().toLowerCase(Locale.ROOT));
             }
         }
+        List<String> contractTypes = upperList(cfg.get("contractTypesRequiringEnd"), DEFAULT_CONTRACT_TYPES)
+                .stream()
+                .map(t -> "CONTRACTOR".equals(t) ? "CONTRACT" : t)
+                .distinct()
+                .collect(Collectors.toList());
+        List<String> employmentTypes = upperList(cfg.get("employmentTypes"), DEFAULT_EMPLOYMENT_TYPES)
+                .stream()
+                .map(t -> "CONTRACTOR".equals(t) ? "CONTRACT" : t)
+                .distinct()
+                .collect(Collectors.toList());
         return new Rules(
                 primary,
                 domains,
                 list(cfg.get("employmentStatuses"), DEFAULT_STATUSES),
                 list(cfg.get("offboardingStatuses"), DEFAULT_OFFBOARD),
                 list(cfg.get("inactiveStatuses"), DEFAULT_INACTIVE),
-                upperList(cfg.get("contractTypesRequiringEnd"), DEFAULT_CONTRACT_TYPES),
+                contractTypes,
+                employmentTypes,
                 list(cfg.get("workPatterns"), DEFAULT_WORK_PATTERNS),
                 list(cfg.get("documentTypes"), DEFAULT_DOC_TYPES),
                 list(cfg.get("selfEditableFields"), DEFAULT_SELF_EDIT),
@@ -125,6 +139,9 @@ public class EmployeeRulesService {
             return false;
         }
         String t = employmentType.trim().toUpperCase(Locale.ROOT).replace(' ', '_');
+        if ("CONTRACTOR".equals(t)) {
+            t = "CONTRACT";
+        }
         return rules.contractTypesRequiringEnd().contains(t);
     }
 
@@ -197,6 +214,7 @@ public class EmployeeRulesService {
             List<String> offboardingStatuses,
             List<String> inactiveStatuses,
             List<String> contractTypesRequiringEnd,
+            List<String> employmentTypes,
             List<String> workPatterns,
             List<String> documentTypes,
             List<String> selfEditableFields,

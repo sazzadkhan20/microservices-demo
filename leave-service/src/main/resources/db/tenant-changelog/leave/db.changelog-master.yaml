@@ -41,6 +41,10 @@ databaseChangeLog:
   - include:
       file: db/tenant-changelog/hrms/changes/020-architecture-outbox-leave.yaml
   - include:
+      file: db/tenant-changelog/hrms/changes/021-leave-category-period-unique.yaml
+  - include:
+      file: db/tenant-changelog/hrms/changes/022-drop-leave-approval-delegate.yaml
+  - include:
       file: db/tenant-changelog/shared/changes/001-messaging-outbox-inbox.yaml
   - include:
       file: db/tenant-changelog/leave/changes/002-drop-foreign-domain-tables.yaml

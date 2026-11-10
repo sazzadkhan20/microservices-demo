@@ -6,3 +6,7 @@ databaseChangeLog:
       file: db/tenant-changelog/payroll/db.changelog-master.yaml
   - include:
       file: db/changelog/changes/001-single-company.yaml
+  - include:
+      file: db/changelog/changes/002-payroll-runs.yaml
+  - include:
+      file: db/changelog/changes/003-drop-legacy-payslips.yaml

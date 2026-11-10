@@ -1,0 +1,67 @@
+databaseChangeLog:
+  # Allow same leave category code across non-overlapping periods (renew keeps name+code).
+  - changeSet:
+      id: 021-leave-category-backfill-period
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: leave_category
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              UPDATE leave_category
+                 SET period_start = date_trunc('year', CURRENT_DATE)::date,
+                     period_end   = (date_trunc('year', CURRENT_DATE) + INTERVAL '1 year - 1 day')::date
+               WHERE period_start IS NULL;
+
+  - changeSet:
+      id: 021-leave-category-drop-code-unique
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: leave_category
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              DO $$
+              BEGIN
+                IF EXISTS (
+                  SELECT 1 FROM pg_constraint
+                   WHERE conrelid = 'leave_category'::regclass
+                     AND contype = 'u'
+                     AND pg_get_constraintdef(oid) ILIKE '%(code)%'
+                     AND pg_get_constraintdef(oid) NOT ILIKE '%period_start%'
+                ) THEN
+                  EXECUTE (
+                    SELECT 'ALTER TABLE leave_category DROP CONSTRAINT ' || quote_ident(conname)
+                      FROM pg_constraint
+                     WHERE conrelid = 'leave_category'::regclass
+                       AND contype = 'u'
+                       AND pg_get_constraintdef(oid) ILIKE '%(code)%'
+                       AND pg_get_constraintdef(oid) NOT ILIKE '%period_start%'
+                     LIMIT 1
+                  );
+                END IF;
+              END $$;
+
+  - changeSet:
+      id: 021-leave-category-unique-code-period
+      author: platform
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: leave_category
+        - not:
+            - indexExists:
+                tableName: leave_category
+                indexName: uk_leave_category_code_period_start
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              CREATE UNIQUE INDEX uk_leave_category_code_period_start
+                ON leave_category (lower(code), period_start);

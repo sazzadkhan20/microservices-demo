@@ -6,11 +6,9 @@ import com.platform.leave.domain.LeaveApproval;
 import com.platform.leave.domain.LeavePolicy;
 import com.platform.leave.extension.config.TenantConfigLoader;
 import com.platform.leave.client.people.PeopleEmployeeGateway;
-import com.platform.leave.infrastructure.persistence.LeaveApprovalDelegateRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -43,17 +41,14 @@ public class ApprovalAuthorityService {
     private final PeopleEmployeeGateway employeeRepository;
     private final TenantConfigLoader configLoader;
     private final PeopleAuthzClient rbacService;
-    private final LeaveApprovalDelegateRepository delegateRepository;
 
     public ApprovalAuthorityService(
             PeopleEmployeeGateway employeeRepository,
             TenantConfigLoader configLoader,
-            PeopleAuthzClient rbacService,
-            LeaveApprovalDelegateRepository delegateRepository) {
+            PeopleAuthzClient rbacService) {
         this.employeeRepository = employeeRepository;
         this.configLoader = configLoader;
         this.rbacService = rbacService;
-        this.delegateRepository = delegateRepository;
     }
 
     /**
@@ -89,25 +84,21 @@ public class ApprovalAuthorityService {
 
     private boolean mayDecide(EmployeeView actor, LeaveApproval step, LeaveApplication app) {
         StepRule rule = resolveStepRule(step);
-        if (Boolean.TRUE.equals(rule.allowOverride()) && isOverride(actor.getId())) {
+        // FR-LV-16 — configured admins may act on the approver's behalf (audit records actor).
+        // Step allowOverride gates role-based override; leave:manage / SUPERADMIN always may.
+        if (isOverride(actor.getId())
+                && (Boolean.TRUE.equals(rule.allowOverride()) || isStrongOverride(actor.getId()))) {
             return true;
         }
-        if (matchesResolver(actor, app, rule)) {
-            return true;
-        }
-        // Check delegate covering: if an expected approver has delegated to actor today, allow.
-        Long expectedId = step.getExpectedApproverId();
-        if (expectedId != null) {
-            return isDelegateFor(actor.getId(), expectedId);
-        }
-        return false;
+        return matchesResolver(actor, app, rule);
     }
 
-    /** True when actor is an active delegate covering today for expectedApproverId. */
-    private boolean isDelegateFor(Long actorId, Long expectedApproverId) {
-        return delegateRepository.findActiveDelegate(expectedApproverId, LocalDate.now())
-                .map(d -> d.getDelegateEmployeeId().equals(actorId))
-                .orElse(false);
+    /** Super-admin / leave:manage — may approve idle steps even when allowOverride=false. */
+    private boolean isStrongOverride(Long employeeId) {
+        if (rbacService.hasWildcard(employeeId)) {
+            return true;
+        }
+        return rbacService.hasPermission(employeeId, "leave", "manage");
     }
 
     private boolean matchesResolver(EmployeeView actor, LeaveApplication app, StepRule rule) {
@@ -337,6 +328,7 @@ public class ApprovalAuthorityService {
         roleDefaults.put("*", Map.of("resolver", RESOLVER_DESIGNATION_OR_RBAC, "allowOverride", false));
         Map<String, Object> auth = new HashMap<>();
         auth.put("overrideRoleCodes", List.of("SUPERADMIN", "ADMIN"));
+        auth.put("overridePermissions", List.of("leave:manage"));
         auth.put("roleDefaults", roleDefaults);
         return auth;
     }

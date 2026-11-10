@@ -23,7 +23,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -116,10 +115,7 @@ public class LeaveCoverCommandListener {
         }
         resultPayload.putIfAbsent("operationId", str(payload.get("operationId")));
         resultPayload.putIfAbsent("operationKey", operationKey);
-        resultPayload.putIfAbsent("payslipId", payload.get("payslipId"));
-        resultPayload.putIfAbsent("employeeId", existing.getEmployeeId());
-        resultPayload.putIfAbsent("periodLabel", existing.getPeriodLabel());
-        resultPayload.putIfAbsent("reverse", existing.isReverseFlag());
+        resultPayload.putIfAbsent("period", existing.getPeriodLabel());
         resultPayload.put("success", LeaveOperation.STATUS_SUCCEEDED.equals(existing.getStatus()));
         resultPayload.put("status", existing.getStatus());
         resultPayload.put("idempotentReplay", true);
@@ -127,66 +123,85 @@ public class LeaveCoverCommandListener {
         String correlationId = str(envelope.get("correlationId"));
         long aggregateVersion = longOf(envelope.get("aggregateVersion")) == null
                 ? 1L : longOf(envelope.get("aggregateVersion"));
-        enqueueResult(correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
+        enqueueResult(correlationId, existing.getPeriodLabel(), aggregateVersion, resultPayload);
         log.info("Re-emitted leave-cover result for duplicate event opKey={}", operationKey);
     }
 
+    /**
+     * Run-level payroll command (docs/PAYROLL_SPEC.md §2.3): FINALIZE applies every cover of the run or
+     * none (explicit rejection with reasons); REOPEN reverses the ledger rows of {@code reverseOfKey}.
+     * The leave_operation row, the inbox key and the result outbox commit together.
+     */
     private Map<String, Object> processCommand(Map<String, Object> envelope) {
         Map<String, Object> payload = payloadOf(envelope);
         String operationKey = str(payload.get("operationKey"));
         String operationId = str(payload.get("operationId"));
-        Long employeeId = longOf(payload.get("employeeId"));
-        String periodLabel = str(payload.get("periodLabel"));
-        boolean reverse = Boolean.TRUE.equals(payload.get("reverse"));
-        Map<String, BigDecimal> consumed = toConsumed(payload.get("consumedByType"));
+        String action = str(payload.get("action"));
+        String period = str(payload.get("period"));
         String correlationId = str(envelope.get("correlationId"));
         String eventId = str(envelope.get("eventId"));
         long aggregateVersion = longOf(envelope.get("aggregateVersion")) == null
                 ? 1L : longOf(envelope.get("aggregateVersion"));
 
-        LeaveOperation existing = leaveOperationRepository.findByOperationKey(operationKey).orElse(null);
         Map<String, Object> resultPayload = new LinkedHashMap<>();
         resultPayload.put("operationId", operationId);
         resultPayload.put("operationKey", operationKey);
-        resultPayload.put("payslipId", payload.get("payslipId"));
-        resultPayload.put("employeeId", employeeId);
-        resultPayload.put("periodLabel", periodLabel);
-        resultPayload.put("reverse", reverse);
+        resultPayload.put("action", action);
+        resultPayload.put("period", period);
+        resultPayload.put("revision", payload.get("revision"));
 
+        LeaveOperation existing = leaveOperationRepository.findByOperationKey(operationKey).orElse(null);
         if (existing != null) {
-            resultPayload.put("success", LeaveOperation.STATUS_SUCCEEDED.equals(existing.getStatus()));
-            resultPayload.put("status", existing.getStatus());
+            resultPayload.putAll(existing.getResultJson() == null ? Map.of() : existing.getResultJson());
             resultPayload.put("idempotentReplay", true);
-            enqueueResult(correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
+            enqueueResult(correlationId, period, aggregateVersion, resultPayload);
             return resultPayload;
         }
 
         LeaveOperation op = new LeaveOperation();
         op.setOperationKey(operationKey);
         op.setEventId(eventId);
-        op.setEmployeeId(employeeId);
-        op.setPeriodLabel(periodLabel);
-        op.setReverseFlag(reverse);
+        op.setEmployeeId(0L); // run-level operation (all employees of the payroll month)
+        op.setPeriodLabel(period);
+        op.setReverseFlag("REOPEN".equals(action));
         op.setCreatedAt(Instant.now());
-
         try {
-            leaveCoverService.applyLeaveCover(
-                    employeeId, periodLabel, consumed, reverse, operationKey, operationId);
-            op.setStatus(LeaveOperation.STATUS_SUCCEEDED);
-            resultPayload.put("success", true);
-            resultPayload.put("status", LeaveOperation.STATUS_SUCCEEDED);
+            if ("FINALIZE".equals(action)) {
+                @SuppressWarnings("unchecked")
+                java.util.List<Map<String, Object>> lines = payload.get("lines") instanceof java.util.List<?> l
+                        ? (java.util.List<Map<String, Object>>) l : java.util.List.of();
+                java.util.List<String> problems = leaveCoverService.applyFinalize(operationKey, period, lines);
+                if (problems.isEmpty()) {
+                    op.setStatus(LeaveOperation.STATUS_SUCCEEDED);
+                    resultPayload.put("success", true);
+                    resultPayload.put("employees", lines.size());
+                } else {
+                    op.setStatus(LeaveOperation.STATUS_FAILED);
+                    resultPayload.put("success", false);
+                    resultPayload.put("errorMessage", String.join("; ", problems));
+                    resultPayload.put("problems", problems);
+                }
+            } else if ("REOPEN".equals(action)) {
+                int reversed = leaveCoverService.applyReversal(str(payload.get("reverseOfKey")), period);
+                op.setStatus(LeaveOperation.STATUS_SUCCEEDED);
+                resultPayload.put("success", true);
+                resultPayload.put("reversedRows", reversed);
+            } else {
+                op.setStatus(LeaveOperation.STATUS_FAILED);
+                resultPayload.put("success", false);
+                resultPayload.put("errorMessage", "Unknown payroll leave-cover action: " + action);
+            }
         } catch (Exception e) {
             op.setStatus(LeaveOperation.STATUS_FAILED);
             resultPayload.put("success", false);
-            resultPayload.put("status", LeaveOperation.STATUS_FAILED);
             resultPayload.put("errorMessage", e.getMessage());
             log.warn("Leave cover failed opKey={}: {}", operationKey, e.getMessage());
         }
-        op.setResultJson(resultPayload);
+        resultPayload.put("status", op.getStatus());
+        op.setResultJson(new LinkedHashMap<>(resultPayload));
         op.setCompletedAt(Instant.now());
         leaveOperationRepository.save(op);
-
-        enqueueResult(correlationId, str(payload.get("payslipId")), aggregateVersion, resultPayload);
+        enqueueResult(correlationId, period, aggregateVersion, resultPayload);
         return resultPayload;
     }
 
@@ -226,22 +241,6 @@ public class LeaveCoverCommandListener {
             return new HashMap<>((Map<String, Object>) m);
         }
         return new HashMap<>(envelope);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Map<String, BigDecimal> toConsumed(Object raw) {
-        if (!(raw instanceof Map<?, ?> m)) return Map.of();
-        Map<String, BigDecimal> out = new LinkedHashMap<>();
-        m.forEach((k, v) -> {
-            if (k == null || v == null) return;
-            try {
-                BigDecimal bd = v instanceof BigDecimal b ? b
-                        : v instanceof Number n ? BigDecimal.valueOf(n.doubleValue())
-                        : new BigDecimal(String.valueOf(v));
-                out.put(String.valueOf(k).toUpperCase(Locale.ROOT), bd);
-            } catch (Exception ignored) { /* skip */ }
-        });
-        return out;
     }
 
     private static String str(Object o) {

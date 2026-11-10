@@ -9,7 +9,7 @@ public record LeaveBalanceAdjustRequest(
         @NotNull Long employeeId,
         @NotBlank String leaveTypeCode,
         @NotNull BigDecimal deltaDays,
-        String reason,
+        @NotBlank String reason,
         Long actorEmployeeId,
         Integer year
 ) {

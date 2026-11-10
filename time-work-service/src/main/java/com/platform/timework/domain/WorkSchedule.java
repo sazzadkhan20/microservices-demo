@@ -37,8 +37,9 @@ public class WorkSchedule {
     @Column(name = "half_day_hours", precision = 6, scale = 2)
     private BigDecimal halfDayHours;
 
+    /** Null until set — FIXED create/update auto-fills office end + 6h when blank. */
     @Column(name = "checkout_cutoff", length = 8)
-    private String checkoutCutoff = "23:59";
+    private String checkoutCutoff;
 
     @Column(name = "weekly_hours", precision = 6, scale = 2)
     private BigDecimal weeklyHours;

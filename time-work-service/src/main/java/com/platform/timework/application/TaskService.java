@@ -2,6 +2,7 @@ package com.platform.timework.application;
 
 import com.platform.common.security.AuthContext;
 import com.platform.timework.client.people.EmployeeView;
+import com.platform.timework.client.people.PeopleAuthzClient;
 import com.platform.timework.domain.TenantSettings;
 import com.platform.timework.domain.WorkLog;
 import com.platform.timework.domain.WorkTask;
@@ -18,16 +19,19 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
-import com.platform.timework.client.people.PeopleAuthzClient;
 
 /**
- * Config-driven tasks (FR-TSK-01..04). Scope + statuses from {@code tenant_settings.taskRules}.
+ * Config-driven tasks (FR-TSK-01..04).
+ * View visibility uses {@code tasks:view} scope; assignee pool uses create/edit data-scope
+ * (TEAM = reporting subtree under the actor — not org-team peers).
  */
 @Service
 public class TaskService {
@@ -57,17 +61,32 @@ public class TaskService {
         this.rbacService = rbacService;
     }
 
+    /**
+     * List tasks visible to the caller:
+     * ALL → every task; TEAM (manager) → created by me or assigned to me;
+     * OWN → assigned to me only.
+     */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> listEnriched() {
-        Map<Long, Integer> loggedByTask = new HashMap<>();
-        for (WorkLog wl : workLogRepository.findAll()) {
-            if (wl.getTaskId() == null) continue;
-            loggedByTask.merge(wl.getTaskId(), wl.getMinutes(), Integer::sum);
-        }
+        Long actor = AuthContext.requireEmployeeId();
+        DataScopeService.Visibility vis = dataScopeService.visibility(actor, "tasks", "view");
+        Map<Long, Integer> loggedByTask = loggedMinutesByTask();
         LocalDate today = LocalDate.now();
-        return taskRepository.findAll().stream()
-                .map(t -> toView(t, loggedByTask.getOrDefault(t.getId(), 0), today))
-                .toList();
+
+        Map<Long, Set<Long>> assigneesByTask = new HashMap<>();
+        for (WorkTaskAssignee a : assigneeRepository.findAll()) {
+            assigneesByTask.computeIfAbsent(a.getTaskId(), k -> new HashSet<>()).add(a.getEmployeeId());
+        }
+
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (WorkTask t : taskRepository.findAll()) {
+            Set<Long> assignees = assigneesByTask.getOrDefault(t.getId(), Set.of());
+            if (!isVisible(vis, actor, t, assignees)) {
+                continue;
+            }
+            out.add(toView(t, assignees, loggedByTask.getOrDefault(t.getId(), 0), today));
+        }
+        return out;
     }
 
     /** Open tasks assigned to the caller — for work-log picker (FR-WL-02). */
@@ -85,8 +104,32 @@ public class TaskService {
             if (t == null) continue;
             String st = t.getStatus() == null ? "" : t.getStatus().toUpperCase(Locale.ROOT);
             if (!open.contains(st)) continue;
-            out.add(toView(t, sumLogged(tid), today));
+            out.add(toView(t, new HashSet<>(assigneeIds(tid)), sumLogged(tid), today));
         }
+        return out;
+    }
+
+    /**
+     * Assignees the actor may pick when creating/editing a task.
+     * TEAM → self + reporting subtree; ALL → all active; OWN → self only.
+     */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> assigneeCandidates() {
+        Long actor = AuthContext.requireEmployeeId();
+        Set<Long> allowed = allowedAssigneeIds(actor);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Long id : allowed) {
+            EmployeeView e = employeeRepository.findById(id).orElse(null);
+            if (e == null || !e.isActive()) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", e.getId());
+            row.put("fullName", e.getFullName());
+            row.put("employeeCode", e.getEmployeeCode());
+            row.put("teamId", e.getTeamId());
+            row.put("managerId", e.getManagerId());
+            out.add(row);
+        }
+        out.sort((a, b) -> String.valueOf(a.get("fullName")).compareToIgnoreCase(String.valueOf(b.get("fullName"))));
         return out;
     }
 
@@ -109,11 +152,7 @@ public class TaskService {
         if (priority != null && !priority.isBlank()) {
             task.setPriority(priority.trim().toUpperCase(Locale.ROOT));
         }
-        // FR-TSK-04 — externalRef is the project-module stable id (never priority).
-        String ext = str(body.get("externalRef"));
-        if (ext != null && !ext.isBlank() && !ext.toUpperCase(Locale.ROOT).startsWith("PRIORITY:")) {
-            task.setExternalRef(ext.trim());
-        }
+        task.setExternalRef(normalizeExternalRef(str(body.get("externalRef")), true));
         Object due = body.get("dueDate");
         if (due != null && !String.valueOf(due).isBlank()) {
             task.setDueDate(LocalDate.parse(String.valueOf(due)));
@@ -127,7 +166,7 @@ public class TaskService {
             throw new IllegalArgumentException("At least one assignee is required");
         }
         replaceAssignees(saved.getId(), assignees, actor);
-        return toView(saved, 0, LocalDate.now());
+        return toView(saved, new HashSet<>(assignees), 0, LocalDate.now());
     }
 
     @Transactional
@@ -135,6 +174,12 @@ public class TaskService {
         Long actor = AuthContext.requireEmployeeId();
         WorkTask task = taskRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Task not found: " + id));
+        Set<Long> currentAssignees = new HashSet<>(assigneeIds(id));
+        DataScopeService.Visibility viewVis = dataScopeService.visibility(actor, "tasks", "view");
+        if (!isVisible(viewVis, actor, task, currentAssignees)
+                && !dataScopeService.visibility(actor, "tasks", "edit").isAll()) {
+            throw new SecurityException("Forbidden: you cannot edit this task");
+        }
         if (body.containsKey("title")) {
             String title = str(body.get("title"));
             if (title == null || title.isBlank()) {
@@ -154,8 +199,7 @@ public class TaskService {
             task.setPriority(p == null || p.isBlank() ? null : p.trim().toUpperCase(Locale.ROOT));
         }
         if (body.containsKey("externalRef")) {
-            String ext = str(body.get("externalRef"));
-            task.setExternalRef(ext == null || ext.isBlank() ? null : ext.trim());
+            task.setExternalRef(normalizeExternalRef(str(body.get("externalRef")), false));
         }
         if (body.containsKey("dueDate")) {
             Object due = body.get("dueDate");
@@ -169,16 +213,20 @@ public class TaskService {
                 throw new IllegalArgumentException("At least one assignee is required");
             }
             replaceAssignees(task.getId(), assignees, actor);
+            currentAssignees = new HashSet<>(assignees);
         }
         WorkTask saved = taskRepository.save(task);
-        return toView(saved, sumLogged(saved.getId()), LocalDate.now());
+        return toView(saved, currentAssignees, sumLogged(saved.getId()), LocalDate.now());
     }
 
     @Transactional(readOnly = true)
     public Map<String, Object> rules() {
         Map<String, Object> cfg = taskRules();
+        Long actor = AuthContext.requireEmployeeId();
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("createScope", createScope());
+        out.put("createScope", createScopeSetting());
+        out.put("viewScope", dataScopeService.visibility(actor, "tasks", "view").scope());
+        out.put("assignScope", dataScopeService.visibility(actor, "tasks", "create").scope());
         out.put("statuses", statuses());
         out.put("openStatuses", new ArrayList<>(openStatuses()));
         out.put("priorities", List.of("LOW", "MEDIUM", "HIGH"));
@@ -186,35 +234,36 @@ public class TaskService {
         return out;
     }
 
-    private void replaceAssignees(Long taskId, List<Long> assignees, Long actor) {
-        String scopeMode = createScope();
-        // FR-TSK-02 — taskRules.createScope=TEAM limits assignees to self + reports + teammates
-        // even when RBAC data-scope for tasks:create is ALL (pack default for managers).
-        Set<Long> allowedTeam = null;
-        if ("TEAM".equalsIgnoreCase(scopeMode) && !rbacService.hasWildcard(actor)) {
-            allowedTeam = new java.util.HashSet<>();
-            allowedTeam.add(actor);
-            for (EmployeeView report : employeeRepository.findByManagerId(actor)) {
-                allowedTeam.add(report.getId());
-            }
-            EmployeeView me = employeeRepository.findById(actor).orElse(null);
-            if (me != null && me.getTeamId() != null) {
-                for (EmployeeView mate : employeeRepository.findAll()) {
-                    if (mate.isActive() && me.getTeamId().equals(mate.getTeamId())) {
-                        allowedTeam.add(mate.getId());
-                    }
-                }
-            }
+    private boolean isVisible(DataScopeService.Visibility vis, Long actor, WorkTask t, Set<Long> assignees) {
+        if (vis == null || "NONE".equals(vis.scope())) {
+            return false;
         }
+        if (vis.isAll()) {
+            return true;
+        }
+        boolean assignedToMe = assignees.contains(actor);
+        boolean createdByMe = Objects.equals(t.getCreatedBy(), actor);
+        return switch (vis.scope()) {
+            // Manager: tasks I created + tasks assigned to me.
+            case "TEAM" -> createdByMe || assignedToMe;
+            // Employee / HR (OWN): only tasks assigned to me.
+            case "OWN" -> assignedToMe;
+            default -> false;
+        };
+    }
+
+    private void replaceAssignees(Long taskId, List<Long> assignees, Long actor) {
+        Set<Long> allowed = allowedAssigneeIds(actor);
         for (Long empId : assignees) {
             EmployeeView e = employeeRepository.findById(empId)
                     .orElseThrow(() -> new IllegalArgumentException("Assignee not found: " + empId));
             if (!e.isActive()) {
                 throw new IllegalStateException("Assignee is inactive: " + empId);
             }
-            if (allowedTeam != null && !allowedTeam.contains(empId)) {
+            if (!allowed.contains(empId)) {
                 throw new IllegalStateException(
-                        "Cannot assign employee " + empId + " — outside your task-create scope (" + scopeMode + ")");
+                        "Cannot assign employee " + empId
+                                + " — only people in your reporting team (task-create scope) can be assignees");
             }
         }
         assigneeRepository.deleteByTaskId(taskId);
@@ -223,7 +272,43 @@ public class TaskService {
         }
     }
 
-    private Map<String, Object> toView(WorkTask t, int loggedMinutes, LocalDate today) {
+    /**
+     * Assignees allowed for create/edit.
+     * Prefer {@code tasks:create} data scope; fall back to {@code tasks:edit}.
+     * TEAM = reporting subtree (self + underlings). Never expand to org-team peers.
+     */
+    private Set<Long> allowedAssigneeIds(Long actor) {
+        if (rbacService.hasWildcard(actor)) {
+            return activeEmployeeIds();
+        }
+        DataScopeService.Visibility createVis = dataScopeService.visibility(actor, "tasks", "create");
+        if ("NONE".equals(createVis.scope())) {
+            createVis = dataScopeService.visibility(actor, "tasks", "edit");
+        }
+        return switch (createVis.scope()) {
+            case "ALL" -> activeEmployeeIds();
+            case "TEAM" -> createVis.teamIds().stream()
+                    .filter(id -> {
+                        EmployeeView e = employeeRepository.findById(id).orElse(null);
+                        return e != null && e.isActive();
+                    })
+                    .collect(Collectors.toCollection(HashSet::new));
+            case "OWN" -> Set.of(actor);
+            default -> Set.of(actor);
+        };
+    }
+
+    private Set<Long> activeEmployeeIds() {
+        Set<Long> out = new HashSet<>();
+        for (EmployeeView e : employeeRepository.findAll()) {
+            if (e.isActive() && e.getId() != null) {
+                out.add(e.getId());
+            }
+        }
+        return out;
+    }
+
+    private Map<String, Object> toView(WorkTask t, Set<Long> assignees, int loggedMinutes, LocalDate today) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", t.getId());
         m.put("title", t.getTitle());
@@ -235,10 +320,9 @@ public class TaskService {
         m.put("createdBy", t.getCreatedBy());
         m.put("externalRef", t.getExternalRef());
         m.put("createdAt", t.getCreatedAt() == null ? null : t.getCreatedAt().toString());
-        List<Long> assignees = assigneeRepository.findByTaskId(t.getId()).stream()
-                .map(WorkTaskAssignee::getEmployeeId).toList();
-        m.put("assigneeIds", assignees);
-        m.put("assignees", assignees);
+        List<Long> assigneeList = assignees == null ? List.of() : assignees.stream().sorted().toList();
+        m.put("assigneeIds", assigneeList);
+        m.put("assignees", assigneeList);
         m.put("loggedMinutes", loggedMinutes);
         m.put("loggedHours", Math.round(loggedMinutes / 60.0 * 100.0) / 100.0);
         boolean overdue = t.getDueDate() != null
@@ -246,11 +330,22 @@ public class TaskService {
                 && openStatuses().contains(
                         t.getStatus() == null ? "" : t.getStatus().toUpperCase(Locale.ROOT));
         m.put("overdue", overdue);
-        // Legacy FE that still reads PRIORITY: from externalRef
-        if (t.getPriority() != null && (t.getExternalRef() == null || t.getExternalRef().isBlank())) {
-            m.put("externalRefDisplay", "PRIORITY:" + t.getPriority());
-        }
         return m;
+    }
+
+    private List<Long> assigneeIds(Long taskId) {
+        return assigneeRepository.findByTaskId(taskId).stream()
+                .map(WorkTaskAssignee::getEmployeeId)
+                .toList();
+    }
+
+    private Map<Long, Integer> loggedMinutesByTask() {
+        Map<Long, Integer> loggedByTask = new HashMap<>();
+        for (WorkLog wl : workLogRepository.findAll()) {
+            if (wl.getTaskId() == null) continue;
+            loggedByTask.merge(wl.getTaskId(), wl.getMinutes(), Integer::sum);
+        }
+        return loggedByTask;
     }
 
     private int sumLogged(Long taskId) {
@@ -258,6 +353,21 @@ public class TaskService {
                 .filter(w -> taskId.equals(w.getTaskId()))
                 .mapToInt(WorkLog::getMinutes)
                 .sum();
+    }
+
+    private String normalizeExternalRef(String ext, boolean creating) {
+        if (ext == null || ext.isBlank()) {
+            return creating ? null : null;
+        }
+        String trimmed = ext.trim();
+        if (trimmed.toUpperCase(Locale.ROOT).startsWith("PRIORITY:")) {
+            throw new IllegalArgumentException(
+                    "externalRef is the project-module id — do not store priority here (use priority field)");
+        }
+        if (trimmed.length() > 64) {
+            throw new IllegalArgumentException("externalRef must be ≤ 64 characters");
+        }
+        return trimmed;
     }
 
     private String normalizeStatus(String status) {
@@ -276,7 +386,7 @@ public class TaskService {
         return candidate;
     }
 
-    private String createScope() {
+    private String createScopeSetting() {
         Object v = taskRules().get("createScope");
         if (v != null && !String.valueOf(v).isBlank()) {
             return String.valueOf(v).trim().toUpperCase(Locale.ROOT);

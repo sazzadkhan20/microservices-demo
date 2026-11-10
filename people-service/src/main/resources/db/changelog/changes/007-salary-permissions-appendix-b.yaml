@@ -1,0 +1,13 @@
+# SRS Appendix B / §2.2 — HR has no salary access by default; salary edit is management only.
+# docs/PAYROLL_SPEC.md §1.10 (G19). Admins can still grant salary to HR through the roles screen.
+databaseChangeLog:
+  - changeSet:
+      id: people-007-hr-no-salary-by-default
+      author: qii-hrms
+      changes:
+        - sql:
+            sql: |
+              DELETE FROM app_role_permission rp
+              USING app_role r, app_permission p
+              WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                AND lower(r.name) = 'hr' AND p.feature = 'salary';

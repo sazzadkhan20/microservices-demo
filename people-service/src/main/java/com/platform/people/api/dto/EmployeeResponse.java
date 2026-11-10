@@ -42,6 +42,17 @@ public record EmployeeResponse(
         String status,
         String phone,
         String personalEmail,
+        String address,
+        LocalDate dateOfBirth,
+        String emergencyName,
+        String emergencyRelation,
+        /** FE alias for emergencyRelation. */
+        String emergencyRelationship,
+        String emergencyPhone,
+        String photoObjectKey,
+        Long photoFileId,
+        LocalDate exitDate,
+        String exitReason,
         BigDecimal baseSalary,
         BigDecimal hourlyRate,
         Map<String, Object> customFields,
@@ -60,6 +71,8 @@ public record EmployeeResponse(
                 locationId, locationName, locationCode,
                 employmentType, startDate, probationEnd, contractEnd,
                 payCurrency, workPattern, status, phone, personalEmail,
+                address, dateOfBirth, emergencyName, emergencyRelation, emergencyRelationship,
+                emergencyPhone, photoObjectKey, photoFileId, exitDate, exitReason,
                 null, null,
                 customFields, active, roles, createdAt, updatedAt);
     }
@@ -73,6 +86,40 @@ public record EmployeeResponse(
             Location location,
             Map<String, Object> customFields,
             List<String> roles) {
+        Map<String, Object> cf = customFields == null ? Map.of() : customFields;
+        String relation = e.getEmergencyRelation();
+        if (relation == null || relation.isBlank()) {
+            Object legacy = cf.get("emergencyRelation");
+            if (legacy == null) {
+                legacy = cf.get("emergencyRelationship");
+            }
+            relation = legacy == null ? null : String.valueOf(legacy);
+        }
+        Long photoFileId = null;
+        Object pf = cf.get("photoFileId");
+        if (pf != null && !String.valueOf(pf).isBlank()) {
+            try {
+                photoFileId = Long.valueOf(String.valueOf(pf).trim());
+            } catch (NumberFormatException ignored) {
+                photoFileId = null;
+            }
+        }
+        String address = e.getAddress() != null ? e.getAddress()
+                : (cf.get("address") == null ? null : String.valueOf(cf.get("address")));
+        String emergencyName = e.getEmergencyName() != null ? e.getEmergencyName()
+                : (cf.get("emergencyName") == null ? null : String.valueOf(cf.get("emergencyName")));
+        String emergencyPhone = e.getEmergencyPhone() != null ? e.getEmergencyPhone()
+                : (cf.get("emergencyPhone") == null ? null : String.valueOf(cf.get("emergencyPhone")));
+        LocalDate exitDate = e.getExitDate();
+        if (exitDate == null && cf.get("exitDate") != null && !String.valueOf(cf.get("exitDate")).isBlank()) {
+            try {
+                exitDate = LocalDate.parse(String.valueOf(cf.get("exitDate")));
+            } catch (Exception ignored) {
+                exitDate = null;
+            }
+        }
+        String exitReason = e.getExitReason() != null ? e.getExitReason()
+                : (cf.get("exitReason") == null ? null : String.valueOf(cf.get("exitReason")));
         return new EmployeeResponse(
                 e.getId(),
                 e.getEmployeeCode(),
@@ -103,6 +150,16 @@ public record EmployeeResponse(
                 e.getStatus(),
                 e.getPhone(),
                 e.getPersonalEmail(),
+                address,
+                e.getDateOfBirth(),
+                emergencyName,
+                relation,
+                relation,
+                emergencyPhone,
+                e.getPhotoObjectKey(),
+                photoFileId,
+                exitDate,
+                exitReason,
                 e.getBaseSalary(),
                 e.getHourlyRate(),
                 customFields,

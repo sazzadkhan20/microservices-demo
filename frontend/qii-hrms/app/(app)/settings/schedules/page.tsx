@@ -24,6 +24,9 @@ export default function SchedulesPage() {
   const canManage = can("attendance_settings", "edit");
 
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("ALL");
+  const [locationFilter, setLocationFilter] = useState("");
+  const [teamFilter, setTeamFilter] = useState("");
+  const [employeeFilter, setEmployeeFilter] = useState("");
   const [editor, setEditor] = useState<ScheduleEditorTarget | null>(null);
   const [removeRow, setRemoveRow] = useState<Rec | null>(null);
 
@@ -43,7 +46,6 @@ export default function SchedulesPage() {
       });
       const parsed = pageResponseSchema(scheduleRowSchema).safeParse(data);
       if (!parsed.success) {
-        // Still show rows if envelope is usable — don't blank the admin UI on minor shape drift.
         const content = Array.isArray((data as { content?: unknown })?.content)
           ? ((data as { content: Rec[] }).content as Rec[])
           : [];
@@ -55,11 +57,54 @@ export default function SchedulesPage() {
     enabled: canView,
   });
 
+  const showEmployeeFilter = scopeFilter === "ALL" || scopeFilter === "EMPLOYEE";
+
+  /** When an employee is picked, show the single schedule that wins for them (person → team → location). */
+  const resolveQ = useQuery({
+    queryKey: ["work-schedule-resolve", employeeFilter],
+    queryFn: ({ signal }) =>
+      apiFetch<{ source?: string; sourceId?: number | string; resolved?: Rec; workPattern?: string }>(
+        api.hrms(`work-schedules/resolve/${employeeFilter}`),
+        { signal },
+      ),
+    enabled: canView && showEmployeeFilter && !!employeeFilter,
+  });
+
   const rows = useMemo(() => {
     const all = (listQ.data?.content ?? []) as Rec[];
-    if (scopeFilter === "ALL") return all;
-    return all.filter((r) => String(r.scopeType).toUpperCase() === scopeFilter);
-  }, [listQ.data, scopeFilter]);
+
+    // Employee picked: one resolved row only (personal if set, else team, else location default).
+    if (showEmployeeFilter && employeeFilter) {
+      const resolved = resolveQ.data?.resolved;
+      if (!resolved) return [];
+      // Prefer the live list row (has id for edit/remove) when it matches the resolved source.
+      const source = String(resolveQ.data?.source ?? resolved.scopeType ?? "").toUpperCase();
+      const sourceId = String(resolveQ.data?.sourceId ?? resolved.scopeId ?? "");
+      const fromList = all.find(
+        (r) =>
+          String(r.scopeType).toUpperCase() === source && String(r.scopeId) === sourceId,
+      );
+      return [fromList ?? ({ ...resolved, scopeType: source, scopeId: sourceId } as Rec)];
+    }
+
+    const byScope =
+      scopeFilter === "ALL" ? all : all.filter((r) => String(r.scopeType).toUpperCase() === scopeFilter);
+    if (scopeFilter === "LOCATION" && locationFilter) {
+      return byScope.filter((r) => String(r.scopeId) === locationFilter);
+    }
+    if (scopeFilter === "TEAM" && teamFilter) {
+      return byScope.filter((r) => String(r.scopeId) === teamFilter);
+    }
+    return byScope;
+  }, [
+    listQ.data,
+    scopeFilter,
+    locationFilter,
+    teamFilter,
+    employeeFilter,
+    showEmployeeFilter,
+    resolveQ.data,
+  ]);
 
   const rulesQ = useQuery({
     queryKey: ["work-schedule-rules"],
@@ -89,6 +134,12 @@ export default function SchedulesPage() {
     onError: (e: Error) => toast.error(e),
   });
 
+  function resetFilters() {
+    setLocationFilter("");
+    setTeamFilter("");
+    setEmployeeFilter("");
+  }
+
   if (!canView) {
     return (
       <div className="stack">
@@ -98,17 +149,43 @@ export default function SchedulesPage() {
     );
   }
 
+  const empResolvedSource =
+    showEmployeeFilter && employeeFilter
+      ? String(resolveQ.data?.source ?? "").toUpperCase()
+      : "";
+  const empNameLabel = employeeFilter
+    ? empName.get(employeeFilter) ?? `#${employeeFilter}`
+    : "";
+
   return (
     <div className="stack">
       <PageHeader
         title="Work schedules"
-        subtitle={`A person’s schedule overrides their team’s, and a team’s overrides the location’s (${resolveOrder}).`}
+        subtitle={`Resolve order ${resolveOrder}. Saving a location or team schedule never changes an existing personal schedule.`}
         actions={
           canManage ? (
             <button
               type="button"
               className="btn primary"
-              onClick={() => setEditor({ mode: "new", preferScope: "TEAM" })}
+              onClick={() =>
+                setEditor({
+                  mode: "new",
+                  preferScope:
+                    scopeFilter === "LOCATION"
+                      ? "LOCATION"
+                      : scopeFilter === "EMPLOYEE"
+                        ? "EMPLOYEE"
+                        : "TEAM",
+                  preferScopeId:
+                    scopeFilter === "LOCATION"
+                      ? locationFilter || undefined
+                      : scopeFilter === "TEAM"
+                        ? teamFilter || undefined
+                        : scopeFilter === "EMPLOYEE"
+                          ? employeeFilter || undefined
+                          : undefined,
+                })
+              }
             >
               Add override
             </button>
@@ -116,7 +193,7 @@ export default function SchedulesPage() {
         }
       />
 
-      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
         {(
           [
             ["ALL", "All"],
@@ -129,12 +206,15 @@ export default function SchedulesPage() {
             key={id}
             type="button"
             className={`btn sm ${scopeFilter === id ? "primary" : ""}`}
-            onClick={() => setScopeFilter(id)}
+            onClick={() => {
+              setScopeFilter(id);
+              resetFilters();
+            }}
           >
             {label}
           </button>
         ))}
-        {canManage ? (
+        {canManage && scopeFilter === "ALL" ? (
           <button
             type="button"
             className="btn sm"
@@ -145,10 +225,69 @@ export default function SchedulesPage() {
         ) : null}
       </div>
 
-      <ResolveChecker employees={employees.data ?? []} />
+      <div className="card">
+        <div className="form-grid">
+          {scopeFilter === "LOCATION" ? (
+            <FormField label="Filter by location">
+              <select value={locationFilter} onChange={(e) => setLocationFilter(e.target.value)}>
+                <option value="">All locations</option>
+                {(locations.data ?? []).map((l) => (
+                  <option key={String(l.id)} value={String(l.id)}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          ) : null}
+
+          {scopeFilter === "TEAM" ? (
+            <FormField label="Filter by team">
+              <select value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)}>
+                <option value="">All teams</option>
+                {(teams.data ?? []).map((t) => (
+                  <option key={String(t.id)} value={String(t.id)}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          ) : null}
+
+          {showEmployeeFilter ? (
+            <FormField
+              label="Filter by employee"
+              hint="Shows the one schedule that applies to this person (personal, else team, else location)."
+            >
+              <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)}>
+                <option value="">All people</option>
+                {(employees.data ?? []).map((e) => (
+                  <option key={String(e.id)} value={String(e.id)}>
+                    {str(e.fullName, `#${e.id}`)}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          ) : null}
+        </div>
+        {showEmployeeFilter && employeeFilter && resolveQ.data ? (
+          <p className="small muted" style={{ marginTop: 8 }}>
+            {empNameLabel}: effective source{" "}
+            <b>{empResolvedSource || "none"}</b>
+            {resolveQ.data.workPattern ? (
+              <>
+                {" "}
+                · work pattern <b>{str(resolveQ.data.workPattern)}</b>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+      </div>
 
       <div className="card">
         {listQ.error ? <div className="notice bad">{(listQ.error as Error).message}</div> : null}
+        {showEmployeeFilter && employeeFilter && resolveQ.isLoading ? (
+          <div className="notice">Resolving schedule for {empNameLabel}…</div>
+        ) : null}
         <div className="tbl-wrap">
           <table>
             <thead>
@@ -167,9 +306,11 @@ export default function SchedulesPage() {
               {rows.length === 0 ? (
                 <tr>
                   <td colSpan={canManage ? 8 : 7} className="empty">
-                    {listQ.isLoading
+                    {listQ.isLoading || (employeeFilter && resolveQ.isLoading)
                       ? "Loading…"
-                      : "No schedules yet — add a location schedule (e.g. BD Sun–Thu 10:00–18:00), then team or person overrides."}
+                      : employeeFilter
+                        ? `No schedule resolved for ${empNameLabel} — set a location/team schedule or a personal override.`
+                        : "No schedules yet — add a location schedule (e.g. BD Sun–Thu 10:00–18:00), then team or person overrides."}
                   </td>
                 </tr>
               ) : (
@@ -177,12 +318,16 @@ export default function SchedulesPage() {
                   const who = whoLabel(r);
                   const hourly = String(r.mode).toUpperCase() === "HOURLY";
                   const on = parseDays(r.workingDays);
+                  const isResolvedView = !!employeeFilter;
+                  const appliesLabel = isResolvedView
+                    ? empResolvedSource === "EMPLOYEE"
+                      ? `Person · ${empNameLabel}`
+                      : `${who.kind} · ${who.name} (via ${empNameLabel})`
+                    : `${who.kind} · ${who.name}`;
                   return (
-                    <tr key={String(r.id)}>
+                    <tr key={String(r.id ?? `${r.scopeType}-${r.scopeId}`)}>
                       <td>
-                        <b>
-                          {who.kind} · {who.name}
-                        </b>
+                        <b>{appliesLabel}</b>
                       </td>
                       <td>
                         <span className="pill info">{str(r.mode)}</span>
@@ -246,8 +391,8 @@ export default function SchedulesPage() {
           </table>
         </div>
         <p className="small muted" style={{ marginTop: 12 }}>
-          Location schedules are the base for everyone at that office. Team and person rows are overrides. A check-out
-          up to 6 hours after midnight counts for the previous day.
+          Location is the base; team overrides location; person overrides both. Less-specific saves never rewrite a
+          more-specific row. Missing check-out cut-off defaults to office end + 6 hours.
         </p>
       </div>
 
@@ -271,77 +416,6 @@ export default function SchedulesPage() {
         {removeRow ? `${whoLabel(removeRow).kind} · ${whoLabel(removeRow).name}` : "—"}. Resolution falls back to the
         next level in {resolveOrder}.
       </ConfirmModal>
-    </div>
-  );
-}
-
-function ResolveChecker({ employees }: { employees: Rec[] }) {
-  const [employeeId, setEmployeeId] = useState("");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const resolveQ = useQuery({
-    queryKey: ["work-schedule-resolve", employeeId],
-    queryFn: ({ signal }) =>
-      apiFetch<{ source?: string; resolved?: Rec; workPattern?: string }>(
-        api.hrms(`work-schedules/resolve/${employeeId}`),
-        { signal },
-      ),
-    enabled: !!employeeId,
-  });
-  const hoursQ = useQuery({
-    queryKey: ["work-schedule-hours", employeeId, date],
-    queryFn: ({ signal }) =>
-      apiFetch<{ expectedHours?: number | string }>(
-        api.hrms(`work-schedules/expected-hours?employeeId=${employeeId}&date=${date}`),
-        { signal },
-      ),
-    enabled: !!employeeId && !!date,
-  });
-  const resolved = resolveQ.data?.resolved;
-  const days = parseDays(resolved?.workingDays);
-
-  return (
-    <div className="card stack">
-      <div>
-        <b>Resolve preview</b>
-        <div className="small muted">
-          Pick a person to see which schedule wins (person → team → location) and expected hours for a day.
-        </div>
-      </div>
-      <div className="form-grid">
-        <FormField label="Employee">
-          <select value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
-            <option value="">Select…</option>
-            {employees.map((e) => (
-              <option key={String(e.id)} value={String(e.id)}>
-                {str(e.fullName, `#${e.id}`)}
-              </option>
-            ))}
-          </select>
-        </FormField>
-        <FormField label="Date">
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-        </FormField>
-      </div>
-      {employeeId && resolveQ.data ? (
-        <div className="small">
-          Work pattern: <b>{str(resolveQ.data.workPattern, "—")}</b>
-          {" · "}
-          Source: <b>{str(resolveQ.data.source, "none")}</b>
-          {resolved ? (
-            <>
-              {" · "}
-              {str(resolved.mode)}{" "}
-              {String(resolved.mode).toUpperCase() === "HOURLY"
-                ? resolved.weeklyHours == null
-                  ? "(no weekly hours)"
-                  : `(${fmtNumber(resolved.weeklyHours)} h/wk)`
-                : `(${days.join(", ") || "—"} ${str(resolved.startTime)}–${str(resolved.endTime)})`}
-            </>
-          ) : null}
-          {" · "}
-          Expected hours: <b>{hoursQ.data?.expectedHours == null ? "…" : fmtNumber(hoursQ.data.expectedHours)}</b>
-        </div>
-      ) : null}
     </div>
   );
 }

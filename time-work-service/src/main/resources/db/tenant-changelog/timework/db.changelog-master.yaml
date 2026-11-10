@@ -49,3 +49,5 @@ databaseChangeLog:
       file: db/tenant-changelog/timework/changes/003-rename-settings-to-timework-settings.yaml
   - include:
       file: db/tenant-changelog/timework/changes/004-rename-audit-log.yaml
+  - include:
+      file: db/tenant-changelog/timework/changes/005-worklog-checkout-defaults.yaml

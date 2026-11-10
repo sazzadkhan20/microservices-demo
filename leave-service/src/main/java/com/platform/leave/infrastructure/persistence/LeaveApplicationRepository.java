@@ -15,6 +15,19 @@ public interface LeaveApplicationRepository extends JpaRepository<LeaveApplicati
 
     List<LeaveApplication> findAllByOrderByCreatedAtDesc();
 
+    /** Payroll: approved leave (incl. approved leave whose cancellation is still pending) overlapping a range. */
+    @Query("""
+            select a from LeaveApplication a
+             where a.employeeId in :employeeIds
+               and a.status in ('APPROVED', 'PENDING_CANCEL')
+               and a.startDate <= :endDate
+               and a.endDate >= :startDate
+             order by a.employeeId, a.startDate
+            """)
+    List<LeaveApplication> findApprovedOverlapping(@Param("employeeIds") java.util.Collection<Long> employeeIds,
+                                                   @Param("startDate") LocalDate startDate,
+                                                   @Param("endDate") LocalDate endDate);
+
     @Query("""
             select coalesce(sum(a.workingDaysCounted), 0) from LeaveApplication a
              where a.employeeId = :employeeId

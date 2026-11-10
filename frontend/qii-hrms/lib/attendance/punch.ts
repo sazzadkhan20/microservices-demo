@@ -1,7 +1,10 @@
 /**
  * FR-ATT-02 — build check-in/out body: TZ, optional geo, device, note.
  * Refused / unavailable location never blocks; label becomes "Location not shared".
+ * Time math uses employee location zone (DR-01), not browser zone.
  */
+
+import { getAppTimeZone, zonedLocalToUtc } from "@/lib/format";
 
 export type PunchBody = {
   locationLabel: string;
@@ -19,7 +22,10 @@ function deviceType(): string {
   return "Desktop";
 }
 
-function timeZone(): string {
+/** Prefer employee location TZ from /me; browser TZ is metadata only. */
+function punchTimeZone(): string {
+  const loc = getAppTimeZone();
+  if (loc) return loc;
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   } catch {
@@ -52,7 +58,7 @@ export async function buildPunchBody(note?: string): Promise<PunchBody> {
   const geo = await readGeo();
   const body: PunchBody = {
     locationLabel: geo ? "Share my location" : "Location not shared",
-    timeZone: timeZone(),
+    timeZone: punchTimeZone(),
     deviceType: deviceType(),
   };
   if (geo) {
@@ -64,8 +70,28 @@ export async function buildPunchBody(note?: string): Promise<PunchBody> {
   return body;
 }
 
-/** Overnight-aware local times → ISO instants (FR-HRS-01 / FR-ATT-07). */
-export function localRangeToIso(date: string, checkInLocal: string, checkOutLocal: string) {
+/**
+ * Overnight-aware local times in employee location TZ → ISO instants (FR-HRS-01 / FR-ATT-07).
+ * Falls back to browser local only when location TZ is unknown.
+ */
+export function localRangeToIso(
+  date: string,
+  checkInLocal: string,
+  checkOutLocal: string,
+  timeZone?: string | null,
+) {
+  const tz = timeZone?.trim() || getAppTimeZone();
+  if (tz) {
+    const cin = zonedLocalToUtc(date, checkInLocal, tz);
+    let cout = zonedLocalToUtc(date, checkOutLocal, tz);
+    if (!Number.isNaN(cin.getTime()) && !Number.isNaN(cout.getTime()) && cout <= cin) {
+      cout = new Date(cout.getTime() + 24 * 60 * 60 * 1000);
+    }
+    return {
+      requestedCheckIn: cin.toISOString(),
+      requestedCheckOut: cout.toISOString(),
+    };
+  }
   const cin = new Date(`${date}T${checkInLocal}:00`);
   let cout = new Date(`${date}T${checkOutLocal}:00`);
   if (!Number.isNaN(cin.getTime()) && !Number.isNaN(cout.getTime()) && cout <= cin) {

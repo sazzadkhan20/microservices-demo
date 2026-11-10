@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { EmployeePhoto } from "@/components/employees/EmployeePhoto";
 import { PersonalContactForm } from "@/components/employees/PersonalContactForm";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { ErrorNote } from "@/components/ui/QueryState";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { api, apiFetch } from "@/lib/api/client";
-import { fmtDate, humanize, initials, str } from "@/lib/format";
+import { fmtDate, humanize, str } from "@/lib/format";
 import { employeeSchema } from "@/lib/schemas/employee";
 
 function KV({ label, children }: { label: string; children: React.ReactNode }) {
@@ -39,6 +40,8 @@ export default function ProfilePage() {
     if (d != null && String(d).trim()) return String(d);
     return cf?.[k] == null ? "—" : String(cf[k]);
   };
+  const photoFileId =
+    e?.photoFileId ?? cf?.photoFileId ?? me.photoFileId ?? null;
 
   const permissionCount = me.permissions.length;
 
@@ -63,22 +66,7 @@ export default function ProfilePage() {
 
       <div className="card">
         <div className="row" style={{ gap: 16 }}>
-          <div
-            aria-hidden
-            style={{
-              width: 64,
-              height: 64,
-              borderRadius: "50%",
-              background: "var(--accent-soft)",
-              color: "var(--accent)",
-              display: "grid",
-              placeItems: "center",
-              fontWeight: 600,
-              fontSize: 22,
-            }}
-          >
-            {initials(me.name)}
-          </div>
+          <EmployeePhoto photoFileId={photoFileId} fullName={me.name} size={64} />
           <div style={{ flex: 1, minWidth: 200 }}>
             <h2>{me.name}</h2>
             <p className="muted">

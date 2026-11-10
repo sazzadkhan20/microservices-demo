@@ -51,8 +51,8 @@ public class EmployeeController {
     }
 
     @GetMapping("/create-options")
-    @RequiresPermission(feature = "employees", action = "create")
-    @Operation(summary = "Create-form meta: employeeCodeMode, defaults, email/pattern rules")
+    @RequiresPermission(feature = "employees", action = "view")
+    @Operation(summary = "Create/edit form meta: employeeCodeMode, defaults, email/pattern/pay rules")
     public Map<String, Object> createOptions() {
         return employeeService.createOptions();
     }
@@ -95,6 +95,20 @@ public class EmployeeController {
     @Operation(summary = "Employment field change history (FR-EMP-07)")
     public List<Map<String, Object>> employmentHistory(@PathVariable Long id) {
         return employeeService.employmentHistory(id);
+    }
+
+    @GetMapping("/{id}/eligible-managers")
+    @RequiresPermission(feature = "employees", action = "view")
+    @Operation(summary = "People who can be this employee's manager without creating a reporting loop")
+    public List<Map<String, Object>> eligibleManagers(@PathVariable Long id) {
+        return employeeService.eligibleManagers(id);
+    }
+
+    @GetMapping("/{id}/offboarding-handover")
+    @RequiresPermission(feature = "employees", action = "edit")
+    @Operation(summary = "FR-EMP-10 preview: direct reports, pending approvals, eligible handover targets (no loops)")
+    public Map<String, Object> offboardingHandover(@PathVariable Long id) {
+        return employeeService.offboardingHandover(id);
     }
 
     @PatchMapping("/{id}/status")

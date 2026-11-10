@@ -4,19 +4,22 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.payroll.domain.AuditLog;
 import com.platform.payroll.infrastructure.persistence.AuditLogRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import java.time.Instant;
 
-/** Records payroll mutations into {@code payroll_audit_log} (guide §3). */
+/**
+ * Payroll audit trail (FR-AU-01: time, actor, record, before/after, IP). Written in the SAME
+ * transaction as the change it records, so a payroll change and its audit entry commit or roll back
+ * together. Actor is always derived server-side (guide §11).
+ */
 @Service
 public class AuditService {
-
-    private static final Logger log = LoggerFactory.getLogger(AuditService.class);
 
     private final AuditLogRepository auditLogRepository;
     private final ObjectMapper objectMapper;
@@ -26,22 +29,28 @@ public class AuditService {
         this.objectMapper = objectMapper;
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void record(Long actorId, String action, String entity, String entityId,
-                       Object before, Object after) {
-        try {
-            AuditLog entry = new AuditLog();
-            entry.setAt(Instant.now());
-            entry.setActorEmployeeId(actorId);
-            entry.setAction(action);
-            entry.setEntity(entity);
-            entry.setEntityId(entityId);
-            entry.setBeforeJson(toJson(before));
-            entry.setAfterJson(toJson(after));
-            auditLogRepository.save(entry);
-        } catch (Exception e) {
-            log.warn("Audit write failed for {} {} {}: {}", action, entity, entityId, e.getMessage());
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void record(Long actorId, String action, String entity, String entityId, Object before, Object after) {
+        AuditLog entry = new AuditLog();
+        entry.setAt(Instant.now());
+        entry.setActorEmployeeId(actorId);
+        entry.setAction(action);
+        entry.setEntity(entity);
+        entry.setEntityId(entityId);
+        entry.setBeforeJson(toJson(before));
+        entry.setAfterJson(toJson(after));
+        entry.setIp(clientIp());
+        auditLogRepository.save(entry);
+    }
+
+    private static String clientIp() {
+        if (!(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs)) {
+            return null;
         }
+        HttpServletRequest req = attrs.getRequest();
+        String forwarded = req.getHeader("X-Forwarded-For");
+        String ip = forwarded != null && !forwarded.isBlank() ? forwarded.split(",")[0].trim() : req.getRemoteAddr();
+        return ip == null ? null : ip.substring(0, Math.min(64, ip.length()));
     }
 
     private String toJson(Object obj) {
@@ -51,7 +60,7 @@ public class AuditService {
         try {
             return objectMapper.writeValueAsString(obj);
         } catch (JsonProcessingException e) {
-            return "\"<serialisation error>\"";
+            throw new IllegalStateException("Audit payload not serialisable", e);
         }
     }
 }

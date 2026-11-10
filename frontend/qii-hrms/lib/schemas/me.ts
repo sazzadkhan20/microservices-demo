@@ -14,6 +14,13 @@ export const meSchema = z.object({
   phoneNumber: z.string().nullable().optional(),
   joinDate: z.string().nullable().optional(),
   status: z.string().nullable().optional(),
+  /** Employee profile photo file id (MinIO-backed via file-service). */
+  photoFileId: z.union([z.number(), z.string()]).nullable().optional(),
+  photoObjectKey: z.string().nullable().optional(),
+  /** Org location — drives attendance day / late / cut-off and UI clock (DR-01). */
+  locationId: z.union([z.number(), z.string()]).nullable().optional(),
+  locationName: z.string().nullable().optional(),
+  locationTimeZone: z.string().nullable().optional(),
 });
 
 export type Me = z.infer<typeof meSchema>;

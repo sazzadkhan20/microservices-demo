@@ -89,7 +89,9 @@ public class AttendanceController {
     @RequiresPermission(feature = "attendance", action = "view")
     @Operation(summary = "Team attendance for a date (RBAC scope ALL/TEAM)")
     public List<Map<String, Object>> team(@RequestParam(required = false) String date) {
-        LocalDate d = date == null || date.isBlank() ? LocalDate.now() : LocalDate.parse(date);
+        LocalDate d = date == null || date.isBlank()
+                ? attendanceService.actorLocalToday()
+                : LocalDate.parse(date);
         return attendanceService.teamForDate(d);
     }
 
@@ -115,12 +117,17 @@ public class AttendanceController {
     public Map<String, Object> correct(@RequestBody Map<String, Object> body) {
         Long employeeId = body.get("employeeId") == null ? null : Long.valueOf(String.valueOf(body.get("employeeId")));
         LocalDate workDate = LocalDate.parse(String.valueOf(body.get("workDate")));
-        Instant checkIn = body.get("checkInAt") == null ? null : Instant.parse(String.valueOf(body.get("checkInAt")));
-        Instant checkOut = body.get("checkOutAt") == null ? null : Instant.parse(String.valueOf(body.get("checkOutAt")));
+        Instant checkIn = body.get("checkInAt") == null || String.valueOf(body.get("checkInAt")).isBlank()
+                ? null : Instant.parse(String.valueOf(body.get("checkInAt")));
+        boolean clearCheckOut = Boolean.parseBoolean(String.valueOf(body.getOrDefault("clearCheckOut", "false")));
+        Instant checkOut = null;
+        if (!clearCheckOut && body.get("checkOutAt") != null && !String.valueOf(body.get("checkOutAt")).isBlank()) {
+            checkOut = Instant.parse(String.valueOf(body.get("checkOutAt")));
+        }
         String statusCode = body.get("statusCode") == null ? null : String.valueOf(body.get("statusCode"));
         String statusLabel = body.get("statusLabel") == null ? null : String.valueOf(body.get("statusLabel"));
         Object reasonRaw = body.get("reason") != null ? body.get("reason") : body.get("note");
         String note = reasonRaw == null ? null : String.valueOf(reasonRaw);
-        return attendanceService.correct(employeeId, workDate, checkIn, checkOut, statusCode, statusLabel, note);
+        return attendanceService.correct(employeeId, workDate, checkIn, checkOut, statusCode, statusLabel, note, clearCheckOut);
     }
 }

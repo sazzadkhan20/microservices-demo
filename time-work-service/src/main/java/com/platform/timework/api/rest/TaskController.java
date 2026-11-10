@@ -39,6 +39,13 @@ public class TaskController {
         return taskService.rules();
     }
 
+    @GetMapping("/assignee-candidates")
+    @RequiresPermission(feature = "tasks", action = "edit")
+    @Operation(summary = "People the caller may assign (reporting team / create-edit scope)")
+    public List<Map<String, Object>> assigneeCandidates() {
+        return taskService.assigneeCandidates();
+    }
+
     @GetMapping("/assigned")
     @RequiresPermission(feature = "attendance", action = "checkin")
     @Operation(summary = "Open tasks assigned to the caller (work-log picker)")
@@ -48,14 +55,15 @@ public class TaskController {
 
     @GetMapping
     @RequiresPermission(feature = "tasks", action = "view")
-    @Operation(summary = "List tasks with logged totals and overdue flag")
+    @Operation(summary = "List tasks with logged totals and overdue flag (scoped by tasks:view)")
     public PageResponse<Map<String, Object>> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
         return DynamicListSupport.page(
                 taskService.listEnriched(),
                 query,
                 task -> DynamicListSupport.containsIgnoreCase(String.valueOf(task.get("title")), query.q())
-                        || DynamicListSupport.containsIgnoreCase(String.valueOf(task.get("clientName")), query.q()),
+                        || DynamicListSupport.containsIgnoreCase(String.valueOf(task.get("clientName")), query.q())
+                        || DynamicListSupport.containsIgnoreCase(String.valueOf(task.get("externalRef")), query.q()),
                 task -> Map.of(
                         "status", task.get("status") == null ? "" : String.valueOf(task.get("status")),
                         "clientName", task.get("clientName") == null ? "" : String.valueOf(task.get("clientName")),

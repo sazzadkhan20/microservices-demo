@@ -32,6 +32,16 @@ export const employeeSchema = z
     status: maybe(z.string()),
     phone: maybe(z.string()),
     personalEmail: maybe(z.string()),
+    address: maybe(z.string()),
+    dateOfBirth: z.any().optional(),
+    emergencyName: maybe(z.string()),
+    emergencyRelation: maybe(z.string()),
+    emergencyRelationship: maybe(z.string()),
+    emergencyPhone: maybe(z.string()),
+    photoObjectKey: maybe(z.string()),
+    photoFileId: maybe(id),
+    exitDate: z.any().optional(),
+    exitReason: maybe(z.string()),
     baseSalary: maybe(z.union([z.number(), z.string()])),
     hourlyRate: maybe(z.union([z.number(), z.string()])),
     active: z.boolean().optional(),
@@ -41,7 +51,8 @@ export const employeeSchema = z
 
 export type Employee = z.infer<typeof employeeSchema>;
 
-export const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "CONTRACTOR", "CASUAL", "INTERN"] as const;
+/** Prefer create-options.employmentTypes from API; CONTRACTOR is not used (CONTRACT only). */
+export const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "CASUAL", "INTERN"] as const;
 /** FR-EMP-12 — config-aligned patterns (legacy FIXED/SHIFT/FLEXIBLE still accepted by API). */
 export const WORK_PATTERNS = ["LOCATION_DEFAULT", "DAYS_5", "DAYS_6", "HOURLY"] as const;
 export const EMPLOYEE_STATUSES = ["Active", "On leave", "Inactive", "Resigned", "Terminated"] as const;
@@ -49,8 +60,10 @@ export const DOC_TYPES = ["Contract", "NDA", "Agreement", "ID copy", "Certificat
 export const WORK_EMAIL_DOMAIN = "qiicreative.com.au";
 /** Seed / legacy aliases accepted by tenant employeeRules.workEmailDomainAliases. */
 export const WORK_EMAIL_DOMAIN_ALIASES = ["qiicreative.local"] as const;
-export const CONTRACT_TYPES_NEED_END = new Set(["CONTRACT", "CONTRACTOR", "INTERN"]);
+export const CONTRACT_TYPES_NEED_END = new Set(["CONTRACT", "INTERN"]);
 export const OFFBOARD_STATUSES = new Set(["Resigned", "Terminated"]);
+/** FR-EMP-11 — statuses that deactivate the account (self / last Super Admin rules). */
+export const DEACTIVATE_STATUSES = new Set(["Inactive", "Resigned", "Terminated"]);
 
 export function isAllowedWorkEmail(email: string): boolean {
   const lower = email.trim().toLowerCase();

@@ -86,7 +86,7 @@ spring:
         - id: hrms-leave
           uri: ${LEAVE_URI:http://127.0.0.1:8086}
           predicates:
-            - Path=/hrms/api/leave-applications/**,/hrms/api/leave-balances/**,/hrms/api/leave-types/**,/hrms/api/leave-categories/**,/hrms/api/leave-policy/**,/hrms/api/leave-delegates/**,/hrms/api/leave/**,/hrms/api/approvals/**
+            - Path=/hrms/api/leave-applications/**,/hrms/api/leave-balances/**,/hrms/api/leave-types/**,/hrms/api/leave-categories/**,/hrms/api/leave-policy/**,/hrms/api/leave/**,/hrms/api/approvals/**
           filters:
             - RewritePath=/hrms/(?<segment>.*), /${segment}
 

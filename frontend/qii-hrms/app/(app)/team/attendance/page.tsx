@@ -15,15 +15,18 @@ import { api, apiFetch } from "@/lib/api/client";
 import { useDepartments } from "@/lib/api/lookups";
 import { localRangeToIso } from "@/lib/attendance/punch";
 import { addDaysIso } from "@/lib/admin";
-import { fmtDate, fmtNumber, fmtTime, todayIso } from "@/lib/format";
+import { fmtDate, fmtNumber, fmtTime, getAppTimeZone, todayIso } from "@/lib/format";
 import { teamAttendanceListSchema, type TeamAttendanceRow } from "@/lib/schemas/admin";
 
 const GROUPS: { id: string; label: string; codes: string[] }[] = [
   { id: "P", label: "Present", codes: ["P", "W"] },
   { id: "L", label: "Late", codes: ["L"] },
   { id: "HD", label: "Half day", codes: ["HD"] },
+  { id: "M", label: "Missing out", codes: ["M"] },
   { id: "A", label: "Absent", codes: ["A", "NC"] },
   { id: "OL", label: "On leave", codes: ["OL"] },
+  { id: "HO", label: "Holiday", codes: ["HO", "H"] },
+  { id: "WO", label: "Week off", codes: ["WO"] },
 ];
 
 const codeOf = (r: TeamAttendanceRow) => String(r.statusCode ?? "").toUpperCase();
@@ -35,6 +38,7 @@ type EditTarget = {
   checkInLocal: string;
   checkOutLocal: string;
   reason: string;
+  timeZone?: string | null;
 };
 
 export default function TeamAttendancePage() {
@@ -91,10 +95,22 @@ export default function TeamAttendancePage() {
     onError: (e: Error) => setEditErr(e.message || "Save failed"),
   });
 
-  function toLocalHm(iso: unknown, fallback: string) {
+  function toLocalHm(iso: unknown, fallback: string, timeZone?: string | null) {
     if (!iso) return fallback;
     const d = new Date(String(iso));
     if (Number.isNaN(d.getTime())) return fallback;
+    const tz = timeZone?.trim() || getAppTimeZone();
+    if (tz) {
+      const parts = new Intl.DateTimeFormat("en-GB", {
+        timeZone: tz,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(d);
+      const h = parts.find((p) => p.type === "hour")?.value ?? "00";
+      const m = parts.find((p) => p.type === "minute")?.value ?? "00";
+      return `${h}:${m}`;
+    }
     const pad = (n: number) => String(n).padStart(2, "0");
     return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
@@ -104,13 +120,15 @@ export default function TeamAttendancePage() {
       toast.error(new Error("You cannot edit your own attendance"));
       return;
     }
+    const tz = r.timeZone ?? null;
     setEdit({
       employeeId: r.employeeId!,
       name: String(r.employeeName ?? r.name ?? `#${r.employeeId}`),
       workDate: date,
-      checkInLocal: toLocalHm(r.checkIn, "09:00"),
-      checkOutLocal: toLocalHm(r.checkOut, "18:00"),
+      checkInLocal: toLocalHm(r.checkIn, "09:00", tz),
+      checkOutLocal: toLocalHm(r.checkOut, "18:00", tz),
       reason: "",
+      timeZone: tz,
     });
     setEditErr("");
   }
@@ -122,7 +140,7 @@ export default function TeamAttendancePage() {
       setEditErr("Reason is required (min 3 characters)");
       return;
     }
-    const times = localRangeToIso(edit.workDate, edit.checkInLocal, edit.checkOutLocal);
+    const times = localRangeToIso(edit.workDate, edit.checkInLocal, edit.checkOutLocal, edit.timeZone);
     saveEdit.mutate({
       employeeId: Number(edit.employeeId),
       workDate: edit.workDate,

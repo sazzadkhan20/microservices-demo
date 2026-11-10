@@ -56,10 +56,10 @@ public class EmployeeDocumentController {
 
     @GetMapping
     @RequiresPermission(feature = "employees", action = "view")
-    @Operation(summary = "List document metadata for an employee")
+    @Operation(summary = "List document metadata for an employee (includes live file-service scanStatus)")
     @Transactional(readOnly = true)
     public List<Map<String, Object>> list(@PathVariable Long id) {
-        return documentsOf(requireEmployee(id));
+        return enrichScanState(documentsOf(requireEmployee(id)));
     }
 
     @PostMapping
@@ -83,6 +83,8 @@ public class EmployeeDocumentController {
             throw new IllegalArgumentException("fileId must be numeric");
         }
         filesGatewayClient.assertAttachable(parsedFileId);
+        // Guide §8 — bind file to this employee so subject + HR can resolve scan/download ACL.
+        filesGatewayClient.bindEmployee(parsedFileId, id);
         String name = requireText(body, "name");
         String expiresAt = text(body.get("expiresAt"));
 
@@ -102,10 +104,11 @@ public class EmployeeDocumentController {
         if (actor != null) {
             doc.put("uploadedBy", actor);
         }
+        putScanFields(doc, parsedFileId);
         docs.add(doc);
         save(employee, docs);
         auditService.record(actor, "CREATE", "EmployeeDocument", id + ":" + fileId, null, doc);
-        return doc;
+        return enrichScanState(List.of(doc)).get(0);
     }
 
     @PostMapping("/{fileId}/access")
@@ -174,11 +177,16 @@ public class EmployeeDocumentController {
     }
 
     private void save(Employee employee, List<Map<String, Object>> docs) {
-        // strip derived alias before persisting; new map instance so Hibernate detects the JSON change
+        // strip derived alias / live scan fields before persisting; new map so Hibernate detects JSON change
         List<Map<String, Object>> clean = new ArrayList<>();
         for (Map<String, Object> d : docs) {
             Map<String, Object> c = new LinkedHashMap<>(d);
             c.remove("documentType");
+            c.remove("scanStatus");
+            c.remove("downloadable");
+            c.remove("scanDetail");
+            c.remove("scannedAt");
+            c.remove("releasedAt");
             clean.add(c);
         }
         Map<String, Object> next = new HashMap<>(employee.getCustomFields() == null ? Map.of() : employee.getCustomFields());
@@ -186,6 +194,49 @@ public class EmployeeDocumentController {
         employee.setCustomFields(next);
         employee.setUpdatedAt(Instant.now());
         employeeRepository.save(employee);
+    }
+
+    /** Live scan fields from file-service (guide §8) — not stored on the employee JSON. */
+    private List<Map<String, Object>> enrichScanState(List<Map<String, Object>> docs) {
+        List<Map<String, Object>> out = new ArrayList<>(docs.size());
+        for (Map<String, Object> d : docs) {
+            Map<String, Object> copy = new LinkedHashMap<>(d);
+            Object rawId = copy.get("fileId");
+            if (rawId != null && !String.valueOf(rawId).isBlank()) {
+                try {
+                    putScanFields(copy, Long.parseLong(String.valueOf(rawId).trim()));
+                } catch (Exception ignored) {
+                    copy.putIfAbsent("scanStatus", "UNKNOWN");
+                    copy.putIfAbsent("downloadable", false);
+                }
+            }
+            out.add(copy);
+        }
+        return out;
+    }
+
+    private void putScanFields(Map<String, Object> doc, Long fileId) {
+        try {
+            Map<String, Object> desc = filesGatewayClient.describe(fileId);
+            if (desc.get("scanStatus") != null) {
+                doc.put("scanStatus", desc.get("scanStatus"));
+            }
+            if (desc.get("downloadable") != null) {
+                doc.put("downloadable", desc.get("downloadable"));
+            }
+            if (desc.get("scanDetail") != null) {
+                doc.put("scanDetail", desc.get("scanDetail"));
+            }
+            if (desc.get("scannedAt") != null) {
+                doc.put("scannedAt", desc.get("scannedAt"));
+            }
+            if (desc.get("releasedAt") != null) {
+                doc.put("releasedAt", desc.get("releasedAt"));
+            }
+        } catch (RuntimeException ex) {
+            doc.putIfAbsent("scanStatus", "UNKNOWN");
+            doc.putIfAbsent("downloadable", false);
+        }
     }
 
     private static String requireText(Map<String, Object> body, String key) {

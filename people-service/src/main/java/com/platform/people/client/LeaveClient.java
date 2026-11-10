@@ -31,48 +31,83 @@ public class LeaveClient {
     }
 
     public boolean hasPendingApprovals(Long leavingEmployeeId) {
+        return countPendingApprovals(leavingEmployeeId) > 0;
+    }
+
+    public int countPendingApprovals(Long leavingEmployeeId) {
         try {
             Map<?, ?> body = client.get()
                     .uri("/api/internal/approvals/pending-for/{id}", leavingEmployeeId)
                     .header(InternalCalls.HEADER, internalKey)
                     .retrieve()
                     .body(Map.class);
-            return body != null && Boolean.TRUE.equals(body.get("pending"));
+            if (body == null) {
+                return 0;
+            }
+            Object count = body.get("count");
+            if (count instanceof Number n) {
+                return Math.max(0, n.intValue());
+            }
+            return Boolean.TRUE.equals(body.get("pending")) ? 1 : 0;
         } catch (Exception e) {
             log.warn("Leave pending-approvals check failed: {}", e.getMessage());
             throw new IllegalStateException("Leave service unavailable for offboarding check", e);
         }
     }
 
-    public void reassignPendingApprovals(Long leavingId, Long newApproverId) {
+    /** @return number of pending approval steps moved to {@code newApproverId} */
+    public int reassignPendingApprovals(Long leavingId, Long newApproverId) {
         try {
-            client.post()
+            Map<?, ?> body = client.post()
                     .uri("/api/internal/approvals/reassign")
                     .header(InternalCalls.HEADER, internalKey)
                     .body(Map.of("leavingId", leavingId, "newApproverId", newApproverId))
                     .retrieve()
-                    .toBodilessEntity();
+                    .body(Map.class);
+            if (body == null) {
+                return 0;
+            }
+            Object updated = body.get("updated");
+            if (updated instanceof Number n) {
+                return Math.max(0, n.intValue());
+            }
+            return 0;
         } catch (Exception e) {
             log.warn("Leave reassign approvals failed: {}", e.getMessage());
             throw new IllegalStateException("Leave service unavailable for approval reassignment", e);
         }
     }
 
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> leaveFacts(Long employeeId, String period) {
+    /**
+     * Move pending leave-approval steps for one applicant from old manager → new manager
+     * when a reporting-line change becomes effective.
+     */
+    public int reassignApprovalsForApplicant(Long applicantId, Long fromApproverId, Long toApproverId) {
+        if (applicantId == null || fromApproverId == null || toApproverId == null
+                || fromApproverId.equals(toApproverId)) {
+            return 0;
+        }
         try {
-            Map<?, ?> body = client.get()
-                    .uri(uri -> uri.path("/api/internal/leave-facts/{id}")
-                            .queryParam("period", period)
-                            .build(employeeId))
+            Map<?, ?> body = client.post()
+                    .uri("/api/internal/approvals/reassign-for-applicant")
                     .header(InternalCalls.HEADER, internalKey)
+                    .body(Map.of(
+                            "applicantId", applicantId,
+                            "fromApproverId", fromApproverId,
+                            "toApproverId", toApproverId))
                     .retrieve()
                     .body(Map.class);
-            return body == null ? Map.of() : (Map<String, Object>) body;
+            if (body == null) {
+                return 0;
+            }
+            Object updated = body.get("updated");
+            if (updated instanceof Number n) {
+                return Math.max(0, n.intValue());
+            }
+            return 0;
         } catch (Exception e) {
-            log.warn("Leave facts fetch failed: {}", e.getMessage());
-            // PAY-01: fail closed — caller must not invent zeros
-            throw new IllegalStateException("Leave service unavailable for payroll facts", e);
+            log.warn("Leave reassign-for-applicant failed: {}", e.getMessage());
+            throw new IllegalStateException("Leave service unavailable for manager-change approval move", e);
         }
     }
 }

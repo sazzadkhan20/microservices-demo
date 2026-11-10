@@ -4,13 +4,14 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { EmployeePhoto } from "@/components/employees/EmployeePhoto";
 import { OrgChartTree, type OrgChartNode } from "@/components/org/OrgChartTree";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { EmptyState, ErrorNote, Loading, NoAccess } from "@/components/ui/QueryState";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Tabs } from "@/components/ui/Tabs";
 import { api, apiFetch, apiFetchPage } from "@/lib/api/client";
-import { initials, str } from "@/lib/format";
+import { str } from "@/lib/format";
 import { useDebounced } from "@/lib/hooks";
 import { employeeSchema, type Employee } from "@/lib/schemas/employee";
 
@@ -171,25 +172,13 @@ export default function DirectoryPage() {
 }
 
 function PersonCard({ e, href }: { e: Employee; href?: string }) {
+  const photoFileId =
+    e.photoFileId ??
+    (e as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId;
   const body = (
     <div className="card stack" style={{ height: "100%" }}>
       <div className="row" style={{ gap: 12, flexWrap: "nowrap" }}>
-        <div
-          aria-hidden
-          style={{
-            width: 42,
-            height: 42,
-            flex: "none",
-            borderRadius: "50%",
-            background: "var(--accent-soft)",
-            color: "var(--accent)",
-            display: "grid",
-            placeItems: "center",
-            fontWeight: 600,
-          }}
-        >
-          {initials(e.fullName)}
-        </div>
+        <EmployeePhoto photoFileId={photoFileId} fullName={e.fullName} size={42} />
         <div style={{ minWidth: 0 }}>
           <b style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis" }}>{e.fullName}</b>
           <span className="muted small">{str(e.jobTitle)}</span>

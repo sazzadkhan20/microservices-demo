@@ -423,104 +423,23 @@ async function main() {
   });
 
   // ========== 6. PAYROLL ==========
+  // Payroll moved to month runs (docs/PAYROLL_SPEC.md). Full money/finalise/reopen coverage lives in
+  // scripts/test-payroll-e2e.mjs — this section only checks RBAC and read paths (no data written).
   await section('PAYROLL', async () => {
-    const cfg = await req('GET', `${GW}/payroll/api/payroll/config`, { headers: auth(tokA) });
-    check('payroll-config', cfg.status === 200 && cfg.json?.overtimeMultiplier != null, `ot=${cfg.json?.overtimeMultiplier}`);
-
-    const putCfg = await req('PUT', `${GW}/payroll/api/payroll/config`, {
-      headers: auth(tokA),
-      body: {
-        overtimeMultiplier: 1.5,
-        weekendMultiplier: 2.0,
-        deductionRules: [
-          ...(Array.isArray(cfg.json?.deductionRules) ? cfg.json.deductionRules.filter((r) => r.key !== 'monthlyHours') : []),
-          { type: 'CONFIG', key: 'monthlyHours', value: 176 },
-        ],
-      },
-    });
-    check('payroll-config-put', putCfg.status === 200, `status=${putCfg.status}`);
-
-    // salary history for admin (has base salary)
-    const shAdd = await req('POST', `${GW}/payroll/api/payroll/salary-history`, {
-      headers: auth(tokA),
-      body: {
-        employeeId: idEmp,
-        effectiveDate: '2026-01-01',
-        amount: 48000,
-        payType: 'MONTHLY',
-        currency: 'BDT',
-        note: `E2E salary ${stamp}`,
-      },
-    });
-    check('salary-history-add', shAdd.status === 200 || shAdd.status === 201, `status=${shAdd.status}`);
-
-    const shList = await req('GET', `${GW}/payroll/api/payroll/salary-history/employee/${idEmp}`, {
-      headers: auth(tokA),
-    });
-    check('salary-history-list', shList.status === 200 && Array.isArray(shList.json) && shList.json.length >= 1,
-      `n=${shList.json?.length}`);
-
-    // employee cannot calc
-    const empCalc = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
-      headers: auth(tokE),
-      body: { employeeId: idEmp, periodLabel: '2026-09', useHrmsAttendance: true },
-    });
-    check('payroll-calc-403', empCalc.status === 403, `status=${empCalc.status}`);
-
-    const calc = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
-      headers: auth(tokA),
-      body: { employeeId: idEmp, periodLabel: '2026-09', useHrmsAttendance: true },
-    });
-    payslipId = calc.json?.payslipId || calc.json?.id;
-    const gross = Number(calc.json?.grossAmount || 0);
-    check('payroll-calc', (calc.status === 200 || calc.status === 201) && gross > 0,
-      `status=${calc.status} gross=${gross} payMode=${calc.json?.details?.payMode || calc.json?.details?.hoursSource}`);
-
-    // manual hours path
-    const calc2 = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
-      headers: auth(tokA),
-      body: {
-        employeeId: idEmp,
-        periodLabel: '2026-08',
-        useHrmsAttendance: false,
-        regularHours: 160,
-        overtimeHours: 5,
-        weekendHours: 0,
-        absenceDays: 0,
-      },
-    });
-    check('payroll-calc-manual', calc2.status === 200 && Number(calc2.json?.grossAmount || 0) > 0,
-      `gross=${calc2.json?.grossAmount}`);
-
-    const slips = await req('GET', `${GW}/payroll/api/payroll/payslips?page=1&size=20&filter.employeeId=${idEmp}`, {
-      headers: auth(tokA),
-    });
-    check('payslips-list', slips.status === 200 && content(slips.json).length >= 1, `n=${content(slips.json).length}`);
-
-    // own payslips for employee
-    const own = await req('GET', `${GW}/payroll/api/payroll/payslips?page=1&size=20`, { headers: auth(tokE) });
-    const ownRows = content(own.json);
-    const onlySelf = ownRows.every((p) => String(p.employeeId) === String(idEmp));
-    check('payslips-own-scope', own.status === 200 && onlySelf, `n=${ownRows.length} onlySelf=${onlySelf}`);
-
-    if (payslipId) {
-      const fin = await req('POST', `${GW}/payroll/api/payroll/payslips/${payslipId}/finalize`, {
-        headers: auth(tokA),
-      });
-      check('payslip-finalize', fin.status === 200 || fin.status === 201 || fin.status === 409,
-        `status=${fin.status}`);
-      if (fin.status === 200 || fin.status === 201) {
-        const reopen = await req('POST', `${GW}/payroll/api/payroll/payslips/${payslipId}/reopen`, {
-          headers: auth(tokA),
-        });
-        check('payslip-reopen', reopen.status === 200 || reopen.status === 201, `status=${reopen.status}`);
-      } else {
-        check('payslip-reopen', true, 'skipped (finalize not applied)');
-      }
-    }
+    const settings = await req('GET', `${GW}/payroll/api/payroll/settings`, { headers: auth(tokA) });
+    check('payroll-settings', settings.status === 200 && settings.json?.absenceRule != null, `status=${settings.status}`);
+    const runs = await req('GET', `${GW}/payroll/api/payroll/runs`, { headers: auth(tokA) });
+    check('payroll-runs-list', runs.status === 200, `status=${runs.status}`);
+    const empRuns = await req('GET', `${GW}/payroll/api/payroll/runs`, { headers: auth(tokE) });
+    check('payroll-runs-emp-403', empRuns.status === 403, `status=${empRuns.status}`);
+    const empCalc = await req('POST', `${GW}/payroll/api/payroll/runs/2026-09/calculate`, { headers: auth(tokE) });
+    check('payroll-calc-emp-403', empCalc.status === 403, `status=${empCalc.status}`);
+    const own = await req('GET', `${GW}/payroll/api/payroll/me/payslips`, { headers: auth(tokE) });
+    check('payroll-own-payslips', own.status === 200 && Array.isArray(own.json), `status=${own.status}`);
+    const other = await req('GET', `${GW}/payroll/api/payroll/salary/employees/1`, { headers: auth(tokE) });
+    check('salary-other-403', other.status === 403, `status=${other.status}`);
   });
 
-  // ========== 7. FILES / DOCS / NOTIF / REPORTS ==========
   await section('FILES_NOTIF_REPORTS', async () => {
     const pdf = Buffer.from('%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n');
     const fd = new FormData();

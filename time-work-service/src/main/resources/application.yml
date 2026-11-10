@@ -69,6 +69,9 @@ platform:
   leave-base-url: ${LEAVE_BASE_URL:http://127.0.0.1:8086}
   people-base-url: ${PEOPLE_BASE_URL:${HRMS_BASE_URL:http://127.0.0.1:8081}}
   hrms-base-url: ${HRMS_BASE_URL:http://127.0.0.1:8081}
+  notification:
+    # Empty = log-only for FR-WL-06 missing-work-log notices.
+    base-url: ${NOTIFICATION_BASE_URL:http://127.0.0.1:8083}
   messaging:
     enabled: ${PLATFORM_MESSAGING_ENABLED:true}
   security:
@@ -76,6 +79,13 @@ platform:
     service-key: ${PLATFORM_SERVICE_KEY}
     internal-key: ${PLATFORM_INTERNAL_KEY}
     admin-key: ${PLATFORM_ADMIN_KEY}
+
+# FR-WL-06 daily scan (worked days with no log → employee + manager, once per day).
+timework:
+  worklog:
+    missing-notify-job-enabled: ${TIMEWORK_MISSING_WORKLOG_JOB_ENABLED:true}
+    missing-notify-cron: ${TIMEWORK_MISSING_WORKLOG_CRON:0 30 9 * * *}
+    missing-notify-zone: ${TIMEWORK_MISSING_WORKLOG_ZONE:Asia/Dhaka}
 
 management:
   endpoint:

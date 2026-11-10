@@ -1,11 +1,27 @@
 /**
  * Formatting helpers shared by pages. All tolerate null/undefined/odd input.
  *
+ * DR-01 — times are stored UTC and shown in the employee's location time zone.
+ * AuthProvider calls setAppTimeZone(me.locationTimeZone) after login so fmt* /
+ * todayIso use that zone system-wide (not the browser/DB clock).
+ *
  * NOTE: the backend serialises dates inconsistently — JPA entities/DTO records emit
  *   LocalDate  -> [2026, 4, 14]
  *   Instant    -> 1793265569.422352000 (epoch seconds, decimal)
  * while hand-built maps emit ISO strings. `toDate` normalises all of them.
  */
+
+let appTimeZone: string | null = null;
+
+/** Called from AuthProvider when /me loads — IANA id e.g. Australia/Darwin. */
+export function setAppTimeZone(tz: string | null | undefined): void {
+  const t = tz?.trim();
+  appTimeZone = t ? t : null;
+}
+
+export function getAppTimeZone(): string | undefined {
+  return appTimeZone ?? undefined;
+}
 
 export function str(v: unknown, fallback = "—"): string {
   if (v === null || v === undefined || v === "") return fallback;
@@ -18,13 +34,20 @@ export function toDate(v: unknown): Date | null {
   if (Array.isArray(v)) {
     const [y, m, d, h = 0, mi = 0, s = 0] = v.map(Number);
     if (!y || !m || !d) return null;
-    return new Date(y, m - 1, d, h, mi, Math.floor(s));
+    // Treat date-only arrays as calendar dates (noon UTC) so TZ display cannot shift the day.
+    if (h === 0 && mi === 0 && s === 0 && arguments.length) {
+      /* keep */
+    }
+    return new Date(Date.UTC(y, m - 1, d, h, mi, Math.floor(s)));
   }
   if (typeof v === "number") {
     return new Date(v < 1e11 ? v * 1000 : v);
   }
   const s = String(v);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(`${s}T00:00:00`);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  }
   if (/^\d+(\.\d+)?$/.test(s)) {
     const n = Number(s);
     return new Date(n < 1e11 ? n * 1000 : n);
@@ -33,39 +56,98 @@ export function toDate(v: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** yyyy-MM-dd (local) for <input type="date"> and request bodies; "" when unknown. */
-export function isoDate(v: unknown): string {
+function resolveTz(timeZone?: string | null): string | undefined {
+  const t = timeZone?.trim() || appTimeZone || undefined;
+  return t || undefined;
+}
+
+/** yyyy-MM-dd in the viewer location zone (or explicit zone). */
+export function isoDate(v: unknown, timeZone?: string | null): string {
   if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0, 10);
   const d = toDate(v);
   if (!d) return "";
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const tz = resolveTz(timeZone);
+  if (!tz) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  return formatParts(d, tz, "ymd");
 }
 
-export function fmtDate(v: unknown): string {
+export function fmtDate(v: unknown, timeZone?: string | null): string {
+  // Pure calendar dates — never shift via browser midnight.
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const [y, m, d] = v.split("-").map(Number);
+    const noon = new Date(Date.UTC(y, m - 1, d, 12));
+    const weekday = noon.toLocaleDateString("en-GB", { weekday: "short", timeZone: "UTC" });
+    const rest = noon.toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    });
+    return `${weekday} ${rest}`;
+  }
   const d = toDate(v);
   if (!d) return v ? String(v) : "—";
-  // IR-UI-05 — e.g. "Fri 30 Oct 2026"
-  const weekday = d.toLocaleDateString("en-GB", { weekday: "short" });
-  const rest = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  const tz = resolveTz(timeZone);
+  const opts: Intl.DateTimeFormatOptions = {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    ...(tz ? { timeZone: tz } : {}),
+  };
+  const weekday = d.toLocaleDateString("en-GB", { weekday: "short", ...(tz ? { timeZone: tz } : {}) });
+  const rest = d.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    ...(tz ? { timeZone: tz } : {}),
+  });
+  void opts;
   return `${weekday} ${rest}`;
 }
 
-export function fmtDateShort(v: unknown): string {
+export function fmtDateShort(v: unknown, timeZone?: string | null): string {
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const [y, m, d] = v.split("-").map(Number);
+    const noon = new Date(Date.UTC(y, m - 1, d, 12));
+    return noon.toLocaleDateString(undefined, { day: "2-digit", month: "short", timeZone: "UTC" });
+  }
   const d = toDate(v);
   if (!d) return v ? String(v) : "—";
-  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+  const tz = resolveTz(timeZone);
+  return d.toLocaleDateString(undefined, {
+    day: "2-digit",
+    month: "short",
+    ...(tz ? { timeZone: tz } : {}),
+  });
 }
 
-export function fmtTime(v: unknown): string {
+export function fmtTime(v: unknown, timeZone?: string | null): string {
   const d = toDate(v);
   if (!d) return "—";
-  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const tz = resolveTz(timeZone);
+  return d.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    ...(tz ? { timeZone: tz } : {}),
+  });
 }
 
-export function fmtDateTime(v: unknown): string {
+export function fmtDateTime(v: unknown, timeZone?: string | null): string {
   const d = toDate(v);
   if (!d) return v ? String(v) : "—";
-  return d.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  const tz = resolveTz(timeZone);
+  return d.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    ...(tz ? { timeZone: tz } : {}),
+  });
 }
 
 export function fmtRange(start: unknown, end: unknown): string {
@@ -84,7 +166,6 @@ export function fmtNumber(v: unknown, digits = 2): string {
 
 export function fmtMoney(v: unknown, currency?: string | null): string {
   if (v === null || v === undefined || v === "") return "—";
-  // Payroll me/current nests MTD as `{ netAmount, grossAmount, ... }`
   if (typeof v === "object" && v !== null) {
     const o = v as Record<string, unknown>;
     const nested = o.netAmount ?? o.net ?? o.amount ?? o.grossAmount;
@@ -117,18 +198,21 @@ export function initials(name: string | null | undefined): string {
   return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
 }
 
-export function todayIso(): string {
-  return isoDate(new Date());
+/** Today's calendar date in the employee's location zone. */
+export function todayIso(timeZone?: string | null): string {
+  const tz = resolveTz(timeZone);
+  if (!tz) return isoDate(new Date());
+  return formatParts(new Date(), tz, "ymd");
 }
 
-export function currentPeriod(): string {
-  return todayIso().slice(0, 7);
+export function currentPeriod(timeZone?: string | null): string {
+  return todayIso(timeZone).slice(0, 7);
 }
 
 /** Inclusive calendar-day count between two yyyy-MM-dd strings. */
 export function daysBetween(start: string, end: string): number {
-  const a = new Date(`${start}T00:00:00`).getTime();
-  const b = new Date(`${end}T00:00:00`).getTime();
+  const a = new Date(`${start}T00:00:00Z`).getTime();
+  const b = new Date(`${end}T00:00:00Z`).getTime();
   if (Number.isNaN(a) || Number.isNaN(b)) return 0;
   return Math.round((b - a) / 86_400_000) + 1;
 }
@@ -143,4 +227,43 @@ export function humanize(v: unknown): string {
 export function pick(r: Record<string, unknown>, ...keys: string[]): unknown {
   for (const k of keys) if (r[k] !== undefined && r[k] !== null && r[k] !== "") return r[k];
   return null;
+}
+
+/**
+ * Convert wall-clock YYYY-MM-DD + HH:mm in an IANA zone to a UTC Date.
+ * Used for correction / HR edit so times match the employee's location, not the browser.
+ */
+export function zonedLocalToUtc(date: string, hm: string, timeZone: string): Date {
+  const [y, mo, d] = date.split("-").map(Number);
+  const [h, mi] = hm.split(":").map(Number);
+  let utc = Date.UTC(y, mo - 1, d, h, mi, 0);
+  for (let i = 0; i < 4; i++) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(utc));
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value || 0);
+    const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second") || 0);
+    const desired = Date.UTC(y, mo - 1, d, h, mi, 0);
+    utc += desired - asUtc;
+  }
+  return new Date(utc);
+}
+
+function formatParts(d: Date, timeZone: string, mode: "ymd"): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value || "";
+  if (mode === "ymd") return `${get("year")}-${get("month")}-${get("day")}`;
+  return "";
 }

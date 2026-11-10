@@ -52,7 +52,8 @@ public class RbacInterceptor implements HandlerInterceptor {
         }
         PermissionSet permissions;
         try {
-            permissions = new PermissionSet(hrms.getPermissions(employeeId));
+            boolean write = !"GET".equalsIgnoreCase(request.getMethod()) && !"HEAD".equalsIgnoreCase(request.getMethod());
+            permissions = new PermissionSet(write ? hrms.getPermissionsFresh(employeeId) : hrms.getPermissions(employeeId));
         } catch (StatusRuntimeException ex) {
             // Fail closed: if HRMS cannot confirm permissions, nothing is granted.
             log.warn("Permission lookup failed for employee {}: {}", employeeId, ex.getStatus());

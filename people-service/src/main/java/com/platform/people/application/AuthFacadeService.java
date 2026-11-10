@@ -4,9 +4,11 @@ import com.platform.common.security.AuthContext;
 import com.platform.people.domain.Department;
 import com.platform.people.domain.Designation;
 import com.platform.people.domain.Employee;
+import com.platform.people.domain.Location;
 import com.platform.people.infrastructure.persistence.DepartmentRepository;
 import com.platform.people.infrastructure.persistence.DesignationRepository;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
+import com.platform.people.infrastructure.persistence.LocationRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,16 +24,19 @@ public class AuthFacadeService {
     private final EmployeeRepository employeeRepository;
     private final DepartmentRepository departmentRepository;
     private final DesignationRepository designationRepository;
+    private final LocationRepository locationRepository;
     private final RbacService rbacService;
 
     public AuthFacadeService(
             EmployeeRepository employeeRepository,
             DepartmentRepository departmentRepository,
             DesignationRepository designationRepository,
+            LocationRepository locationRepository,
             RbacService rbacService) {
         this.employeeRepository = employeeRepository;
         this.departmentRepository = departmentRepository;
         this.designationRepository = designationRepository;
+        this.locationRepository = locationRepository;
         this.rbacService = rbacService;
     }
 
@@ -81,6 +86,31 @@ public class AuthFacadeService {
         m.put("phoneNumber", e.getPhone());
         m.put("joinDate", e.getStartDate() == null ? null : e.getStartDate().toString());
         m.put("status", e.getStatus());
+        Long photoFileId = null;
+        Map<String, Object> cf = e.getCustomFields();
+        if (cf != null && cf.get("photoFileId") != null && !String.valueOf(cf.get("photoFileId")).isBlank()) {
+            try {
+                photoFileId = Long.valueOf(String.valueOf(cf.get("photoFileId")).trim());
+            } catch (NumberFormatException ignored) {
+                photoFileId = null;
+            }
+        }
+        m.put("photoFileId", photoFileId);
+        m.put("photoObjectKey", e.getPhotoObjectKey());
+        // DR-01 / NFR-16 — FE shows dates/times in the employee's location zone.
+        m.put("locationId", e.getLocationId());
+        if (e.getLocationId() != null) {
+            locationRepository.findById(e.getLocationId()).ifPresentOrElse(loc -> {
+                m.put("locationName", loc.getName());
+                m.put("locationTimeZone", loc.getTimeZone());
+            }, () -> {
+                m.put("locationName", null);
+                m.put("locationTimeZone", null);
+            });
+        } else {
+            m.put("locationName", null);
+            m.put("locationTimeZone", null);
+        }
         return m;
     }
 }

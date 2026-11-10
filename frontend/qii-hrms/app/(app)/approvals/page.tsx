@@ -11,7 +11,7 @@ import { StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import { byId, rowsOf, useEmployeesLookup, type Rec } from "@/lib/api/lookups";
-import { fmtDate, fmtDateTime, fmtNumber, fmtRange, str } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtNumber, fmtRange, fmtTime, str } from "@/lib/format";
 import type { LeaveRow } from "@/lib/schemas/leave";
 
 type Decision = {
@@ -245,6 +245,7 @@ export default function ApprovalsPage() {
                   corrRows.map((r) => {
                     const who = str(r.employeeName, `Employee #${r.employeeId}`);
                     const isPending = String(r.status).toUpperCase() === "PENDING";
+                    const isOwn = String(r.employeeId) === String(me.employeeId);
                     return (
                       <tr key={String(r.id)}>
                         <td>
@@ -252,7 +253,15 @@ export default function ApprovalsPage() {
                         </td>
                         <td>{fmtDate(r.workDate)}</td>
                         <td className="mono small">
-                          {fmtDateTime(r.requestedCheckIn)} → {fmtDateTime(r.requestedCheckOut)}
+                          <div>
+                            {fmtDateTime(r.requestedCheckIn)} → {fmtDateTime(r.requestedCheckOut)}
+                          </div>
+                          {r.originalCheckIn || r.originalCheckOut ? (
+                            <div className="muted">
+                              Original: {fmtTime(r.originalCheckIn)} – {fmtTime(r.originalCheckOut)}
+                              {r.originalStatusCode ? ` (${str(r.originalStatusCode)})` : ""}
+                            </div>
+                          ) : null}
                         </td>
                         <td>
                           {str(r.reason, "")}
@@ -262,7 +271,7 @@ export default function ApprovalsPage() {
                           <StatusPill status={r.status} />
                         </td>
                         <td>
-                          {isPending ? (
+                          {isPending && !isOwn ? (
                             <div className="row approve-actions">
                               <button
                                 type="button"
@@ -281,6 +290,8 @@ export default function ApprovalsPage() {
                                 Reject
                               </button>
                             </div>
+                          ) : isPending && isOwn ? (
+                            <span className="small muted">Your request</span>
                           ) : null}
                         </td>
                       </tr>

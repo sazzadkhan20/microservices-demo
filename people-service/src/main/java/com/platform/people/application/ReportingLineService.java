@@ -6,11 +6,14 @@ import com.platform.people.domain.ReportingLineHistory;
 import com.platform.people.extension.config.TenantConfigLoader;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
 import com.platform.people.infrastructure.persistence.ReportingLineHistoryRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -33,14 +36,26 @@ public class ReportingLineService {
     private final EmployeeRepository employeeRepository;
     private final ReportingLineHistoryRepository historyRepository;
     private final TenantConfigLoader configLoader;
+    private final Clock clock;
+    /** Same zone as {@code people.offboarding.handover-zone} / cron so deferred handovers flip on the right day. */
+    private final ZoneId businessZone;
 
     public ReportingLineService(
             EmployeeRepository employeeRepository,
             ReportingLineHistoryRepository historyRepository,
-            TenantConfigLoader configLoader) {
+            TenantConfigLoader configLoader,
+            Clock clock,
+            @Value("${people.offboarding.handover-zone:Asia/Dhaka}") String businessZone) {
         this.employeeRepository = employeeRepository;
         this.historyRepository = historyRepository;
         this.configLoader = configLoader;
+        this.clock = clock;
+        this.businessZone = ZoneId.of(businessZone);
+    }
+
+    /** Calendar "today" for reporting-line effective dates (handover cron zone). */
+    public LocalDate businessToday() {
+        return LocalDate.now(clock.withZone(businessZone));
     }
 
     /**
@@ -87,11 +102,15 @@ public class ReportingLineService {
         if (employeeId == null) {
             return null;
         }
-        LocalDate date = onDate == null ? LocalDate.now() : onDate;
+        LocalDate date = onDate == null ? businessToday() : onDate;
         List<ReportingLineHistory> lines = historyRepository.findByEmployeeIdOrderByFromDateDesc(employeeId);
+        // Prefer open lines (to_date null) then latest from_date when ranges overlap.
         Optional<ReportingLineHistory> active = lines.stream()
                 .filter(h -> h.getFromDate() != null && !h.getFromDate().isAfter(date))
                 .filter(h -> h.getToDate() == null || !h.getToDate().isBefore(date))
+                .sorted(Comparator
+                        .comparing((ReportingLineHistory h) -> h.getToDate() == null ? 0 : 1)
+                        .thenComparing(ReportingLineHistory::getFromDate, Comparator.reverseOrder()))
                 .findFirst();
         if (active.isPresent()) {
             return active.get().getManagerId();
@@ -155,7 +174,7 @@ public class ReportingLineService {
         }
 
         ReportingLineRules rules = loadRules();
-        LocalDate today = LocalDate.now();
+        LocalDate today = businessToday();
         LocalDate eff = resolveAndValidateEffectiveDate(effectiveFrom, today, rules);
 
         // Ensure there is an open line for the current manager before rewriting ranges.
@@ -192,7 +211,7 @@ public class ReportingLineService {
         neu.setFromDate(eff);
         neu.setToDate(null);
         neu.setChangedBy(AuthContext.getEmployeeId());
-        neu.setCreatedAt(Instant.now());
+        neu.setCreatedAt(Instant.now(clock));
         historyRepository.save(neu);
 
         // Current pointer: only flip when the change is already in effect.
@@ -203,18 +222,25 @@ public class ReportingLineService {
     }
 
     /**
-     * Align {@code employee.manager_id} with the history line active today
+     * Align {@code employee.manager_id} with the history line active on business-zone today
      * (applies due future-dated changes when the date arrives).
      */
     @Transactional
     public void syncCurrentManager(Employee employee) {
+        syncCurrentManager(employee, businessToday());
+    }
+
+    /** Align {@code employee.manager_id} with the history line active on {@code asOf}. */
+    @Transactional
+    public void syncCurrentManager(Employee employee, LocalDate asOf) {
         if (employee == null || employee.getId() == null) {
             return;
         }
-        Long due = managerOn(employee.getId(), LocalDate.now());
+        LocalDate day = asOf != null ? asOf : businessToday();
+        Long due = managerOn(employee.getId(), day);
         if (!Objects.equals(due, employee.getManagerId())) {
             employee.setManagerId(due);
-            employee.setUpdatedAt(Instant.now());
+            employee.setUpdatedAt(Instant.now(clock));
             employeeRepository.save(employee);
         }
     }

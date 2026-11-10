@@ -5,8 +5,9 @@ import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { EmployeePhoto } from "@/components/employees/EmployeePhoto";
+import { LocationClock } from "@/components/shell/LocationClock";
 import { api, apiFetch } from "@/lib/api/client";
-import { initials } from "@/lib/format";
 import styles from "./AppShell.module.css";
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -83,6 +84,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             ☰ Menu
           </button>
           <span className={styles.grow} />
+          <LocationClock />
           <Link href="/notifications" className={`btn sm ${styles.bell}`} aria-label="Notifications">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
               <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -91,7 +93,12 @@ export function AppShell({ children }: { children: ReactNode }) {
             {unreadCount > 0 ? <span className={styles.dot}>{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
           </Link>
           <Link href="/profile" className={styles.who} title="Open profile">
-            <span className={styles.avatar}>{initials(me.name)}</span>
+            <EmployeePhoto
+              photoFileId={me.photoFileId}
+              fullName={me.name}
+              size={32}
+              className={styles.avatar}
+            />
             <span className={styles.whoText}>
               <strong>{me.name}</strong>
               <span className="muted small">{(me.roles || []).join(", ") || "Employee"}</span>

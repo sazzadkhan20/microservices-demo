@@ -183,21 +183,13 @@ async function main() {
     expected: '200', actual: String(holidays.status),
   });
 
-  // Stable acceptance period; useHrmsAttendance=false so calc is deterministic without attendance rows.
-  const payrollCalc = await req('POST', `${GW}/payroll/api/payroll/calculate`, {
+  // Payroll is a month run (docs/PAYROLL_SPEC.md); money checks live in scripts/test-payroll-e2e.mjs.
+  const payrollRun = await req('GET', `${GW}/payroll/api/payroll/runs/2026-10`, {
     headers: { Authorization: `Bearer ${tokA}` },
-    body: {
-      employeeId: idE,
-      periodLabel: '2026-12',
-      regularHours: 160,
-      overtimeHours: 0,
-      weekendHours: 0,
-      useHrmsAttendance: false,
-    },
   });
-  check('INT', 'PAYROLL-CALC',
-    (payrollCalc.status === 200 || payrollCalc.status === 201) && Number(payrollCalc.json?.grossAmount || 0) > 0,
-    `status=${payrollCalc.status} emp=${idE} gross=${payrollCalc.json?.grossAmount}`);
+  check('INT', 'PAYROLL-RUN',
+    payrollRun.status === 200 && payrollRun.json?.period === '2026-10',
+    `status=${payrollRun.status} runStatus=${payrollRun.json?.status}`);
 
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'frontend', 'qii-hrms', 'package.json'), 'utf8'));
   check('UT', 'FE-TEST-SCRIPT', !!pkg.scripts?.test, pkg.scripts?.test ? 'scripts.test present' : 'scripts.test missing');

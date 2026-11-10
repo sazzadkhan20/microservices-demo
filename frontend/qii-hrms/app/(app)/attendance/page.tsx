@@ -37,7 +37,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 export default function MyAttendancePage() {
-  const { can } = useAuth();
+  const { can, me } = useAuth();
   const qc = useQueryClient();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -45,8 +45,11 @@ export default function MyAttendancePage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [err, setErr] = useState("");
   const [attActionError, setAttActionError] = useState("");
-  const now = new Date();
-  const [month, setMonth] = useState({ y: now.getFullYear(), m: now.getMonth() });
+  const [month, setMonth] = useState(() => {
+    const iso = todayIso(me.locationTimeZone);
+    const [y, m] = iso.split("-").map(Number);
+    return { y, m: m - 1 };
+  });
 
   const canCheck = can("attendance", "checkin");
 
@@ -154,7 +157,12 @@ export default function MyAttendancePage() {
       return;
     }
     setErrors({});
-    const times = localRangeToIso(parsed.data.workDate, parsed.data.checkInLocal, parsed.data.checkOutLocal);
+    const times = localRangeToIso(
+      parsed.data.workDate,
+      parsed.data.checkInLocal,
+      parsed.data.checkOutLocal,
+      me.locationTimeZone,
+    );
     request.mutate({
       workDate: parsed.data.workDate,
       ...times,
@@ -374,7 +382,15 @@ export default function MyAttendancePage() {
                     <tr key={String(r.id)}>
                       <td>{fmtDate(r.workDate)}</td>
                       <td className="mono small">
-                        {fmtTime(r.requestedCheckIn)} – {fmtTime(r.requestedCheckOut)}
+                        <div>
+                          Requested: {fmtTime(r.requestedCheckIn)} – {fmtTime(r.requestedCheckOut)}
+                        </div>
+                        {r.originalCheckIn || r.originalCheckOut ? (
+                          <div className="muted">
+                            Original: {fmtTime(r.originalCheckIn)} – {fmtTime(r.originalCheckOut)}
+                            {r.originalStatusCode ? ` (${str(r.originalStatusCode)})` : ""}
+                          </div>
+                        ) : null}
                       </td>
                       <td>
                         {str(r.reason, "")}

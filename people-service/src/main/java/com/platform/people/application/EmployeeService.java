@@ -26,11 +26,16 @@ import com.platform.people.infrastructure.persistence.ReportingLineHistoryReposi
 import com.platform.people.infrastructure.persistence.TeamRepository;
 import com.platform.people.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.people.messaging.EmployeeProjectionPublisher;
+import com.platform.people.client.FilesGatewayClient;
 import com.platform.people.client.TimeWorkClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -49,6 +54,8 @@ import java.util.regex.Pattern;
 @Service
 public class EmployeeService {
 
+    private static final Logger log = LoggerFactory.getLogger(EmployeeService.class);
+
     private final EmployeeRepository repository;
     private final DepartmentRepository departmentRepository;
     private final DesignationRepository designationRepository;
@@ -65,6 +72,10 @@ public class EmployeeService {
     private final EmployeeRulesService employeeRulesService;
     private final EmploymentHistoryService employmentHistoryService;
     private final OffboardingService offboardingService;
+    private final ReportingLineDueService reportingLineDueService;
+    private final UserAccountService userAccountService;
+    private final ChecklistAssignmentService checklistAssignmentService;
+    private final FilesGatewayClient filesGatewayClient;
     private final TimeWorkClient timeWorkClient;
     private final ObjectProvider<EmployeeProjectionPublisher> employeeProjectionPublisher;
 
@@ -85,6 +96,10 @@ public class EmployeeService {
             EmployeeRulesService employeeRulesService,
             EmploymentHistoryService employmentHistoryService,
             OffboardingService offboardingService,
+            ReportingLineDueService reportingLineDueService,
+            UserAccountService userAccountService,
+            ChecklistAssignmentService checklistAssignmentService,
+            FilesGatewayClient filesGatewayClient,
             TimeWorkClient timeWorkClient,
             ObjectProvider<EmployeeProjectionPublisher> employeeProjectionPublisher) {
         this.repository = repository;
@@ -103,6 +118,10 @@ public class EmployeeService {
         this.employeeRulesService = employeeRulesService;
         this.employmentHistoryService = employmentHistoryService;
         this.offboardingService = offboardingService;
+        this.reportingLineDueService = reportingLineDueService;
+        this.userAccountService = userAccountService;
+        this.checklistAssignmentService = checklistAssignmentService;
+        this.filesGatewayClient = filesGatewayClient;
         this.timeWorkClient = timeWorkClient;
         this.employeeProjectionPublisher = employeeProjectionPublisher;
     }
@@ -190,8 +209,9 @@ public class EmployeeService {
         employee.setManagerId(createManagerId);
         employee.setTeamId(request.teamId());
         employee.setLocationId(request.locationId());
-        employee.setEmploymentType(request.employmentType() == null || request.employmentType().isBlank()
-                ? "FULL_TIME" : request.employmentType());
+        employee.setEmploymentType(normalizeEmploymentType(
+                request.employmentType() == null || request.employmentType().isBlank()
+                        ? "FULL_TIME" : request.employmentType()));
         employee.setStartDate(request.startDate() == null ? java.time.LocalDate.now() : request.startDate());
         employee.setProbationEnd(request.probationEnd());
         employee.setContractEnd(request.contractEnd());
@@ -202,6 +222,7 @@ public class EmployeeService {
         employee.setWorkPattern(pattern);
         employee.setPhone(request.phone());
         employee.setPersonalEmail(request.personalEmail());
+        applyPersonalColumns(employee, request, jsonbOnly, true);
         if ((request.baseSalary() != null && request.baseSalary().signum() > 0)
                 || (request.hourlyRate() != null && request.hourlyRate().signum() > 0)
                 || (request.payType() != null && !request.payType().isBlank())) {
@@ -223,10 +244,6 @@ public class EmployeeService {
         assertRequiredForActive(request, resolvedDepartmentId, rules);
         employee.setStatus(createStatus);
         employee.setActive(true);
-        if (Boolean.TRUE.equals(request.attachOnboardingChecklist())) {
-            jsonbOnly.put("onboardingChecklist", true);
-        }
-        putPersonalCustom(jsonbOnly, request);
         if (request.payType() != null && !request.payType().isBlank()) {
             jsonbOnly.put("payType", request.payType().trim().toUpperCase(Locale.ROOT));
         }
@@ -234,6 +251,9 @@ public class EmployeeService {
         employee.setCreatedAt(now);
         employee.setUpdatedAt(now);
         Employee saved = repository.save(employee);
+        // Photo was uploaded before this id existed — bind the file to the new employee.
+        bindPhotoSubject(saved);
+        userAccountService.ensureForEmployee(saved);
         if (createManagerId != null) {
             LocalDate lineFrom = request.managerEffectiveFrom() != null
                     ? request.managerEffectiveFrom()
@@ -250,8 +270,21 @@ public class EmployeeService {
         }
 
         List<String> roles = applyCreateRoles(saved.getId(), request.roleCodes());
-        timeWorkClient.syncEmployeeWorkPattern(
-                saved.getId(), saved.getWorkPattern(), saved.getLocationId());
+        // After commit — Time&Work looks the employee up in People; mid-txn the row is invisible.
+        scheduleWorkPatternSync(saved.getId(), saved.getWorkPattern(), saved.getLocationId());
+
+        if (Boolean.TRUE.equals(request.attachOnboardingChecklist())) {
+            try {
+                checklistAssignmentService.assignOnboardingBestEffort(saved.getId(), saved.getStartDate());
+            } catch (RuntimeException ex) {
+                log.warn("Onboarding checklist attach failed for employee {}: {}", saved.getId(), ex.getMessage());
+            }
+            Map<String, Object> cf = new HashMap<>(
+                    saved.getCustomFields() == null ? Map.of() : saved.getCustomFields());
+            cf.put("onboardingChecklist", true);
+            saved.setCustomFields(cf);
+            saved = repository.save(saved);
+        }
 
         Map<String, Object> combined = new HashMap<>(saved.getCustomFields());
         combined.putAll(extensionValues);
@@ -295,7 +328,7 @@ public class EmployeeService {
             employee.setPersonalEmail(request.personalEmail());
         }
         if (request.employmentType() != null) {
-            employee.setEmploymentType(request.employmentType());
+            employee.setEmploymentType(normalizeEmploymentType(request.employmentType()));
         }
         if (request.startDate() != null) {
             employee.setStartDate(request.startDate());
@@ -343,6 +376,12 @@ public class EmployeeService {
                         nextManager,
                         request.managerEffectiveFrom());
                 employee.setManagerId(applied);
+                // Same-day / past effective: move this employee's pending leave approvals now.
+                // Future effective: ReportingLineDueJob flips manager_id + moves approvals on that date.
+                if (!java.util.Objects.equals(previousManager, applied) && applied != null) {
+                    reportingLineDueService.moveApprovalsAfterManagerChange(
+                            employee.getId(), previousManager, applied);
+                }
             }
         }
         if (request.departmentId() != null) {
@@ -383,7 +422,10 @@ public class EmployeeService {
             custom.put("payType", request.payType().trim().toUpperCase(Locale.ROOT));
             employee.setCustomFields(custom);
         }
-        mergePersonalCustom(employee, request);
+        Map<String, Object> personalJson = new HashMap<>(
+                employee.getCustomFields() == null ? Map.of() : employee.getCustomFields());
+        applyPersonalColumns(employee, request, personalJson, false);
+        employee.setCustomFields(personalJson);
 
         boolean statusViaOffboard = false;
         if (request.status() != null && !request.status().isBlank()) {
@@ -398,14 +440,11 @@ public class EmployeeService {
         }
         employee.setUpdatedAt(Instant.now());
         Employee saved = repository.save(employee);
-        // Pattern-driven employee override (FR-EMP-12 ↔ FR-SCH-03). Skip when form omitted workPattern
-        // so a manual EMPLOYEE schedule set in Settings is not overwritten by unrelated edits.
-        if (request.workPattern() != null
-                || (request.locationId() != null
-                && saved.getWorkPattern() != null
-                && !"LOCATION_DEFAULT".equalsIgnoreCase(saved.getWorkPattern()))) {
-            timeWorkClient.syncEmployeeWorkPattern(
-                saved.getId(), saved.getWorkPattern(), saved.getLocationId());
+        userAccountService.syncFromEmployee(saved);
+        // Pattern sync only when workPattern is explicitly changed. Location/team edits must not
+        // rewrite an existing personal schedule (resolve-only: EMPLOYEE → TEAM → LOCATION).
+        if (request.workPattern() != null) {
+            scheduleWorkPatternSync(saved.getId(), saved.getWorkPattern(), saved.getLocationId());
         }
         Map<String, Object> after = snapshotEmployment(saved);
         if (statusViaOffboard) {
@@ -417,6 +456,44 @@ public class EmployeeService {
         employmentHistoryService.recordMany(saved.getId(), before, after);
         publishEmployeeProjection(saved);
         return toResponse(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> offboardingHandover(Long id) {
+        requireScope(id, "employees", "edit");
+        requireEntity(id);
+        return offboardingService.handoverPreview(id);
+    }
+
+    /**
+     * Active people who can be assigned as manager of {@code employeeId} without creating a
+     * reporting loop (self / direct / indirect report). Used by the employment form select.
+     */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> eligibleManagers(Long employeeId) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Employee candidate : repository.findAll()) {
+            if (candidate.getId() == null) {
+                continue;
+            }
+            if (employeeId != null && java.util.Objects.equals(candidate.getId(), employeeId)) {
+                continue;
+            }
+            if (!candidate.isActive()) {
+                continue;
+            }
+            if (employeeId != null && reportingLineService.wouldCycle(employeeId, candidate.getId())) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", candidate.getId());
+            row.put("fullName", candidate.getFullName());
+            row.put("employeeCode", candidate.getEmployeeCode());
+            out.add(row);
+        }
+        out.sort((a, b) -> String.valueOf(a.get("fullName"))
+                .compareToIgnoreCase(String.valueOf(b.get("fullName"))));
+        return out;
     }
 
     @Transactional
@@ -471,28 +548,18 @@ public class EmployeeService {
             switch (key.toLowerCase(Locale.ROOT)) {
                 case "phone" -> employee.setPhone(val);
                 case "personalemail" -> employee.setPersonalEmail(val);
-                case "address" -> {
-                    if (val == null) custom.remove("address");
-                    else custom.put("address", val);
-                }
-                case "emergencyname" -> {
-                    if (val == null) custom.remove("emergencyName");
-                    else custom.put("emergencyName", val);
-                }
-                case "emergencyrelationship" -> {
-                    if (val == null) custom.remove("emergencyRelationship");
-                    else custom.put("emergencyRelationship", val);
-                }
-                case "emergencyphone" -> {
-                    if (val == null) custom.remove("emergencyPhone");
-                    else custom.put("emergencyPhone", val);
-                }
+                case "address" -> employee.setAddress(val);
+                case "emergencyname" -> employee.setEmergencyName(val);
+                case "emergencyrelation", "emergencyrelationship" -> employee.setEmergencyRelation(val);
+                case "emergencyphone" -> employee.setEmergencyPhone(val);
                 default -> {
                     if (val == null) custom.remove(key);
                     else custom.put(key, val);
                 }
             }
         }
+        // Keep legacy custom_fields mirrors for older readers.
+        syncPersonalCustomMirrors(employee, custom);
         employee.setCustomFields(custom);
         employee.setUpdatedAt(Instant.now());
         Employee saved = repository.save(employee);
@@ -509,6 +576,23 @@ public class EmployeeService {
         EmployeeProjectionPublisher publisher = employeeProjectionPublisher.getIfAvailable();
         if (publisher != null) {
             publisher.publishUpserted(employee, roleCodes);
+        }
+    }
+
+    /** Sync schedule only after the employee row is committed (Time&Work S2S lookup). */
+    private void scheduleWorkPatternSync(Long employeeId, String workPattern, Long locationId) {
+        if (employeeId == null) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    timeWorkClient.syncEmployeeWorkPattern(employeeId, workPattern, locationId);
+                }
+            });
+        } else {
+            timeWorkClient.syncEmployeeWorkPattern(employeeId, workPattern, locationId);
         }
     }
 
@@ -566,8 +650,10 @@ public class EmployeeService {
         out.put("workPatterns", rules.workPatterns());
         out.put("contractTypesRequiringEnd", rules.contractTypesRequiringEnd());
         out.put("employmentStatuses", rules.employmentStatuses());
+        out.put("employmentTypes", rules.employmentTypes());
         out.put("requiredForActive", rules.requiredForActive());
         out.put("requireManagerOnCreate", rules.requireManagerOnCreate());
+        out.put("documentTypes", rules.documentTypes());
         return out;
     }
 
@@ -927,48 +1013,128 @@ public class EmployeeService {
         }
     }
 
-    private static void putPersonalCustom(Map<String, Object> jsonb, EmployeeRequest request) {
-        if (request.address() != null && !request.address().isBlank()) {
-            jsonb.put("address", request.address().trim());
+    /**
+     * Apply first-class personal / photo / DOB fields. On create ({@code create=true}) blank means skip;
+     * on update, blank clears the column when the field is present in the request.
+     */
+    private void applyPersonalColumns(
+            Employee employee, EmployeeRequest request, Map<String, Object> jsonb, boolean create) {
+        if (request.address() != null) {
+            employee.setAddress(blankToNull(request.address()));
         }
-        if (request.emergencyName() != null && !request.emergencyName().isBlank()) {
-            jsonb.put("emergencyName", request.emergencyName().trim());
+        if (request.dateOfBirth() != null) {
+            employee.setDateOfBirth(request.dateOfBirth());
         }
-        if (request.emergencyRelationship() != null && !request.emergencyRelationship().isBlank()) {
-            jsonb.put("emergencyRelationship", request.emergencyRelationship().trim());
+        if (request.emergencyName() != null) {
+            employee.setEmergencyName(blankToNull(request.emergencyName()));
         }
-        if (request.emergencyPhone() != null && !request.emergencyPhone().isBlank()) {
-            jsonb.put("emergencyPhone", request.emergencyPhone().trim());
+        String relation = request.resolvedEmergencyRelation();
+        if (request.emergencyRelation() != null || request.emergencyRelationship() != null) {
+            employee.setEmergencyRelation(relation);
+        }
+        if (request.emergencyPhone() != null) {
+            employee.setEmergencyPhone(blankToNull(request.emergencyPhone()));
+        }
+        if (request.photoObjectKey() != null) {
+            employee.setPhotoObjectKey(blankToNull(request.photoObjectKey()));
+        }
+        if (request.photoFileId() != null) {
+            if (request.photoFileId() <= 0) {
+                employee.setPhotoObjectKey(null);
+                jsonb.remove("photoFileId");
+            } else {
+                resolveAndSetPhoto(employee, request.photoFileId(), jsonb);
+            }
+        }
+        syncPersonalCustomMirrors(employee, jsonb);
+        if (!create && request.exitDate() == null && request.exitReason() == null) {
+            // exit fields are owned by OffboardingService when status changes
         }
     }
 
-    private static void mergePersonalCustom(Employee employee, EmployeeRequest request) {
-        Map<String, Object> custom = new HashMap<>(
-                employee.getCustomFields() == null ? Map.of() : employee.getCustomFields());
-        boolean changed = false;
-        if (request.address() != null) {
-            if (request.address().isBlank()) custom.remove("address");
-            else custom.put("address", request.address().trim());
-            changed = true;
+    private void resolveAndSetPhoto(Employee employee, Long photoFileId, Map<String, Object> jsonb) {
+        filesGatewayClient.assertAttachable(photoFileId);
+        Map<String, Object> desc = filesGatewayClient.describe(photoFileId);
+        String contentType = desc.get("contentType") == null
+                ? "" : String.valueOf(desc.get("contentType")).trim().toLowerCase(Locale.ROOT);
+        if (!"image/jpeg".equals(contentType) && !"image/png".equals(contentType)) {
+            throw new IllegalArgumentException(
+                    "Employee photo must be JPG or PNG (got '" + contentType + "')");
         }
-        if (request.emergencyName() != null) {
-            if (request.emergencyName().isBlank()) custom.remove("emergencyName");
-            else custom.put("emergencyName", request.emergencyName().trim());
-            changed = true;
+        Object sizeRaw = desc.get("sizeBytes");
+        if (sizeRaw instanceof Number n && n.longValue() > 2L * 1024 * 1024) {
+            throw new IllegalArgumentException("Employee photo must be 2 MB or smaller");
         }
-        if (request.emergencyRelationship() != null) {
-            if (request.emergencyRelationship().isBlank()) custom.remove("emergencyRelationship");
-            else custom.put("emergencyRelationship", request.emergencyRelationship().trim());
-            changed = true;
+        Object classification = desc.get("classification");
+        if (classification != null && !"PHOTO".equalsIgnoreCase(String.valueOf(classification).trim())) {
+            // Soft preference — still allow GENERAL images that pass type/size for legacy uploads.
+            log.debug("Photo fileId={} classification={} (expected PHOTO)", photoFileId, classification);
         }
-        if (request.emergencyPhone() != null) {
-            if (request.emergencyPhone().isBlank()) custom.remove("emergencyPhone");
-            else custom.put("emergencyPhone", request.emergencyPhone().trim());
-            changed = true;
+        Object key = desc.get("storageKey");
+        if (key == null || String.valueOf(key).isBlank()) {
+            throw new IllegalStateException("File has no storageKey for photoFileId=" + photoFileId);
         }
-        if (changed) {
-            employee.setCustomFields(custom);
+        employee.setPhotoObjectKey(String.valueOf(key));
+        jsonb.put("photoFileId", photoFileId);
+        // Edit path has an id already; create path binds after the first save.
+        if (employee.getId() != null) {
+            filesGatewayClient.bindEmployee(photoFileId, employee.getId());
         }
+    }
+
+    private void bindPhotoSubject(Employee employee) {
+        if (employee == null || employee.getId() == null || employee.getCustomFields() == null) {
+            return;
+        }
+        Object pf = employee.getCustomFields().get("photoFileId");
+        if (pf == null || String.valueOf(pf).isBlank()) {
+            return;
+        }
+        try {
+            filesGatewayClient.bindEmployee(Long.valueOf(String.valueOf(pf).trim()), employee.getId());
+        } catch (NumberFormatException ignored) {
+            // ignore malformed photoFileId in custom fields
+        }
+    }
+
+    private static void syncPersonalCustomMirrors(Employee employee, Map<String, Object> jsonb) {
+        putOrRemove(jsonb, "address", employee.getAddress());
+        putOrRemove(jsonb, "emergencyName", employee.getEmergencyName());
+        putOrRemove(jsonb, "emergencyRelation", employee.getEmergencyRelation());
+        putOrRemove(jsonb, "emergencyRelationship", employee.getEmergencyRelation());
+        putOrRemove(jsonb, "emergencyPhone", employee.getEmergencyPhone());
+        if (employee.getDateOfBirth() != null) {
+            jsonb.put("dateOfBirth", employee.getDateOfBirth().toString());
+        }
+        if (employee.getPhotoObjectKey() != null) {
+            jsonb.put("photoObjectKey", employee.getPhotoObjectKey());
+        } else {
+            jsonb.remove("photoObjectKey");
+        }
+    }
+
+    private static void putOrRemove(Map<String, Object> jsonb, String key, String value) {
+        if (value == null || value.isBlank()) {
+            jsonb.remove(key);
+        } else {
+            jsonb.put(key, value);
+        }
+    }
+
+    /** CONTRACTOR is a legacy alias — store CONTRACT only. */
+    private static String normalizeEmploymentType(String type) {
+        if (type == null || type.isBlank()) {
+            return "FULL_TIME";
+        }
+        String t = type.trim().toUpperCase(Locale.ROOT);
+        if ("CONTRACTOR".equals(t)) {
+            return "CONTRACT";
+        }
+        return t;
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
     }
 
     private Map<String, Object> snapshotEmployment(Employee e) {
@@ -993,13 +1159,15 @@ public class EmployeeService {
         m.put("status", e.getStatus());
         m.put("phone", e.getPhone());
         m.put("personalEmail", e.getPersonalEmail());
-        Map<String, Object> c = e.getCustomFields() == null ? Map.of() : e.getCustomFields();
-        m.put("address", c.get("address"));
-        m.put("emergencyName", c.get("emergencyName"));
-        m.put("emergencyRelationship", c.get("emergencyRelationship"));
-        m.put("emergencyPhone", c.get("emergencyPhone"));
-        m.put("exitDate", c.get("exitDate"));
-        m.put("exitReason", c.get("exitReason"));
+        m.put("address", e.getAddress());
+        m.put("dateOfBirth", e.getDateOfBirth());
+        m.put("emergencyName", e.getEmergencyName());
+        m.put("emergencyRelation", e.getEmergencyRelation());
+        m.put("emergencyRelationship", e.getEmergencyRelation());
+        m.put("emergencyPhone", e.getEmergencyPhone());
+        m.put("photoObjectKey", e.getPhotoObjectKey());
+        m.put("exitDate", e.getExitDate());
+        m.put("exitReason", e.getExitReason());
         return m;
     }
 }

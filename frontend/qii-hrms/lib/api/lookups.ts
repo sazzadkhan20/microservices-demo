@@ -46,6 +46,8 @@ export type Emp = {
   locationId?: number | null;
   managerId?: number | null;
   managerName?: string | null;
+  employmentType?: string | null;
+  workPattern?: string | null;
 };
 export type Role = {
   id: number;
@@ -70,7 +72,24 @@ export type Role = {
     key?: string;
   }[];
 };
-export type LeaveType = { id?: number; code: string; name: string; paid?: boolean };
+export type LeaveType = {
+  id?: number;
+  code: string;
+  name: string;
+  paid?: boolean;
+  categoryId?: number | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  availableDays?: number | null;
+  balanceDays?: number | null;
+  pendingDays?: number | null;
+  attachmentMode?: string | null;
+  attachmentAfterDays?: number | null;
+  noticeDays?: number | null;
+  maxPerRequest?: number | null;
+  halfDayAllowed?: boolean | null;
+  negativeCap?: number | null;
+};
 
 const STALE = 5 * 60_000;
 
@@ -99,6 +118,10 @@ export const useEmployeesLookup = (enabled = true) =>
 export const useRoles = (enabled = true) => useList<Role>("roles", api.hrms("roles"), { enabled });
 export const useLeaveTypes = (enabled = true) =>
   useList<LeaveType>("leave-types", api.hrms("leave-types"), { enabled });
+
+/** HR setup pickers (adjust / opening / year-end) — full catalogue, not apply-form eligibility. */
+export const useLeaveTypeCatalogue = (enabled = true) =>
+  useList<LeaveType>("leave-types-catalogue", api.hrms("leave-types/catalogue"), { enabled });
 
 /** id -> label maps for rendering names in tables. */
 export function byId<T extends { id: number | string }>(rows: T[] | undefined, label: (r: T) => string) {

@@ -2,6 +2,7 @@ package com.platform.timework.application;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.timework.client.people.EmployeeView;
+import com.platform.timework.domain.Holiday;
 import com.platform.timework.domain.WorkSchedule;
 import com.platform.timework.extension.config.TenantConfigLoader;
 import com.platform.timework.client.people.PeopleEmployeeGateway;
@@ -131,6 +132,53 @@ class WorkScheduleServiceTest {
     }
 
     @Test
+    @DisplayName("FR-HOL-02 — non-optional holiday zeros expected hours (FIXED + HOURLY)")
+    void nonOptionalHolidayZerosExpectedHours() {
+        EmployeeView e = emp(1L, null, 10L);
+        WorkSchedule fixed = sch("LOCATION", 10L, "FIXED",
+                "[\"SUN\",\"MON\",\"TUE\",\"WED\",\"THU\"]", "10:00", "18:00");
+        when(repository.findByScopeTypeAndScopeId("LOCATION", 10L)).thenReturn(Optional.of(fixed));
+
+        Holiday h = new Holiday();
+        h.setLocationId(10L);
+        h.setName("Victory Day");
+        h.setStartDate(LocalDate.of(2026, 11, 2)); // MON
+        h.setEndDate(LocalDate.of(2026, 11, 2));
+        h.setHolidayType("PUBLIC");
+        h.setOptionalFlag(false);
+        when(holidayRepository.findAll()).thenReturn(List.of(h));
+
+        assertEquals(0, service.expectedHoursForDay(e, LocalDate.of(2026, 11, 2)).compareTo(BigDecimal.ZERO));
+        assertTrue(service.isHoliday(10L, LocalDate.of(2026, 11, 2)));
+
+        WorkSchedule hourly = sch("LOCATION", 10L, "HOURLY", "[]", null, null);
+        hourly.setWeeklyHours(new BigDecimal("35"));
+        when(repository.findByScopeTypeAndScopeId("LOCATION", 10L)).thenReturn(Optional.of(hourly));
+        assertEquals(0, service.expectedHoursForDay(e, LocalDate.of(2026, 11, 2)).compareTo(BigDecimal.ZERO));
+    }
+
+    @Test
+    @DisplayName("FR-HOL-02 — optional holiday still counts as expected hours")
+    void optionalHolidayDoesNotZeroExpectedHours() {
+        EmployeeView e = emp(1L, null, 10L);
+        WorkSchedule fixed = sch("LOCATION", 10L, "FIXED",
+                "[\"SUN\",\"MON\",\"TUE\",\"WED\",\"THU\"]", "10:00", "18:00");
+        when(repository.findByScopeTypeAndScopeId("LOCATION", 10L)).thenReturn(Optional.of(fixed));
+
+        Holiday h = new Holiday();
+        h.setLocationId(10L);
+        h.setName("Optional day");
+        h.setStartDate(LocalDate.of(2026, 11, 2));
+        h.setEndDate(LocalDate.of(2026, 11, 2));
+        h.setHolidayType("COMPANY");
+        h.setOptionalFlag(true);
+        when(holidayRepository.findAll()).thenReturn(List.of(h));
+
+        assertTrue(!service.isHoliday(10L, LocalDate.of(2026, 11, 2)));
+        assertEquals(0, service.expectedHoursForDay(e, LocalDate.of(2026, 11, 2)).compareTo(new BigDecimal("8.0000")));
+    }
+
+    @Test
     void createRejectsDuplicateScope() {
         when(repository.findByScopeTypeAndScopeId("LOCATION", 1L))
                 .thenReturn(Optional.of(sch("LOCATION", 1L, "FIXED", "[\"SUN\"]", "10:00", "18:00")));
@@ -188,5 +236,73 @@ class WorkScheduleServiceTest {
                         && "10:00".equals(s.getStartTime())
                         && s.getWorkingDays() != null
                         && s.getWorkingDays().contains("FRI")));
+    }
+
+    @Test
+    void syncFromWorkPatternDoesNotOverwriteExistingEmployeeSchedule() {
+        when(configLoader.loadSettingsMap()).thenReturn(Map.of(
+                "scheduleRules", Map.of(
+                        "patternTemplates", Map.of(
+                                "DAYS_5", Map.of(
+                                        "mode", "FIXED",
+                                        "workingDays", List.of("SUN", "MON", "TUE", "WED", "THU"),
+                                        "inheritLocationHours", true
+                                )
+                        )
+                )
+        ));
+        EmployeeView e = emp(9L, 2L, 1L);
+        e.setWorkPattern("DAYS_5");
+        WorkSchedule personal = sch("EMPLOYEE", 9L, "FIXED", "[\"SUN\"]", "11:00", "15:00");
+        when(repository.findByScopeTypeAndScopeId("EMPLOYEE", 9L)).thenReturn(Optional.of(personal));
+
+        service.syncFromWorkPattern(e);
+
+        verify(repository, never()).save(any());
+        verify(repository, never()).delete(any());
+    }
+
+    @Test
+    void resolvePrefersTeamOverLocationWhenNoEmployeeRow() {
+        EmployeeView e = emp(5L, 2L, 1L);
+        when(repository.findByScopeTypeAndScopeId("EMPLOYEE", 5L)).thenReturn(Optional.empty());
+        when(repository.findByScopeTypeAndScopeId("TEAM", 2L))
+                .thenReturn(Optional.of(sch("TEAM", 2L, "FIXED", "[\"SUN\",\"MON\"]", "09:00", "17:00")));
+        when(repository.findByScopeTypeAndScopeId("LOCATION", 1L))
+                .thenReturn(Optional.of(sch("LOCATION", 1L, "FIXED", "[\"SUN\"]", "10:00", "18:00")));
+
+        WorkSchedule resolved = service.resolveForEmployee(e).orElseThrow();
+        assertEquals("TEAM", resolved.getScopeType());
+        assertEquals(2L, resolved.getScopeId());
+    }
+
+    @Test
+    void createAutoSetsCutoffEndPlusSixHours() {
+        when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
+        WorkSchedule incoming = sch("LOCATION", 3L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "18:00");
+        ReflectionTestUtils.setField(incoming, "id", null);
+        incoming.setCheckoutCutoff(null);
+
+        WorkSchedule saved = service.create(incoming);
+        assertEquals("00:00", saved.getCheckoutCutoff());
+    }
+
+    @Test
+    void createRejectsCutoffBeforeEnd() {
+        when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
+        WorkSchedule incoming = sch("LOCATION", 3L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "18:00");
+        ReflectionTestUtils.setField(incoming, "id", null);
+        incoming.setCheckoutCutoff("17:00");
+        assertThrows(IllegalArgumentException.class, () -> service.create(incoming));
+    }
+
+    @Test
+    void createRejectsHalfDayAtOrAboveOfficeLength() {
+        when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
+        WorkSchedule incoming = sch("LOCATION", 3L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "18:00");
+        ReflectionTestUtils.setField(incoming, "id", null);
+        incoming.setCheckoutCutoff("00:00");
+        incoming.setHalfDayHours(new BigDecimal("8"));
+        assertThrows(IllegalArgumentException.class, () -> service.create(incoming));
     }
 }

@@ -3,9 +3,7 @@ package com.platform.payroll.infrastructure.grpc;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.platform.common.constants.PlatformHeaders;
-import com.platform.hrms.api.grpc.EmployeeResponse;
 import com.platform.hrms.api.grpc.EmployeeServiceGrpc;
-import com.platform.hrms.api.grpc.GetEmployeeRequest;
 import com.platform.hrms.api.grpc.GetPermissionsRequest;
 import com.platform.hrms.api.grpc.PermissionsResponse;
 import io.grpc.Metadata;
@@ -14,7 +12,6 @@ import net.devh.boot.grpc.client.inject.GrpcClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
@@ -45,18 +42,10 @@ public class HrmsEmployeeClient {
         this.serviceKey = serviceKey;
     }
 
-    public EmployeeSnapshot getEmployee(long employeeId) {
-        EmployeeResponse response = stubWithHeaders()
-                .getEmployee(GetEmployeeRequest.newBuilder().setEmployeeId(employeeId).build());
-
-        return new EmployeeSnapshot(
-                response.getId(),
-                response.getEmployeeCode(),
-                response.getFullName(),
-                new BigDecimal(response.getHourlyRate()),
-                new BigDecimal(response.getBaseSalary()),
-                response.getActive()
-        );
+    /** Uncached lookup for privileged writes (guide §4: payroll writes check current authority). */
+    public Set<String> getPermissionsFresh(long employeeId) {
+        permissionCache.invalidate(String.valueOf(employeeId));
+        return getPermissions(employeeId);
     }
 
     /** Effective lower-case permission keys ("feature:action", "*:*") for the employee. */
@@ -74,15 +63,5 @@ public class HrmsEmployeeClient {
         // API-01: explicit deadline so a slow People service cannot pin Payroll threads.
         return stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
                 .withDeadlineAfter(5, java.util.concurrent.TimeUnit.SECONDS);
-    }
-
-    public record EmployeeSnapshot(
-            long id,
-            String employeeCode,
-            String fullName,
-            BigDecimal hourlyRate,
-            BigDecimal baseSalary,
-            boolean active
-    ) {
     }
 }

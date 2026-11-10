@@ -21,14 +21,24 @@ public class LeaveClient {
     public enum LeaveImpact { NONE, HALF, FULL }
 
     private final RestClient client;
+    private final String internalKey;
 
     public LeaveClient(
             RestClient.Builder builder,
             @Value("${platform.leave-base-url:http://127.0.0.1:8086}") String baseUrl,
-            @Value("${platform.security.service-key}") String serviceKey) {
+            @Value("${platform.security.service-key}") String serviceKey,
+            @Value("${platform.security.internal-key}") String internalKey) {
+        org.springframework.http.client.SimpleClientHttpRequestFactory rf =
+                new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        rf.setConnectTimeout(3000);
+        rf.setReadTimeout(10000);
+        this.internalKey = internalKey;
+        // Leave /api/internal/** requires the internal key (it was missing, so approved leave was never seen).
         this.client = builder
+                .requestFactory(rf)
                 .baseUrl(baseUrl.replaceAll("/$", ""))
                 .defaultHeader(PlatformHeaders.SERVICE_KEY, serviceKey)
+                .defaultHeader(com.platform.common.security.InternalCalls.HEADER, internalKey)
                 .build();
     }
 
@@ -54,9 +64,10 @@ public class LeaveClient {
                     continue;
                 }
                 BigDecimal counted = asDecimal(a.get("workingDaysCounted"));
-                if (start.equals(end)
-                        && counted.compareTo(BigDecimal.ONE) < 0
-                        && counted.compareTo(BigDecimal.ZERO) > 0) {
+                String part = a.get("halfDayPart") == null ? "FULL" : String.valueOf(a.get("halfDayPart"));
+                boolean halfPart = !"FULL".equalsIgnoreCase(part);
+                if (start.equals(end) && (halfPart
+                        || (counted.compareTo(BigDecimal.ONE) < 0 && counted.compareTo(BigDecimal.ZERO) > 0))) {
                     return LeaveImpact.HALF;
                 }
                 return LeaveImpact.FULL;
@@ -66,6 +77,32 @@ public class LeaveClient {
             log.warn("Leave impact lookup failed emp={} day={}: {}", employeeId, day, e.getMessage());
             return LeaveImpact.NONE;
         }
+    }
+
+    /**
+     * Payroll batch: approved leave intersecting [from, to] for many employees in ONE call.
+     * Fails closed (throws) — payroll must never treat "Leave unreachable" as "no leave".
+     */
+    public Map<Long, List<Map<String, Object>>> approvedLeaveBatch(java.util.Collection<Long> employeeIds,
+                                                                  LocalDate from, LocalDate to) {
+        if (employeeIds == null || employeeIds.isEmpty()) {
+            return Map.of();
+        }
+        String ids = employeeIds.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","));
+        Map<String, List<Map<String, Object>>> body = client.get()
+                .uri(uri -> uri.path("/api/internal/payroll/approved-leave")
+                        .queryParam("employeeIds", ids)
+                        .queryParam("from", from.toString())
+                        .queryParam("to", to.toString())
+                        .build())
+                .header(com.platform.common.security.InternalCalls.HEADER, internalKey)
+                .retrieve()
+                .body(new ParameterizedTypeReference<>() {});
+        Map<Long, List<Map<String, Object>>> out = new java.util.HashMap<>();
+        if (body != null) {
+            body.forEach((k, v) -> out.put(Long.valueOf(k), v));
+        }
+        return out;
     }
 
     private static BigDecimal asDecimal(Object v) {

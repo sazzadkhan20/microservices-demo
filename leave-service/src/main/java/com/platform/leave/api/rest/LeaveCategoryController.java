@@ -4,7 +4,9 @@ import com.platform.common.api.PageQuery;
 import com.platform.common.api.PageResponse;
 import com.platform.common.security.AuthContext;
 import com.platform.leave.application.AuditService;
+import com.platform.leave.application.LeaveAppliesToService;
 import com.platform.leave.application.LeaveBalanceService;
+import com.platform.leave.application.LeaveCategoryService;
 import com.platform.leave.application.LeaveCategorySyncService;
 import com.platform.leave.application.support.DynamicListSupport;
 import com.platform.leave.domain.LeaveCategory;
@@ -12,6 +14,7 @@ import com.platform.leave.infrastructure.persistence.LeaveCategoryRepository;
 import com.platform.leave.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.persistence.EntityManager;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
@@ -29,24 +32,34 @@ public class LeaveCategoryController {
     private final LeaveCategoryRepository repository;
     private final LeaveBalanceService leaveBalanceService;
     private final LeaveCategorySyncService syncService;
+    private final LeaveAppliesToService leaveAppliesToService;
+    private final LeaveCategoryService leaveCategoryService;
     private final AuditService auditService;
+    private final EntityManager entityManager;
 
     public LeaveCategoryController(LeaveCategoryRepository repository,
                                    LeaveBalanceService leaveBalanceService,
                                    LeaveCategorySyncService syncService,
-                                   AuditService auditService) {
+                                   LeaveAppliesToService leaveAppliesToService,
+                                   LeaveCategoryService leaveCategoryService,
+                                   AuditService auditService,
+                                   EntityManager entityManager) {
         this.repository = repository;
         this.leaveBalanceService = leaveBalanceService;
         this.syncService = syncService;
+        this.leaveAppliesToService = leaveAppliesToService;
+        this.leaveCategoryService = leaveCategoryService;
         this.auditService = auditService;
+        this.entityManager = entityManager;
     }
 
     @GetMapping
+    @Transactional(readOnly = true)
     @RequiresPermission(feature = "leave", action = "view")
     @Operation(summary = "List leave categories (config-driven quotas/rules)")
     public PageResponse<LeaveCategory> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
-        return DynamicListSupport.page(
+        PageResponse<LeaveCategory> page = DynamicListSupport.page(
                 repository.findAll(),
                 query,
                 c -> DynamicListSupport.containsIgnoreCase(c.getCode(), query.q())
@@ -57,13 +70,35 @@ public class LeaveCategoryController {
                         "paid", String.valueOf(c.isPaid())
                 )
         );
+        // Detach before normalizing so list reads never dirty-flush applies_to rows.
+        for (LeaveCategory c : page.content()) {
+            withNormalizedAppliesTo(c);
+        }
+        return page;
+    }
+
+    @GetMapping("/{id}")
+    @Transactional(readOnly = true)
+    @RequiresPermission(feature = "leave", action = "view")
+    @Operation(summary = "Get one leave category (includes applies-to scopes)")
+    public LeaveCategory get(@PathVariable Long id) {
+        LeaveCategory c = repository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Leave category not found: " + id));
+        return withNormalizedAppliesTo(c);
+    }
+
+    /** Detach + normalize applies_to for API responses (empty lists = everyone). */
+    private LeaveCategory withNormalizedAppliesTo(LeaveCategory c) {
+        entityManager.detach(c);
+        c.setAppliesTo(leaveAppliesToService.normalize(c.getAppliesTo()));
+        return c;
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     @RequiresPermission(feature = "leave", action = "manage")
-    @Operation(summary = "Create leave category and matching leave type (so it appears on apply forms)")
+    @Operation(summary = "Create leave category and matching leave type")
     public LeaveCategory create(@RequestBody LeaveCategory body) {
         if (body.getCode() == null || body.getCode().isBlank()) {
             throw new IllegalArgumentException("code is required");
@@ -72,19 +107,28 @@ public class LeaveCategoryController {
             throw new IllegalArgumentException("name is required");
         }
         body.setCode(body.getCode().trim().toUpperCase(Locale.ROOT));
-        if (repository.findByCodeAndActiveTrue(body.getCode()).isPresent()
-                || repository.findAll().stream().anyMatch(c -> body.getCode().equalsIgnoreCase(c.getCode()))) {
-            throw new IllegalStateException("Leave category code already exists: " + body.getCode());
+        if (body.getPeriodStart() == null) {
+            int y = LocalDate.now().getYear();
+            body.setPeriodStart(LocalDate.of(y, 1, 1));
         }
+        if (body.getPeriodEnd() == null) {
+            int y = body.getPeriodStart().getYear();
+            body.setPeriodEnd(LocalDate.of(y, 12, 31));
+        }
+        leaveCategoryService.assertNoPeriodOverlap(
+                body.getCode(), body.getPeriodStart(), body.getPeriodEnd(), null);
+
         if (body.getQuotaDays() == null) {
             body.setQuotaDays(BigDecimal.ZERO);
         }
+        body.setAppliesTo(leaveAppliesToService.normalize(body.getAppliesTo()));
         LeaveCategory saved = repository.save(body);
-        // Apply UI lists leave-types — keep catalogue in sync and seed opening balances.
         syncService.upsertLeaveType(saved, true);
         auditService.record(AuthContext.getEmployeeId(), "CREATE", "LeaveCategory",
                 String.valueOf(saved.getId()), null,
-                Map.of("code", saved.getCode(), "name", saved.getName()));
+                Map.of("code", saved.getCode(), "name", saved.getName(),
+                        "periodStart", String.valueOf(saved.getPeriodStart()),
+                        "periodEnd", String.valueOf(saved.getPeriodEnd())));
         return saved;
     }
 
@@ -95,11 +139,17 @@ public class LeaveCategoryController {
         LeaveCategory c = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Leave category not found: " + id));
         BigDecimal oldQuota = c.getQuotaDays();
+        LocalDate oldStart = c.getPeriodStart();
+        LocalDate oldEnd = c.getPeriodEnd();
 
         if (body.getName() != null) c.setName(body.getName());
         if (body.getQuotaDays() != null) c.setQuotaDays(body.getQuotaDays());
         if (body.getPeriodStart() != null) c.setPeriodStart(body.getPeriodStart());
         if (body.getPeriodEnd() != null) c.setPeriodEnd(body.getPeriodEnd());
+        leaveCategoryService.requirePeriodDates(c.getPeriodStart(), c.getPeriodEnd());
+        leaveCategoryService.assertNoPeriodOverlap(
+                c.getCode(), c.getPeriodStart(), c.getPeriodEnd(), c.getId());
+
         c.setPaid(body.isPaid());
         c.setHalfDayAllowed(body.isHalfDayAllowed());
         if (body.getAttachmentMode() != null) c.setAttachmentMode(body.getAttachmentMode());
@@ -108,7 +158,7 @@ public class LeaveCategoryController {
         c.setMaxPerRequest(body.getMaxPerRequest());
         if (body.getNegativeCap() != null) c.setNegativeCap(body.getNegativeCap());
         if (body.getApprovalChain() != null) c.setApprovalChain(body.getApprovalChain());
-        if (body.getAppliesTo() != null) c.setAppliesTo(body.getAppliesTo());
+        c.setAppliesTo(leaveAppliesToService.normalize(body.getAppliesTo()));
         c.setProRata(body.isProRata());
         if (body.getCarryMode() != null) c.setCarryMode(body.getCarryMode());
         if (body.getCarryCapDays() != null) c.setCarryCapDays(body.getCarryCapDays());
@@ -118,55 +168,49 @@ public class LeaveCategoryController {
         LeaveCategory saved = repository.save(c);
         syncService.upsertLeaveType(saved, false);
 
-        // Cascade quota delta if quotaDays changed
+        // Mid-period quota change: update every balance for that period year; already-taken leave stays deducted.
         if (body.getQuotaDays() != null && oldQuota != null
                 && body.getQuotaDays().compareTo(oldQuota) != 0) {
             BigDecimal delta = body.getQuotaDays().subtract(oldQuota);
-            int year = LocalDate.now().getYear();
+            int year = leaveCategoryService.balanceYear(saved);
             int affected = leaveBalanceService.cascadeQuotaDelta(saved.getCode(), delta, year);
             auditService.record(AuthContext.requireEmployeeId(), "CASCADE_QUOTA", "LeaveCategory",
                     String.valueOf(id),
-                    Map.of("oldQuota", oldQuota, "year", year),
+                    Map.of("oldQuota", oldQuota, "year", year,
+                            "periodStart", String.valueOf(oldStart), "periodEnd", String.valueOf(oldEnd)),
                     Map.of("newQuota", body.getQuotaDays(), "delta", delta, "employeesAffected", affected));
+        } else {
+            auditService.record(AuthContext.getEmployeeId(), "UPDATE", "LeaveCategory",
+                    String.valueOf(id),
+                    Map.of("name", c.getName()),
+                    Map.of("name", saved.getName(), "quotaDays", saved.getQuotaDays()));
         }
 
         return saved;
     }
 
     /**
-     * FR-LV-06 — copy category rules into a new period row. Current category stays active
-     * (so mid-year renew for next year does not break ongoing leave). New code = CODE_YYYY.
+     * Renew for next calendar year only — same code + name, new period (editable), once.
      */
     @PostMapping("/{id}/renew")
     @ResponseStatus(HttpStatus.CREATED)
     @RequiresPermission(feature = "leave", action = "manage")
-    @Operation(summary = "Renew a leave category for a new period (copies rules; keeps current active)")
+    @Operation(summary = "Renew leave category for next calendar year (same code and name)")
     public LeaveCategory renew(@PathVariable Long id, @RequestBody RenewRequest body) {
         LeaveCategory old = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Leave category not found: " + id));
-        if (body.periodStart() == null || body.periodEnd() == null) {
-            throw new IllegalArgumentException("periodStart and periodEnd are required");
-        }
-        if (body.periodEnd().isBefore(body.periodStart())) {
-            throw new IllegalArgumentException("periodEnd must be on/after periodStart");
-        }
 
-        String suffix = String.valueOf(body.periodStart().getYear());
-        String baseCode = old.getCode() == null ? "LEAVE" : old.getCode();
-        // Strip prior _YYYY suffix if renewing a renewed row
-        String root = baseCode.replaceAll("_\\d{4}$", "");
-        String newCode = root + "_" + suffix;
-        if (repository.findByCodeAndActiveTrue(newCode).isPresent()
-                || repository.findAll().stream().anyMatch(c -> newCode.equalsIgnoreCase(c.getCode()))) {
-            throw new IllegalStateException("Renewed category already exists: " + newCode);
-        }
+        int nextYear = LocalDate.now().getYear() + 1;
+        LocalDate periodStart = body.periodStart() != null ? body.periodStart() : LocalDate.of(nextYear, 1, 1);
+        LocalDate periodEnd = body.periodEnd() != null ? body.periodEnd() : LocalDate.of(nextYear, 12, 31);
+        leaveCategoryService.assertRenewAllowed(old, periodStart, periodEnd);
 
         LeaveCategory newCat = new LeaveCategory();
-        newCat.setCode(newCode);
-        newCat.setName(old.getName() + " (" + suffix + ")");
+        newCat.setCode(old.getCode());
+        newCat.setName(old.getName());
         newCat.setQuotaDays(body.quotaDays() != null ? body.quotaDays() : old.getQuotaDays());
-        newCat.setPeriodStart(body.periodStart());
-        newCat.setPeriodEnd(body.periodEnd());
+        newCat.setPeriodStart(periodStart);
+        newCat.setPeriodEnd(periodEnd);
         newCat.setPaid(old.isPaid());
         newCat.setHalfDayAllowed(old.isHalfDayAllowed());
         newCat.setAttachmentMode(old.getAttachmentMode());
@@ -175,7 +219,7 @@ public class LeaveCategoryController {
         newCat.setMaxPerRequest(old.getMaxPerRequest());
         newCat.setNegativeCap(old.getNegativeCap());
         newCat.setApprovalChain(old.getApprovalChain());
-        newCat.setAppliesTo(old.getAppliesTo());
+        newCat.setAppliesTo(leaveAppliesToService.normalize(old.getAppliesTo()));
         newCat.setProRata(old.isProRata());
         newCat.setCarryMode(old.getCarryMode());
         newCat.setCarryCapDays(old.getCarryCapDays());
@@ -183,11 +227,14 @@ public class LeaveCategoryController {
         newCat.setActive(true);
 
         LeaveCategory saved = repository.save(newCat);
-        // Mirror to leave_type + seed opening balances so renew appears on apply forms immediately.
+        // Seed balances for the renewed period year (apply form still hides until period is current).
         syncService.upsertLeaveType(saved, true);
         auditService.record(AuthContext.requireEmployeeId(), "RENEW", "LeaveCategory",
-                String.valueOf(id), Map.of("sourceCode", old.getCode()),
-                Map.of("newId", saved.getId(), "newCode", saved.getCode()));
+                String.valueOf(id),
+                Map.of("sourceCode", old.getCode(), "sourceId", old.getId()),
+                Map.of("newId", saved.getId(), "code", saved.getCode(), "name", saved.getName(),
+                        "periodStart", String.valueOf(saved.getPeriodStart()),
+                        "periodEnd", String.valueOf(saved.getPeriodEnd())));
         return saved;
     }
 

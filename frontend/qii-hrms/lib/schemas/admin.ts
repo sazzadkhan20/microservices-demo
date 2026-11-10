@@ -60,15 +60,17 @@ export const orgTreeSchema = z.array(
 );
 export type OrgTree = z.infer<typeof orgTreeSchema>;
 
-export const holidayRowSchema = z.object({
-  id,
-  locationId: maybe(id),
-  name: z.string(),
-  startDate: z.any(),
-  endDate: z.any(),
-  holidayType: maybe(z.string()),
-  optionalFlag: z.boolean().optional(),
-});
+export const holidayRowSchema = z
+  .object({
+    id,
+    locationId: maybe(id),
+    name: z.string(),
+    startDate: z.any(),
+    endDate: z.any(),
+    holidayType: maybe(z.string()),
+    optionalFlag: z.boolean().optional(),
+  })
+  .passthrough();
 export type HolidayRow = z.infer<typeof holidayRowSchema>;
 
 export const scheduleRowSchema = z.object({
@@ -87,23 +89,30 @@ export const scheduleRowSchema = z.object({
 });
 export type ScheduleRow = z.infer<typeof scheduleRowSchema>;
 
-export const leaveCategoryRowSchema = z.object({
-  id,
-  code: z.string(),
-  name: z.string(),
-  quotaDays: maybe(z.union([z.number(), z.string()])),
-  periodStart: z.any().optional(),
-  periodEnd: z.any().optional(),
-  paid: z.boolean().optional(),
-  halfDayAllowed: z.boolean().optional(),
-  attachmentMode: maybe(z.string()),
-  attachmentAfterDays: maybe(z.number()),
-  noticeDays: maybe(z.number()),
-  maxPerRequest: maybe(z.number()),
-  negativeCap: maybe(z.union([z.number(), z.string()])),
-  approvalChain: z.any().optional(),
-  active: z.boolean().optional(),
-});
+export const leaveCategoryRowSchema = z
+  .object({
+    id,
+    code: z.string(),
+    name: z.string(),
+    quotaDays: maybe(z.union([z.number(), z.string()])),
+    periodStart: z.any().optional(),
+    periodEnd: z.any().optional(),
+    paid: z.boolean().optional(),
+    halfDayAllowed: z.boolean().optional(),
+    attachmentMode: maybe(z.string()),
+    attachmentAfterDays: maybe(z.number()),
+    noticeDays: maybe(z.number()),
+    maxPerRequest: maybe(z.number()),
+    negativeCap: maybe(z.union([z.number(), z.string()])),
+    approvalChain: z.any().optional(),
+    active: z.boolean().optional(),
+    appliesTo: z.any().optional(),
+    proRata: z.boolean().optional(),
+    carryMode: maybe(z.string()),
+    carryCapDays: maybe(z.union([z.number(), z.string()])),
+    carryExpiryDate: z.any().optional(),
+  })
+  .passthrough();
 export type LeaveCategoryRow = z.infer<typeof leaveCategoryRowSchema>;
 
 export const leavePolicySchema = z

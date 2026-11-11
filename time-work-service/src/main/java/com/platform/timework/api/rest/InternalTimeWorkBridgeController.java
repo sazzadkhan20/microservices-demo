@@ -126,6 +126,24 @@ public class InternalTimeWorkBridgeController {
         return Map.of("ok", true, "employeeId", employeeId);
     }
 
+    @PostMapping("/work-schedules/ensure-location-default")
+    public Map<String, Object> ensureLocationDefault(@RequestBody Map<String, Object> body, HttpServletRequest request) {
+        requireInternal(request);
+        Long locationId = asLong(body == null ? null : body.get("locationId"));
+        if (locationId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "locationId is required");
+        }
+        WorkSchedule saved = workScheduleService.ensureDefaultLocationSchedule(locationId);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", true);
+        out.put("locationId", locationId);
+        out.put("scheduleId", saved.getId());
+        out.put("mode", saved.getMode());
+        out.put("startTime", saved.getStartTime());
+        out.put("endTime", saved.getEndTime());
+        return out;
+    }
+
     private void requireInternal(HttpServletRequest request) {
         if (!InternalCalls.isTrusted(request.getHeader(InternalCalls.HEADER), internalKey)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "X-Internal-Key required");

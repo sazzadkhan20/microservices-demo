@@ -65,18 +65,20 @@ export function AuthProvider({ initialMe, children }: { initialMe: Me; children:
     }
   }, [qc]);
 
+  const leaveEligible = me.leaveEligible !== false;
+
   const value = useMemo<AuthContextValue>(
     () => ({
       me,
       locationTimeZone,
       can: (feature, action) => hasPermission(perms, feature, action),
       canAny: (rule) => satisfies(perms, rule),
-      canAccessRoute: (pathname) => canAccessRoute(perms, pathname, me.scopes),
-      nav: visibleNav(perms, me.scopes),
+      canAccessRoute: (pathname) => canAccessRoute(perms, pathname, me.scopes, { leaveEligible }),
+      nav: visibleNav(perms, me.scopes, { leaveEligible }),
       refresh,
       signOut,
     }),
-    [me, locationTimeZone, perms, refresh, signOut],
+    [me, locationTimeZone, perms, leaveEligible, refresh, signOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

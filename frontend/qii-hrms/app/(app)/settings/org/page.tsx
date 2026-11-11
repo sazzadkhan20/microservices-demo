@@ -670,6 +670,8 @@ function Locations({ canManage }: { canManage: boolean }) {
       setEditing(null);
       void qc.invalidateQueries({ queryKey: ["locations"] });
       void qc.invalidateQueries({ queryKey: ["lookup", "locations"] });
+      // New locations seed a LOCATION base schedule in Time&Work.
+      void qc.invalidateQueries({ queryKey: ["work-schedules"] });
     },
     onError: (e: Error) => setErr(e.message),
   });

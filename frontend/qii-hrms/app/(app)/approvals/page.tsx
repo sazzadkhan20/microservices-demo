@@ -11,7 +11,7 @@ import { StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import { byId, rowsOf, useEmployeesLookup, type Rec } from "@/lib/api/lookups";
-import { fmtDate, fmtDateTime, fmtNumber, fmtRange, fmtTime, str } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtLeaveDays, fmtNumber, fmtRange, fmtTime, str } from "@/lib/format";
 import type { LeaveRow } from "@/lib/schemas/leave";
 
 type Decision = {
@@ -21,6 +21,8 @@ type Decision = {
   who: string;
   /** Leave cancellation chain (PENDING_CANCEL) — avoid scanning leaveRows (may contain nulls). */
   isCancel?: boolean;
+  /** Admin acting after idle threshold — requires a note. */
+  onBehalf?: boolean;
 };
 
 export default function ApprovalsPage() {
@@ -97,7 +99,7 @@ export default function ApprovalsPage() {
     <div className="stack">
       <PageHeader
         title="Approvals"
-        subtitle="New leave, cancellation requests, and attendance corrections waiting on your step."
+        subtitle="Only the current chain step you can decide — or idle on-behalf for admins after 2 working days."
         actions={
           <button type="button" className="btn" onClick={refresh}>
             Refresh
@@ -112,7 +114,8 @@ export default function ApprovalsPage() {
             <span className="pill acc">{leaveRows.length}</span>
           </div>
           <p className="small muted" style={{ margin: 0 }}>
-            Includes new leave and cancellation requests at your step in the configured approval chain.
+            Shows items at your current chain step. On-behalf rows appear only when a step has been idle
+            (≥ 2 working days) and you may act as admin — the audit log records who acted.
           </p>
           <ErrorNote error={pending.error} />
           <div className="tbl-wrap">
@@ -139,6 +142,7 @@ export default function ApprovalsPage() {
                   leaveRows.map((r) => {
                     const who = names.get(String(r.employeeId)) ?? `Employee #${r.employeeId}`;
                     const isCancel = String(r.status ?? "").toUpperCase() === "PENDING_CANCEL";
+                    const onBehalf = String(r.decisionAuthority ?? "").toUpperCase() === "ON_BEHALF";
                     return (
                       <tr key={String(r.id)}>
                         <td>
@@ -149,10 +153,17 @@ export default function ApprovalsPage() {
                               <span className="pill warn">Cancellation request</span>
                             </div>
                           ) : null}
+                          {onBehalf ? (
+                            <div className="small" style={{ marginTop: 4 }}>
+                              <span className="pill info" title="Step idle ≥ 2 working days — you may act on behalf">
+                                On behalf (idle)
+                              </span>
+                            </div>
+                          ) : null}
                         </td>
                         <td>{str(r.leaveTypeCode)}</td>
                         <td>{fmtRange(r.startDate, r.endDate)}</td>
-                        <td className="n">{fmtNumber(r.workingDaysCounted)}</td>
+                        <td className="n">{fmtLeaveDays(r.workingDaysCounted)}</td>
                         <td>
                           <ApprovalChain steps={r.approvals} />
                         </td>
@@ -185,20 +196,20 @@ export default function ApprovalsPage() {
                               className="btn sm primary"
                               disabled={decide.isPending}
                               onClick={() =>
-                                open({ kind: "leave", id: r.id, action: "approve", who, isCancel })
+                                open({ kind: "leave", id: r.id, action: "approve", who, isCancel, onBehalf })
                               }
                             >
-                              {isCancel ? "Approve cancel" : "Approve"}
+                              {onBehalf ? "Approve on behalf" : isCancel ? "Approve cancel" : "Approve"}
                             </button>
                             <button
                               type="button"
                               className="btn sm danger"
                               disabled={decide.isPending}
                               onClick={() =>
-                                open({ kind: "leave", id: r.id, action: "reject", who, isCancel })
+                                open({ kind: "leave", id: r.id, action: "reject", who, isCancel, onBehalf })
                               }
                             >
-                              {isCancel ? "Deny cancel" : "Reject"}
+                              {onBehalf ? "Reject on behalf" : isCancel ? "Deny cancel" : "Reject"}
                             </button>
                           </div>
                         </td>
@@ -309,14 +320,16 @@ export default function ApprovalsPage() {
         onClose={() => setDecision(null)}
         title={
           decision
-            ? `${decision.action === "approve" ? "Approve" : "Reject"} — ${decision.who}`
+            ? `${decision.onBehalf ? "On behalf · " : ""}${decision.action === "approve" ? "Approve" : "Reject"} — ${decision.who}`
             : ""
         }
         subtitle={
           decision?.kind === "leave"
-            ? decision.isCancel
-              ? "Leave cancellation request"
-              : "Leave request"
+            ? decision.onBehalf
+              ? "Acting on the expected approver's behalf after idle threshold — note is required and logged."
+              : decision.isCancel
+                ? "Leave cancellation request"
+                : "Leave request at your chain step"
             : "Attendance correction"
         }
         footer={
@@ -327,15 +340,20 @@ export default function ApprovalsPage() {
             <button
               type="button"
               className={`btn ${decision?.action === "reject" ? "danger" : "primary"}`}
-              disabled={decide.isPending || (decision?.action === "reject" && note.trim().length < 3)}
+              disabled={
+                decide.isPending ||
+                ((decision?.action === "reject" || decision?.onBehalf) && note.trim().length < 3)
+              }
               onClick={() => decision && decide.mutate({ ...decision, note: note.trim() })}
             >
               {decide.isPending
                 ? "Saving…"
                 : decision?.action === "approve"
-                  ? decision.isCancel
-                    ? "Confirm cancel approval"
-                    : "Confirm approval"
+                  ? decision.onBehalf
+                    ? "Confirm on-behalf approval"
+                    : decision.isCancel
+                      ? "Confirm cancel approval"
+                      : "Confirm approval"
                   : decision?.isCancel
                     ? "Deny cancellation"
                     : "Confirm rejection"}

@@ -24,6 +24,8 @@ export const approvalStepSchema = z
     status: z.string().nullable().optional(),
     actorName: z.string().nullable().optional(),
     comment: z.string().nullable().optional(),
+    actedOnBehalf: z.boolean().nullable().optional(),
+    expectedApproverId: id.optional().nullable(),
   })
   .passthrough();
 
@@ -45,6 +47,8 @@ export const leaveRowSchema = z
     attachmentRef: z.string().nullable().optional(),
     teamClashAlert: z.union([z.boolean(), z.string()]).nullable().optional(),
     warnings: warningList,
+    /** STEP = normal approver; ON_BEHALF = idle admin override. */
+    decisionAuthority: z.string().nullable().optional(),
   })
   .passthrough();
 

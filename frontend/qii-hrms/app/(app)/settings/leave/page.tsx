@@ -14,6 +14,7 @@ import { Tabs } from "@/components/ui/Tabs";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import {
+  byId,
   rowsOf,
   useEmployeesLookup,
   useLeaveTypeCatalogue,
@@ -22,8 +23,8 @@ import {
   type Emp,
   type Rec,
 } from "@/lib/api/lookups";
-import { EMPLOYMENT_TYPES } from "@/lib/schemas/employee";
-import { fmtNumber, humanize, str } from "@/lib/format";
+import { DEACTIVATE_STATUSES, EMPLOYMENT_TYPES } from "@/lib/schemas/employee";
+import { fmtLeaveDays, fmtNumber, humanize, isLeaveHalfDayStep, str } from "@/lib/format";
 
 type AppliesKind = "locations" | "employmentTypes" | "teams" | "employeeIds";
 type AppliesTo = {
@@ -91,7 +92,7 @@ function appliesSummary(a: AppliesTo): string {
   return parts.join(" · ");
 }
 
-/** Match BE LeaveAppliesToService: pattern / employment type / resolved schedule / pay hints. */
+/** Match BE LeaveAppliesToService: resolved schedule mode only (not pay type). */
 function resolvedScheduleMode(e: Emp, schedules: Rec[]): string | null {
   const find = (scope: string, id: number | null | undefined) => {
     if (id == null) return null;
@@ -104,16 +105,11 @@ function resolvedScheduleMode(e: Emp, schedules: Rec[]): string | null {
   return find("EMPLOYEE", e.id) || find("TEAM", e.teamId ?? null) || find("LOCATION", e.locationId ?? null);
 }
 
+/** FR-LV-03 — hourly work schedule (incl. location default HOURLY). Pay type HOURLY alone does not block. */
 function isHourlyEmployee(e: EmpHourlyHints, schedules: Rec[] = []) {
   const pattern = String(e.workPattern ?? "").toUpperCase();
-  const empType = String(e.employmentType ?? "").toUpperCase();
-  if (pattern === "HOURLY" || empType === "HOURLY") return true;
-  if (resolvedScheduleMode(e, schedules) === "HOURLY") return true;
-  const payType = String(e.customFields?.payType ?? "").toUpperCase();
-  if (payType === "HOURLY") return true;
-  const rate = Number(e.hourlyRate ?? 0);
-  const base = Number(e.baseSalary ?? 0);
-  return rate > 0 && !(base > 0);
+  if (pattern === "HOURLY") return true;
+  return resolvedScheduleMode(e, schedules) === "HOURLY";
 }
 
 const rowSchema = z.object({ id: z.union([z.number(), z.string()]) }).passthrough();
@@ -130,20 +126,121 @@ const ATTACH = ["NEVER", "ALWAYS", "AFTER_DAYS"];
 const CARRY_MODES = ["NONE", "ALL", "CAP"] as const;
 type CarryMode = (typeof CARRY_MODES)[number];
 
-function chainRoles(v: unknown): string {
+const CHAIN_ROLE_OPTIONS: { value: string; label: string }[] = [
+  { value: "MANAGER", label: "Direct manager" },
+  { value: "MANAGER_OF_MANAGER", label: "Manager's manager" },
+  { value: "STORE_MANAGER", label: "Store manager" },
+  { value: "HR", label: "HR (any HR role)" },
+  { value: "ADMIN", label: "Admin (any Admin)" },
+  { value: "SUPERADMIN", label: "Super Admin" },
+  { value: "NAMED", label: "Specific person…" },
+];
+
+type ChainStep =
+  | { kind: "ROLE"; role: string }
+  | { kind: "NAMED"; employeeId: string };
+
+const DEFAULT_CHAIN_STEPS: ChainStep[] = [
+  { kind: "ROLE", role: "MANAGER" },
+  { kind: "ROLE", role: "ADMIN" },
+];
+
+function isApproverEligible(e: Emp): boolean {
+  const st = String(e.status ?? "").trim();
+  if (!st) return true; // treat missing status as selectable
+  if (DEACTIVATE_STATUSES.has(st)) return false;
+  const upper = st.toUpperCase();
+  return upper !== "INACTIVE" && upper !== "RESIGNED" && upper !== "TERMINATED";
+}
+
+function roleLabel(role: string): string {
+  return CHAIN_ROLE_OPTIONS.find((o) => o.value === role)?.label ?? role;
+}
+
+function parseChainSteps(raw: unknown): ChainStep[] {
   try {
-    const arr = typeof v === "string" ? JSON.parse(v) : v;
-    if (Array.isArray(arr)) {
-      return arr
-        .slice()
-        .sort((a, b) => Number(a.step ?? 0) - Number(b.step ?? 0))
-        .map((s) => s.role)
-        .join(", ");
+    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(arr) || arr.length === 0) return [...DEFAULT_CHAIN_STEPS];
+    const out: ChainStep[] = [];
+    for (const s of arr) {
+      const role = String(s?.role ?? "").toUpperCase();
+      const namedId = s?.namedEmployeeId;
+      if (role === "NAMED_EMPLOYEE" || namedId != null) {
+        out.push({ kind: "NAMED", employeeId: namedId != null ? String(namedId) : "" });
+      } else if (role) {
+        out.push({ kind: "ROLE", role });
+      }
     }
+    return out.length ? out.slice(0, 4) : [...DEFAULT_CHAIN_STEPS];
   } catch {
-    /* fall through */
+    return [...DEFAULT_CHAIN_STEPS];
   }
-  return "";
+}
+
+function chainStepsSummary(steps: ChainStep[], names: Map<string, string>): string {
+  if (!steps.length) return "—";
+  return steps
+    .map((s) => {
+      if (s.kind === "NAMED") {
+        const n = names.get(s.employeeId);
+        return n || (s.employeeId ? `Person #${s.employeeId}` : "Specific person");
+      }
+      return roleLabel(s.role);
+    })
+    .join(" → ");
+}
+
+/** Table column helper — ids shown as NAMED:# until names map is available. */
+function chainRoles(v: unknown, names?: Map<string, string>): string {
+  return chainStepsSummary(parseChainSteps(v), names ?? new Map());
+}
+
+function validateChainSteps(steps: ChainStep[], activeIds: Set<string>): string | null {
+  if (steps.length === 0) return "Add at least one approval step";
+  if (steps.length > 4) return "Approval chain may have at most 4 steps";
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (s.kind === "NAMED") {
+      if (!s.employeeId) return `Step ${i + 1}: choose a person`;
+      if (activeIds.size > 0 && !activeIds.has(s.employeeId)) {
+        return `Step ${i + 1}: selected person is inactive or no longer available`;
+      }
+    } else if (!s.role) {
+      return `Step ${i + 1}: choose a role`;
+    }
+    if (i > 0) {
+      const p = steps[i - 1];
+      if (p.kind === "ROLE" && s.kind === "ROLE" && p.role === s.role) {
+        return `Duplicate consecutive step (${roleLabel(s.role)})`;
+      }
+      if (p.kind === "NAMED" && s.kind === "NAMED" && p.employeeId && p.employeeId === s.employeeId) {
+        return "Duplicate consecutive person in the chain";
+      }
+    }
+  }
+  return null;
+}
+
+function chainStepsToPayload(steps: ChainStep[]): Array<Record<string, unknown>> {
+  return steps.map((s, i) => {
+    if (s.kind === "NAMED") {
+      return {
+        step: i + 1,
+        role: "NAMED_EMPLOYEE",
+        resolver: "NAMED_EMPLOYEE",
+        namedEmployeeId: Number(s.employeeId),
+      };
+    }
+    const resolver =
+      s.role === "MANAGER"
+        ? "REPORTING_MANAGER"
+        : s.role === "MANAGER_OF_MANAGER"
+          ? "MANAGER_OF_MANAGER"
+          : s.role === "STORE_MANAGER"
+            ? "REPORTING_MANAGER_AND_DESIGNATION"
+            : "RBAC_ROLE";
+    return { step: i + 1, role: s.role, resolver };
+  });
 }
 
 const catSchema = z.object({
@@ -155,7 +252,6 @@ const catSchema = z.object({
   negativeCap: z.string().refine((v) => v === "" || !Number.isNaN(Number(v)), "Must be a number"),
   attachmentMode: z.string(),
   attachmentAfterDays: z.coerce.number("Enter a number").int().min(0),
-  approvalChain: z.string(),
   paid: z.boolean(),
   halfDayAllowed: z.boolean(),
   active: z.boolean(),
@@ -212,6 +308,18 @@ function Categories() {
     () => new Set(nonHourlyEmployees.map((e) => String(e.id))),
     [nonHourlyEmployees],
   );
+  const activeApprovers = useMemo(
+    () => (employees.data ?? []).filter(isApproverEligible),
+    [employees.data],
+  );
+  const employeeNames = useMemo(
+    () => byId(employees.data ?? [], (e) => e.fullName || e.employeeCode || `#${e.id}`),
+    [employees.data],
+  );
+  const activeApproverIds = useMemo(
+    () => new Set(activeApprovers.map((e) => String(e.id))),
+    [activeApprovers],
+  );
 
   const thisYear = new Date().getFullYear();
   const blank = {
@@ -223,7 +331,6 @@ function Categories() {
     negativeCap: "",
     attachmentMode: "NEVER",
     attachmentAfterDays: "0",
-    approvalChain: "MANAGER",
     paid: true,
     halfDayAllowed: true,
     active: true,
@@ -237,6 +344,7 @@ function Categories() {
   };
   const [editing, setEditing] = useState<Rec | "new" | null>(null);
   const [form, setForm] = useState(blank);
+  const [chainSteps, setChainSteps] = useState<ChainStep[]>([...DEFAULT_CHAIN_STEPS]);
   const [appliesTo, setAppliesTo] = useState<AppliesTo>(EMPTY_APPLIES);
   const [appliesKind, setAppliesKind] = useState<AppliesKind | "">("");
   const [appliesValue, setAppliesValue] = useState("");
@@ -304,7 +412,6 @@ function Categories() {
       negativeCap: r.negativeCap == null ? "" : String(r.negativeCap),
       attachmentMode: str(r.attachmentMode, "NEVER"),
       attachmentAfterDays: String(r.attachmentAfterDays ?? 0),
-      approvalChain: chainRoles(r.approvalChain),
       paid: Boolean(r.paid),
       halfDayAllowed: Boolean(r.halfDayAllowed),
       active: r.active !== false,
@@ -326,16 +433,19 @@ function Categories() {
       setLoadingCategory(false);
       setAppliesTo({ ...EMPTY_APPLIES });
       setForm(blank);
+      setChainSteps([...DEFAULT_CHAIN_STEPS]);
       setEditing("new");
       return;
     }
     // Seed from list row immediately, then refresh from GET /{id} so applies-to is never stale/missing.
     hydrateCategoryForm(r);
+    setChainSteps(parseChainSteps(r.approvalChain));
     setEditing(r);
     setLoadingCategory(true);
     void apiFetch<Rec>(api.hrms(`leave-categories/${r.id}`))
       .then((fresh) => {
         hydrateCategoryForm(fresh);
+        setChainSteps(parseChainSteps(fresh.approvalChain));
         setEditing(fresh);
       })
       .catch((e: Error) => {
@@ -449,13 +559,14 @@ function Categories() {
       for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
       return setErrors(next);
     }
+    const chainErr = validateChainSteps(chainSteps, activeApproverIds);
+    if (chainErr) {
+      setErrors({ approvalChain: chainErr });
+      return;
+    }
     setErrors({});
     setErr("");
     const v = parsed.data;
-    const roles = v.approvalChain
-      .split(/[,>→]/)
-      .map((r) => r.trim().toUpperCase())
-      .filter(Boolean);
     save.mutate({
       code: v.code.toUpperCase(),
       name: v.name,
@@ -465,7 +576,7 @@ function Categories() {
       negativeCap: v.negativeCap === "" ? undefined : Number(v.negativeCap),
       attachmentMode: v.attachmentMode,
       attachmentAfterDays: v.attachmentAfterDays,
-      approvalChain: JSON.stringify(roles.map((role, i) => ({ role, step: i + 1 }))),
+      approvalChain: JSON.stringify(chainStepsToPayload(chainSteps)),
       paid: v.paid,
       halfDayAllowed: v.halfDayAllowed,
       active: v.active,
@@ -508,7 +619,7 @@ function Categories() {
         columns={[
           { key: "code", header: "Code", sortable: true, className: "mono" },
           { key: "name", header: "Name", sortable: true, render: (r) => <b>{str(r.name)}</b> },
-          { key: "quotaDays", header: "Quota", className: "n", render: (r) => `${fmtNumber(r.quotaDays)} d` },
+          { key: "quotaDays", header: "Quota", className: "n", render: (r) => `${fmtLeaveDays(r.quotaDays)} d` },
           {
             key: "period",
             header: "Period",
@@ -519,7 +630,11 @@ function Categories() {
             ),
           },
           { key: "paid", header: "Paid", render: (r) => <span className={`pill ${r.paid ? "good" : "warn"}`}>{r.paid ? "Paid" : "Unpaid"}</span> },
-          { key: "approvalChain", header: "Approval chain", render: (r) => chainRoles(r.approvalChain) || "Auto" },
+          {
+            key: "approvalChain",
+            header: "Approval chain",
+            render: (r) => chainRoles(r.approvalChain, employeeNames) || "Auto",
+          },
           {
             key: "appliesTo",
             header: "Applies to",
@@ -645,7 +760,11 @@ function Categories() {
             <FormField label="Notice (days)" error={errors.noticeDays}>
               <input type="number" min={0} value={form.noticeDays} onChange={(e) => setForm({ ...form, noticeDays: e.target.value })} />
             </FormField>
-            <FormField label="Negative balance cap" error={errors.negativeCap} hint="e.g. -2 allows going 2 days overdrawn">
+            <FormField
+              label="Negative balance cap"
+              error={errors.negativeCap}
+              hint="e.g. -2 or 2 = may overdraw by 2 days on apply/approve"
+            >
               <input type="number" step="0.5" value={form.negativeCap} onChange={(e) => setForm({ ...form, negativeCap: e.target.value })} />
             </FormField>
             <FormField label="Attachment required">
@@ -658,8 +777,105 @@ function Categories() {
             <FormField label="…after (days)" error={errors.attachmentAfterDays}>
               <input type="number" min={0} value={form.attachmentAfterDays} onChange={(e) => setForm({ ...form, attachmentAfterDays: e.target.value })} />
             </FormField>
-            <FormField label="Approval chain" full hint="Roles in order, comma-separated. Example: MANAGER, HR. Empty = auto-approved.">
-              <input type="text" value={form.approvalChain} onChange={(e) => setForm({ ...form, approvalChain: e.target.value })} />
+            <FormField
+              label="Approval chain"
+              full
+              required
+              error={errors.approvalChain}
+              hint="Up to 4 steps. Pick a role or a specific active person. Preview shows names (e.g. Direct manager → Nadia)."
+            >
+              <div className="stack" style={{ gap: 8 }}>
+                <div className="muted small">
+                  <b>{chainStepsSummary(chainSteps, employeeNames)}</b>
+                </div>
+                {chainSteps.map((step, idx) => (
+                  <div key={idx} className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <span className="muted small" style={{ minWidth: 52 }}>
+                      Step {idx + 1}
+                    </span>
+                    <select
+                      value={step.kind === "NAMED" ? "NAMED" : step.role}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setChainSteps((prev) => {
+                          const next = [...prev];
+                          next[idx] =
+                            v === "NAMED"
+                              ? { kind: "NAMED", employeeId: step.kind === "NAMED" ? step.employeeId : "" }
+                              : { kind: "ROLE", role: v };
+                          return next;
+                        });
+                        setErrors((er) => {
+                          const n = { ...er };
+                          delete n.approvalChain;
+                          return n;
+                        });
+                      }}
+                      style={{ minWidth: 180 }}
+                    >
+                      {CHAIN_ROLE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    {step.kind === "NAMED" ? (
+                      <select
+                        value={step.employeeId}
+                        onChange={(e) => {
+                          const id = e.target.value;
+                          setChainSteps((prev) => {
+                            const next = [...prev];
+                            next[idx] = { kind: "NAMED", employeeId: id };
+                            return next;
+                          });
+                          setErrors((er) => {
+                            const n = { ...er };
+                            delete n.approvalChain;
+                            return n;
+                          });
+                        }}
+                        style={{ minWidth: 200, flex: 1 }}
+                      >
+                        <option value="">Select person…</option>
+                        {activeApprovers.map((e) => (
+                          <option key={e.id} value={String(e.id)}>
+                            {e.fullName || e.employeeCode || `#${e.id}`}
+                          </option>
+                        ))}
+                        {/* Keep current selection visible if they became inactive (edit legacy). */}
+                        {step.employeeId && !activeApproverIds.has(step.employeeId) ? (
+                          <option value={step.employeeId}>
+                            {employeeNames.get(step.employeeId) || `#${step.employeeId}`} (inactive — replace)
+                          </option>
+                        ) : null}
+                      </select>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="btn sm"
+                      disabled={chainSteps.length <= 1}
+                      onClick={() => setChainSteps((prev) => prev.filter((_, i) => i !== idx))}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+                <div>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    disabled={chainSteps.length >= 4}
+                    onClick={() =>
+                      setChainSteps((prev) =>
+                        prev.length >= 4 ? prev : [...prev, { kind: "ROLE", role: "ADMIN" }],
+                      )
+                    }
+                  >
+                    Add step
+                  </button>
+                </div>
+              </div>
             </FormField>
             <FormField label="Period start" hint="Leave accrual period start date">
               <input type="date" value={form.periodStart} onChange={(e) => setForm({ ...form, periodStart: e.target.value })} />
@@ -667,7 +883,7 @@ function Categories() {
             <FormField label="Period end" hint="Leave accrual period end date">
               <input type="date" value={form.periodEnd} onChange={(e) => setForm({ ...form, periodEnd: e.target.value })} />
             </FormField>
-            <FormField label="Carry mode" hint="How unused days carry over">
+            <FormField label="Carry mode" hint="NONE / ALL / CAP — applied at year-end carry">
               <select
                 value={form.carryMode}
                 onChange={(e) => setForm({ ...form, carryMode: e.target.value as CarryMode })}
@@ -688,7 +904,10 @@ function Categories() {
                 />
               </FormField>
             ) : null}
-            <FormField label="Carry expiry date" hint="Date by which carried days must be used">
+            <FormField
+              label="Carry expiry date"
+              hint="Stored on year-end carry; unused carried days auto-expire on/after this date"
+            >
               <input
                 type="date"
                 value={form.carryExpiryDate}
@@ -702,7 +921,7 @@ function Categories() {
               <label>
                 <input type="checkbox" checked={form.halfDayAllowed} onChange={(e) => setForm({ ...form, halfDayAllowed: e.target.checked })} /> Half days allowed
               </label>
-              <label>
+              <label title="Mid-year joiners get quota × remaining period days ÷ period length. Saving quota/pro-rata resyncs balances.">
                 <input type="checkbox" checked={form.proRata} onChange={(e) => setForm({ ...form, proRata: e.target.checked })} /> Pro-rata accrual
               </label>
               <label>
@@ -713,7 +932,8 @@ function Categories() {
             <div className="stack full" style={{ gap: 10 }}>
               <h3 style={{ margin: 0 }}>Who it applies to</h3>
               <p className="small muted" style={{ margin: 0 }}>
-                Empty = everyone (except hourly staff — they never get leave categories). Add locations, employment
+                Empty = everyone (except hourly-schedule staff — FR-LV-03). Pay type HOURLY with a day schedule still
+                qualifies. Add locations, employment
                 types, teams, or named people; a person matches if they hit <b>any</b> selected rule.
               </p>
               <div className="form-grid">
@@ -755,7 +975,7 @@ function Categories() {
                 </div>
               </div>
               {appliesIsEveryone(appliesTo) ? (
-                <div className="note small">Currently applies to <b>everyone</b> (except hourly).</div>
+                <div className="note small">Currently applies to <b>everyone</b> (except hourly-schedule).</div>
               ) : (
                 <div className="stack" style={{ gap: 8 }}>
                   <div className="note small" style={{ margin: 0 }}>
@@ -815,7 +1035,10 @@ function Categories() {
 const adjustSchema = z.object({
   employeeId: z.string().min(1, "Choose an employee"),
   leaveTypeCode: z.string().min(1, "Choose a leave type"),
-  deltaDays: z.coerce.number("Enter a number").refine((n) => n !== 0, "Cannot be zero"),
+  deltaDays: z.coerce
+    .number("Enter a number")
+    .refine((n) => n !== 0, "Cannot be zero")
+    .refine(isLeaveHalfDayStep, "Use half-day steps (0.5)"),
   reason: z.string().trim().min(3, "Please give a reason"),
   year: z.coerce.number().int().min(2000).max(2100),
 });
@@ -867,6 +1090,8 @@ function Balances() {
       void qc.invalidateQueries({ queryKey: ["employee-balances"] });
       void qc.invalidateQueries({ queryKey: ["employee-balance-ledger"] });
       void qc.invalidateQueries({ queryKey: ["my-balances"] });
+      void qc.invalidateQueries({ queryKey: ["leave-types"] });
+      void qc.invalidateQueries({ queryKey: ["lookup", "leave-types"] });
     },
     onError: (e: Error) => setErr(e.message),
   });
@@ -967,13 +1192,14 @@ function Balances() {
                   <th className="n">Adj</th>
                   <th className="n">Taken</th>
                   <th className="n">Pending</th>
+                  <th className="n">Balance</th>
                   <th className="n">Available</th>
                 </tr>
               </thead>
               <tbody>
                 {(balances.data ?? []).length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty">
+                    <td colSpan={8} className="empty">
                       {employeeId ? "No balances for this year" : "—"}
                     </td>
                   </tr>
@@ -984,13 +1210,14 @@ function Balances() {
                         <b>{str(b.leaveTypeName) || str(b.leaveTypeCode)}</b>
                         <div className="muted small">{str(b.leaveTypeCode)}</div>
                       </td>
-                      <td className="n">{fmtNumber(b.quotaDays)}</td>
-                      <td className="n">{fmtNumber(b.carriedDays)}</td>
-                      <td className="n">{fmtNumber(b.adjustmentDays)}</td>
-                      <td className="n">{fmtNumber(b.takenDays)}</td>
-                      <td className="n">{fmtNumber(b.pendingDays)}</td>
+                      <td className="n">{fmtLeaveDays(b.quotaDays)}</td>
+                      <td className="n">{fmtLeaveDays(b.carriedDays)}</td>
+                      <td className="n">{fmtLeaveDays(b.adjustmentDays)}</td>
+                      <td className="n">{fmtLeaveDays(b.takenDays)}</td>
+                      <td className="n">{fmtLeaveDays(b.pendingDays)}</td>
+                      <td className="n">{fmtLeaveDays(b.balanceDays)}</td>
                       <td className="n">
-                        <b>{fmtNumber(b.availableDays ?? b.balanceDays)}</b>
+                        <b>{fmtLeaveDays(b.availableDays ?? b.balanceDays)}</b>
                       </td>
                     </tr>
                   ))
@@ -1033,7 +1260,7 @@ function Balances() {
                   <tr key={String(r.id)}>
                     <td className="small">{str(r.createdAt)}</td>
                     <td className="mono">{str(r.leaveTypeCode)}</td>
-                    <td className="n">{fmtNumber(r.deltaDays)}</td>
+                    <td className="n">{fmtLeaveDays(r.deltaDays)}</td>
                     <td>{str(r.reason)}</td>
                     <td className="small">{r.actorEmployeeId != null ? `#${r.actorEmployeeId}` : "—"}</td>
                   </tr>
@@ -1050,7 +1277,10 @@ function Balances() {
 const openingSchema = z.object({
   employeeId: z.string().min(1, "Choose an employee"),
   leaveTypeCode: z.string().min(1, "Choose a leave type"),
-  deltaDays: z.coerce.number("Enter a number").positive("Opening grant must be positive"),
+  deltaDays: z.coerce
+    .number("Enter a number")
+    .positive("Opening grant must be positive")
+    .refine(isLeaveHalfDayStep, "Use half-day steps (0.5)"),
   year: z.coerce.number("Enter a year").int().min(2000).max(2100),
   reason: z.string().trim().min(3, "Please give a reason"),
 });
@@ -1090,7 +1320,10 @@ function OpeningBalances() {
       toast.show("Opening balance recorded");
       setErr("");
       void qc.invalidateQueries({ queryKey: ["employee-balances"] });
+      void qc.invalidateQueries({ queryKey: ["employee-balance-ledger"] });
       void qc.invalidateQueries({ queryKey: ["my-balances"] });
+      void qc.invalidateQueries({ queryKey: ["leave-types"] });
+      void qc.invalidateQueries({ queryKey: ["lookup", "leave-types"] });
     },
     onError: (e: Error) => setErr(e.message),
   });
@@ -1176,10 +1409,10 @@ function OpeningBalances() {
               <span>
                 {str(b.leaveTypeName) || str(b.leaveTypeCode)}{" "}
                 <span className="muted small">
-                  avail {fmtNumber(b.availableDays ?? b.balanceDays)} · quota {fmtNumber(b.quotaDays)}
+                  avail {fmtLeaveDays(b.availableDays ?? b.balanceDays)} · quota {fmtLeaveDays(b.quotaDays)}
                 </span>
               </span>
-              <b className="num">{fmtNumber(b.balanceDays)} d</b>
+              <b className="num">{fmtLeaveDays(b.balanceDays)} d</b>
             </div>
           ))}
         </div>
@@ -1193,7 +1426,10 @@ const yearEndSchema = z
     leaveTypeCode: z.string().min(1, "Choose a leave type"),
     fromYear: z.coerce.number("Enter a year").int().min(2000).max(2100),
     toYear: z.coerce.number("Enter a year").int().min(2000).max(2100),
-    carryMaxDays: z.coerce.number("Enter a number").min(0, "Must be ≥ 0"),
+    carryMaxDays: z.coerce
+      .number("Enter a number")
+      .min(0, "Must be ≥ 0")
+      .refine(isLeaveHalfDayStep, "Use half-day steps (0.5)"),
   })
   .superRefine((v, ctx) => {
     if (v.toYear !== v.fromYear + 1) {
@@ -1203,6 +1439,7 @@ const yearEndSchema = z
 
 function YearEnd() {
   const { can } = useAuth();
+  const qc = useQueryClient();
   const toast = useToast();
   const canManage = can("leave", "manage");
   const types = useLeaveTypeCatalogue(canManage);
@@ -1290,6 +1527,12 @@ function YearEnd() {
       toast.show(`Year-end applied · ${str(data.employeesUpdated, "0")} employees updated`);
       setConfirmOpen(false);
       setErr("");
+      void qc.invalidateQueries({ queryKey: ["employee-balances"] });
+      void qc.invalidateQueries({ queryKey: ["employee-balance-ledger"] });
+      void qc.invalidateQueries({ queryKey: ["my-balances"] });
+      void qc.invalidateQueries({ queryKey: ["leave-types"] });
+      void qc.invalidateQueries({ queryKey: ["lookup", "leave-types"] });
+      void qc.invalidateQueries({ queryKey: ["year-end-defaults"] });
       const parsed = parseForm();
       if (parsed) runPreview.mutate(bodyFrom(parsed));
     },
@@ -1396,9 +1639,9 @@ function YearEnd() {
                   preview.map((r, i) => (
                     <tr key={String(r.employeeId ?? i)}>
                       <td>{str(r.employeeName) || `#${r.employeeId}`}</td>
-                      <td className="n">{fmtNumber(r.currentBalance)}</td>
+                      <td className="n">{fmtLeaveDays(r.currentBalance)}</td>
                       <td className="n">
-                        <b>{fmtNumber(r.carryDays)}</b>
+                        <b>{fmtLeaveDays(r.carryDays)}</b>
                       </td>
                     </tr>
                   ))

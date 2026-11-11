@@ -9,8 +9,13 @@ import com.platform.leave.client.people.PeopleEmployeeGateway;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.DayOfWeek;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -21,12 +26,14 @@ import java.util.stream.Collectors;
 import com.platform.leave.client.people.PeopleAuthzClient;
 
 /**
- * Config-driven leave approval authority. Engines use resolver types only —
- * business role names live in {@code tenant_settings.approvalAuthority} and
- * {@code leave_policy.approval_chain}, never in Java if-branches.
+ * Config-driven leave approval authority.
+ *
+ * <p>Normal decide: actor must match the current step resolver.
+ * On-behalf (FR-LV-16): Admin / SuperAdmin / leave:manage may act only after the step
+ * has been idle for N working days (default 2). Requester never decides their own request.
  *
  * <p>Resolvers: {@code REPORTING_MANAGER}, {@code REPORTING_MANAGER_AND_DESIGNATION},
- * {@code DESIGNATION_OR_RBAC}, {@code RBAC_ROLE}.
+ * {@code DESIGNATION_OR_RBAC}, {@code RBAC_ROLE}, {@code MANAGER_OF_MANAGER}, {@code NAMED_EMPLOYEE}.
  */
 @Service
 public class ApprovalAuthorityService {
@@ -37,6 +44,18 @@ public class ApprovalAuthorityService {
     public static final String RESOLVER_RBAC_ROLE = "RBAC_ROLE";
     public static final String RESOLVER_MANAGER_OF_MANAGER = "MANAGER_OF_MANAGER";
     public static final String RESOLVER_NAMED_EMPLOYEE = "NAMED_EMPLOYEE";
+
+    public enum Authority {
+        NONE,
+        /** Actor is the configured step approver (manager / named / role holder). */
+        STEP,
+        /** Admin acting after idle threshold — audit must flag on-behalf. */
+        ON_BEHALF
+    }
+
+    private static final Set<DayOfWeek> WEEKDAYS = EnumSet.of(
+            DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
+            DayOfWeek.THURSDAY, DayOfWeek.FRIDAY);
 
     private final PeopleEmployeeGateway employeeRepository;
     private final TenantConfigLoader configLoader;
@@ -52,53 +71,74 @@ public class ApprovalAuthorityService {
     }
 
     /**
-     * Ensures {@code actorEmployeeId} may decide the given pending step; returns the active actor.
-     * Override is config-only ({@code overrideRoleCodes} / optional {@code overridePermissions}) —
-     * holding {@code leave:manage} alone does <em>not</em> skip a REPORTING_MANAGER step.
+     * Ensures {@code actorEmployeeId} may decide the given pending step; returns actor + mode.
      */
     @Transactional(readOnly = true)
-    public EmployeeView assertCanApprove(Long actorEmployeeId, LeaveApproval step, LeaveApplication app) {
+    public Decision assertCanApprove(Long actorEmployeeId, LeaveApproval step, LeaveApplication app) {
         EmployeeView actor = requireActive(actorEmployeeId);
-        if (!mayDecide(actor, step, app)) {
+        Authority auth = resolveAuthority(actor, step, app);
+        if (auth == Authority.NONE) {
             StepRule rule = resolveStepRule(step);
             throw new IllegalStateException(
                     "Not allowed to approve step " + step.getStepOrder()
                             + " (role=" + rule.role() + ", resolver=" + rule.resolver()
-                            + "). Waiting on the configured approver for this step.");
+                            + "). Waiting on the configured approver for this step"
+                            + (isOverrideEligible(actor.getId())
+                            ? " (on-behalf only after " + idleWorkingDays() + " idle working days)"
+                            : "")
+                            + ".");
         }
-        return actor;
+        return new Decision(actor, auth);
     }
 
-    /** Non-throwing check used by pending queues so HR does not see manager-step items. */
+    /** Non-throwing check used by pending queues. */
     @Transactional(readOnly = true)
     public boolean canApprove(Long actorEmployeeId, LeaveApproval step, LeaveApplication app) {
+        return authorityOf(actorEmployeeId, step, app) != Authority.NONE;
+    }
+
+    @Transactional(readOnly = true)
+    public Authority authorityOf(Long actorEmployeeId, LeaveApproval step, LeaveApplication app) {
         if (actorEmployeeId == null || step == null || app == null) {
-            return false;
+            return Authority.NONE;
         }
         EmployeeView actor = employeeRepository.findById(actorEmployeeId).orElse(null);
         if (actor == null || !actor.isActive()) {
+            return Authority.NONE;
+        }
+        return resolveAuthority(actor, step, app);
+    }
+
+    private Authority resolveAuthority(EmployeeView actor, LeaveApproval step, LeaveApplication app) {
+        // Never allow the requester to decide their own leave (conflict of interest).
+        if (actor.getId() != null && actor.getId().equals(app.getEmployeeId())) {
+            return Authority.NONE;
+        }
+        if (matchesResolver(actor, app, resolveStepRule(step))) {
+            return Authority.STEP;
+        }
+        // Production: on-behalf only when idle ≥ N working days.
+        if (isOverrideEligible(actor.getId()) && isIdleForOnBehalf(app)) {
+            return Authority.ON_BEHALF;
+        }
+        return Authority.NONE;
+    }
+
+    /** True when the requester holds a role-pool step (used to skip at chain materialization). */
+    @Transactional(readOnly = true)
+    public boolean requesterHoldsStepRole(Long requesterId, String role, List<String> roleCodes) {
+        if (requesterId == null) {
             return false;
         }
-        return mayDecide(actor, step, app);
+        return holdsAnyRole(requesterId, roleCodes, role)
+                || designationMatches(
+                        employeeRepository.findById(requesterId).orElse(null),
+                        role);
     }
 
-    private boolean mayDecide(EmployeeView actor, LeaveApproval step, LeaveApplication app) {
-        StepRule rule = resolveStepRule(step);
-        // FR-LV-16 — configured admins may act on the approver's behalf (audit records actor).
-        // Step allowOverride gates role-based override; leave:manage / SUPERADMIN always may.
-        if (isOverride(actor.getId())
-                && (Boolean.TRUE.equals(rule.allowOverride()) || isStrongOverride(actor.getId()))) {
-            return true;
-        }
-        return matchesResolver(actor, app, rule);
-    }
-
-    /** Super-admin / leave:manage — may approve idle steps even when allowOverride=false. */
-    private boolean isStrongOverride(Long employeeId) {
-        if (rbacService.hasWildcard(employeeId)) {
-            return true;
-        }
-        return rbacService.hasPermission(employeeId, "leave", "manage");
+    @Transactional(readOnly = true)
+    public boolean employeeHoldsStepRole(Long employeeId, String role, List<String> roleCodes) {
+        return requesterHoldsStepRole(employeeId, role, roleCodes);
     }
 
     private boolean matchesResolver(EmployeeView actor, LeaveApplication app, StepRule rule) {
@@ -111,12 +151,11 @@ public class ApprovalAuthorityService {
             case RESOLVER_DESIGNATION_OR_RBAC ->
                     designationMatches(actor, rule.role()) || holdsAnyRole(actor.getId(), rule.roleCodes(), rule.role());
             case RESOLVER_MANAGER_OF_MANAGER -> isManagerOfManager(actor, app);
-            case RESOLVER_NAMED_EMPLOYEE -> isNamedEmployee(actor, app, rule);
+            case RESOLVER_NAMED_EMPLOYEE -> isNamedEmployee(actor, rule);
             default -> throw new IllegalStateException("Unknown approval resolver: " + resolver);
         };
     }
 
-    /** MoM: actor is the manager of the applicant's direct manager. */
     private boolean isManagerOfManager(EmployeeView actor, LeaveApplication app) {
         EmployeeView applicant = employeeRepository.findById(app.getEmployeeId()).orElse(null);
         if (applicant == null || applicant.getManagerId() == null) {
@@ -126,19 +165,11 @@ public class ApprovalAuthorityService {
         return manager != null && manager.getManagerId() != null && manager.getManagerId().equals(actor.getId());
     }
 
-    /** NAMED_EMPLOYEE: actor.id == step.namedEmployeeId OR step.expectedApproverId. */
-    private boolean isNamedEmployee(EmployeeView actor, LeaveApplication app, StepRule rule) {
-        // step.namedEmployeeId is embedded in the rule's role field as we pass it through; look via step directly.
-        // We rely on the step's expectedApproverId being set during creation.
-        // The rule itself doesn't carry namedEmployeeId — check via app's approvals is complex here,
-        // so we use the actor's own id against rule.namedEmployeeId if provided.
+    private boolean isNamedEmployee(EmployeeView actor, StepRule rule) {
         if (rule.namedEmployeeId() != null && rule.namedEmployeeId().equals(actor.getId())) {
             return true;
         }
-        if (rule.expectedApproverId() != null && rule.expectedApproverId().equals(actor.getId())) {
-            return true;
-        }
-        return false;
+        return rule.expectedApproverId() != null && rule.expectedApproverId().equals(actor.getId());
     }
 
     private boolean isReportingManager(EmployeeView actor, LeaveApplication app) {
@@ -149,7 +180,7 @@ public class ApprovalAuthorityService {
     }
 
     private boolean designationMatches(EmployeeView actor, String requiredRole) {
-        if (requiredRole == null || requiredRole.isBlank()) {
+        if (actor == null || requiredRole == null || requiredRole.isBlank()) {
             return false;
         }
         return designationApproverRole(actor)
@@ -157,7 +188,10 @@ public class ApprovalAuthorityService {
                 .orElse(false);
     }
 
-    private boolean holdsAnyRole(Long employeeId, List<String> roleCodes, String fallbackRole) {
+    boolean holdsAnyRole(Long employeeId, List<String> roleCodes, String fallbackRole) {
+        if (employeeId == null) {
+            return false;
+        }
         Set<String> held = rbacService.roleCodesFor(employeeId).stream()
                 .filter(Objects::nonNull)
                 .map(c -> c.toUpperCase(Locale.ROOT))
@@ -171,7 +205,12 @@ public class ApprovalAuthorityService {
             }
         }
         if (want.isEmpty() && fallbackRole != null && !fallbackRole.isBlank()) {
-            want.add(fallbackRole.toUpperCase(Locale.ROOT));
+            String fb = fallbackRole.toUpperCase(Locale.ROOT);
+            if ("SUPER_ADMIN".equals(fb)) {
+                want.add("SUPERADMIN");
+            } else {
+                want.add(fb);
+            }
         }
         for (String w : want) {
             if (held.contains(w)) {
@@ -181,27 +220,15 @@ public class ApprovalAuthorityService {
         return false;
     }
 
-    private boolean isOverride(Long employeeId) {
+    /** Admin / SuperAdmin / leave:manage — eligible for idle on-behalf only. */
+    private boolean isOverrideEligible(Long employeeId) {
         if (rbacService.hasWildcard(employeeId)) {
             return true;
         }
-        Map<String, Object> auth = approvalAuthoritySettings();
-        // Optional permission list from pack — empty by default so leave:manage (HR setup) ≠ step skip.
-        Object permsRaw = auth.get("overridePermissions");
-        if (permsRaw instanceof Collection<?> perms) {
-            for (Object p : perms) {
-                if (p == null) {
-                    continue;
-                }
-                String token = String.valueOf(p).trim().toLowerCase(Locale.ROOT);
-                int colon = token.indexOf(':');
-                if (colon > 0 && colon < token.length() - 1) {
-                    if (rbacService.hasPermission(employeeId, token.substring(0, colon), token.substring(colon + 1))) {
-                        return true;
-                    }
-                }
-            }
+        if (rbacService.hasPermission(employeeId, "leave", "manage")) {
+            return true;
         }
+        Map<String, Object> auth = approvalAuthoritySettings();
         Object raw = auth.get("overrideRoleCodes");
         if (!(raw instanceof Collection<?> col) || col.isEmpty()) {
             return false;
@@ -220,12 +247,50 @@ public class ApprovalAuthorityService {
                 .anyMatch(overrides::contains);
     }
 
+    @Transactional(readOnly = true)
+    public boolean isIdleForOnBehalf(LeaveApplication app) {
+        if (app == null) {
+            return false;
+        }
+        Instant since = app.getUpdatedAt() != null ? app.getUpdatedAt() : app.getCreatedAt();
+        if (since == null) {
+            return false;
+        }
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate start = LocalDate.ofInstant(since, zone);
+        LocalDate today = LocalDate.now(zone);
+        return workingDaysBetween(start, today) >= idleWorkingDays();
+    }
+
+    int idleWorkingDays() {
+        Object reminderCfg = configLoader.loadSettingsMap().get("leaveIdleReminder");
+        if (reminderCfg instanceof Map<?, ?> cfg) {
+            Object d = cfg.get("idleWorkingDays");
+            if (d instanceof Number n && n.intValue() > 0) {
+                return n.intValue();
+            }
+        }
+        return 2;
+    }
+
+    /** Inclusive of start exclusive of end — Mon–Fri only. */
+    static int workingDaysBetween(LocalDate start, LocalDate end) {
+        if (start == null || end == null || !end.isAfter(start)) {
+            return 0;
+        }
+        int count = 0;
+        for (LocalDate d = start.plusDays(1); !d.isAfter(end); d = d.plusDays(1)) {
+            if (WEEKDAYS.contains(d.getDayOfWeek())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
     @SuppressWarnings("unchecked")
     StepRule resolveStepRule(LeaveApproval step) {
         String storedRole = step.getApproverRole() == null ? "" : step.getApproverRole().trim();
-        // If the step itself has a resolver stored (set during creation), prefer it.
         String stepResolver = step.getResolver();
-        // Prefer policy chain row that matches this step's role (category chains may differ from policy).
         Map<String, Object> chainItem = findChainItem(step.getStepOrder(), storedRole);
         Map<String, Object> defaults = roleDefaults();
 
@@ -245,15 +310,10 @@ public class ApprovalAuthorityService {
                 fromRole.get("resolver"),
                 fromStar.get("resolver"),
                 RESOLVER_DESIGNATION_OR_RBAC);
-        Boolean allowOverride = firstBool(
-                chainItem.get("allowOverride"),
-                fromRole.get("allowOverride"),
-                fromStar.get("allowOverride"),
-                Boolean.FALSE);
-        List<String> roleCodes = firstRoleCodes(chainItem.get("roleCodes"), fromRole.get("roleCodes"), fromStar.get("roleCodes"));
-        // Stored step role wins — never let a mismatched policy row rename the step.
+        List<String> roleCodes = firstRoleCodes(
+                chainItem.get("roleCodes"), fromRole.get("roleCodes"), fromStar.get("roleCodes"));
         String role = firstString(storedRole, chainItem.get("role"), "");
-        return new StepRule(role, resolver.toUpperCase(Locale.ROOT), allowOverride, roleCodes,
+        return new StepRule(role, resolver.toUpperCase(Locale.ROOT), roleCodes,
                 step.getNamedEmployeeId(), step.getExpectedApproverId());
     }
 
@@ -303,9 +363,8 @@ public class ApprovalAuthorityService {
             }
             out.put(String.valueOf(e.getKey()).toUpperCase(Locale.ROOT), e.getValue());
         }
-        // Ensure wildcard fallback exists
         if (!out.containsKey("*")) {
-            out.put("*", Map.of("resolver", RESOLVER_DESIGNATION_OR_RBAC, "allowOverride", false));
+            out.put("*", Map.of("resolver", RESOLVER_DESIGNATION_OR_RBAC));
         }
         return out;
     }
@@ -313,19 +372,20 @@ public class ApprovalAuthorityService {
     /** Platform-neutral defaults so tenants without pack settings still behave sanely. */
     static Map<String, Object> defaultApprovalAuthority() {
         Map<String, Object> roleDefaults = new HashMap<>();
-        roleDefaults.put("MANAGER", Map.of("resolver", RESOLVER_REPORTING_MANAGER, "allowOverride", true));
-        roleDefaults.put("MANAGER_OF_MANAGER", Map.of("resolver", RESOLVER_MANAGER_OF_MANAGER, "allowOverride", true));
-        roleDefaults.put("STORE_MANAGER", Map.of(
-                "resolver", RESOLVER_REPORTING_MANAGER_AND_DESIGNATION, "allowOverride", true));
+        roleDefaults.put("MANAGER", Map.of("resolver", RESOLVER_REPORTING_MANAGER));
+        roleDefaults.put("MANAGER_OF_MANAGER", Map.of("resolver", RESOLVER_MANAGER_OF_MANAGER));
+        roleDefaults.put("STORE_MANAGER", Map.of("resolver", RESOLVER_REPORTING_MANAGER_AND_DESIGNATION));
+        roleDefaults.put("HR", Map.of("resolver", RESOLVER_RBAC_ROLE, "roleCodes", List.of("HR")));
         roleDefaults.put("ADMIN", Map.of(
                 "resolver", RESOLVER_RBAC_ROLE,
-                "roleCodes", List.of("ADMIN", "SUPERADMIN"),
-                "allowOverride", true));
+                "roleCodes", List.of("ADMIN", "SUPERADMIN")));
         roleDefaults.put("SUPER_ADMIN", Map.of(
                 "resolver", RESOLVER_RBAC_ROLE,
-                "roleCodes", List.of("SUPERADMIN"),
-                "allowOverride", true));
-        roleDefaults.put("*", Map.of("resolver", RESOLVER_DESIGNATION_OR_RBAC, "allowOverride", false));
+                "roleCodes", List.of("SUPERADMIN")));
+        roleDefaults.put("SUPERADMIN", Map.of(
+                "resolver", RESOLVER_RBAC_ROLE,
+                "roleCodes", List.of("SUPERADMIN")));
+        roleDefaults.put("*", Map.of("resolver", RESOLVER_DESIGNATION_OR_RBAC));
         Map<String, Object> auth = new HashMap<>();
         auth.put("overrideRoleCodes", List.of("SUPERADMIN", "ADMIN"));
         auth.put("overridePermissions", List.of("leave:manage"));
@@ -363,21 +423,6 @@ public class ApprovalAuthorityService {
         return "";
     }
 
-    private static Boolean firstBool(Object... values) {
-        for (Object v : values) {
-            if (v instanceof Boolean b) {
-                return b;
-            }
-            if (v != null) {
-                String s = String.valueOf(v).trim();
-                if ("true".equalsIgnoreCase(s) || "false".equalsIgnoreCase(s)) {
-                    return Boolean.parseBoolean(s);
-                }
-            }
-        }
-        return Boolean.FALSE;
-    }
-
     @SuppressWarnings("unchecked")
     private static List<String> firstRoleCodes(Object... values) {
         for (Object v : values) {
@@ -407,6 +452,12 @@ public class ApprovalAuthorityService {
         return out;
     }
 
-    record StepRule(String role, String resolver, Boolean allowOverride, List<String> roleCodes,
+    record StepRule(String role, String resolver, List<String> roleCodes,
                     Long namedEmployeeId, Long expectedApproverId) {}
+
+    public record Decision(EmployeeView actor, Authority authority) {
+        public boolean onBehalf() {
+            return authority == Authority.ON_BEHALF;
+        }
+    }
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { ApprovalChain } from "@/components/leave/ApprovalChain";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -13,7 +13,7 @@ import { StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
 import { api, apiFetch } from "@/lib/api/client";
 import { useLeaveTypes } from "@/lib/api/lookups";
-import { daysBetween, fmtNumber, fmtRange, str, todayIso } from "@/lib/format";
+import { daysBetween, fmtLeaveDays, fmtNumber, fmtRange, str, todayIso } from "@/lib/format";
 import { leaveRowSchema, leavePreviewSchema, type LeavePreview, type LeaveRow } from "@/lib/schemas/leave";
 
 type HalfDayPart = "FULL" | "FIRST_HALF" | "SECOND_HALF";
@@ -53,6 +53,7 @@ function warningList(warnings: LeavePreview["warnings"]): string[] {
 
 export default function MyLeavePage() {
   const { me, can } = useAuth();
+  const leaveEligible = me.leaveEligible !== false;
   const qc = useQueryClient();
   const toast = useToast();
   const [form, setForm] = useState({
@@ -64,6 +65,9 @@ export default function MyLeavePage() {
     attachmentRef: "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  /** Fields the user has edited — used so we don't paint red errors before interaction. */
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const [formError, setFormError] = useState("");
   const [status, setStatus] = useState("");
   const [withdrawId, setWithdrawId] = useState<string | number | null>(null);
@@ -75,14 +79,40 @@ export default function MyLeavePage() {
   const [preview, setPreview] = useState<LeavePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
+  const [applyBlockedNoManager, setApplyBlockedNoManager] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   /** Suppress auto-preview after a successful submit so the new PENDING leave is not reported as an "overlap" error. */
   const suppressPreviewUntilRef = useRef(0);
 
-  const types = useLeaveTypes();
+  const types = useLeaveTypes(leaveEligible);
   const typeList = types.data ?? [];
   const effectiveType = form.leaveTypeCode || typeList[0]?.code || "";
   const selectedType = typeList.find((t) => t.code === effectiveType) ?? typeList[0];
+
+  // UI gate: Manager step requires a reporting manager — block Apply until HR assigns one.
+  const selfEmp = useQuery({
+    queryKey: ["employee-self", me.employeeId],
+    queryFn: ({ signal }) =>
+      apiFetch<{ managerId?: string | number | null }>(api.hrms(`employees/${me.employeeId}`), { signal }),
+    enabled: leaveEligible && !!me.employeeId,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const noManagerMessage =
+    "You need a reporting manager before you can request leave. Ask HR to assign one on your employee profile.";
+
+  useEffect(() => {
+    if (!selfEmp.isSuccess) return;
+    const mid = selfEmp.data?.managerId;
+    const missing = mid == null || mid === "" || Number(mid) <= 0;
+    setApplyBlockedNoManager(missing);
+  }, [selfEmp.isSuccess, selfEmp.data?.managerId]);
+
+  useEffect(() => {
+    if (/no reporting manager/i.test(previewError)) {
+      setApplyBlockedNoManager(true);
+    }
+  }, [previewError]);
 
   const attachmentMode = String(selectedType?.attachmentMode ?? "NEVER").toUpperCase();
   const attachmentAfter = Number(selectedType?.attachmentAfterDays ?? 0);
@@ -104,6 +134,18 @@ export default function MyLeavePage() {
 
   // ── Debounced auto-preview ────────────────────────────────────────────────
   useEffect(() => {
+    if (!leaveEligible) {
+      setPreview(null);
+      setPreviewError("");
+      setPreviewLoading(false);
+      return;
+    }
+    if (applyBlockedNoManager) {
+      setPreview(null);
+      setPreviewError("");
+      setPreviewLoading(false);
+      return;
+    }
     if (!effectiveType || !form.startDate || !form.endDate) {
       setPreview(null);
       setPreviewError("");
@@ -161,7 +203,16 @@ export default function MyLeavePage() {
       ac.abort();
       setPreviewLoading(false);
     };
-  }, [effectiveType, form.startDate, form.endDate, form.halfDayPart, form.attachmentRef, form.reason]);
+  }, [
+    leaveEligible,
+    applyBlockedNoManager,
+    effectiveType,
+    form.startDate,
+    form.endDate,
+    form.halfDayPart,
+    form.attachmentRef,
+    form.reason,
+  ]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const apply = useMutation({
@@ -185,6 +236,9 @@ export default function MyLeavePage() {
         startDate: nextStart,
         endDate: nextStart,
       }));
+      setTouched({});
+      setSubmitAttempted(false);
+      setErrors({});
       void qc.invalidateQueries({ queryKey: ["my-leave"] });
       void qc.invalidateQueries({ queryKey: ["my-balances"] });
       void qc.invalidateQueries({ queryKey: ["lookup", "leave-types"] });
@@ -235,36 +289,73 @@ export default function MyLeavePage() {
     }));
   }
 
-  const previewDays = Number(preview?.workingDaysCounted ?? (form.halfDayPart !== "FULL" ? 0.5 : 0));
+  const isHalf = form.halfDayPart !== "FULL";
+  const previewDays = Number(preview?.workingDaysCounted ?? (isHalf ? 0.5 : 0));
   const needAttachment = attachmentRequiredFor(previewDays || 0);
   const missingAttachment = needAttachment && !form.attachmentRef.trim();
-  const blockSubmit = !!previewError || previewLoading || missingAttachment || typeList.length === 0;
+
+  // Live validation — submit stays disabled until every required field / rule is OK.
+  const parsedForm = applySchema.safeParse({
+    ...form,
+    leaveTypeCode: effectiveType,
+    endDate: isHalf ? form.startDate : form.endDate,
+  });
+  const liveErrors: Record<string, string> = {};
+  if (!parsedForm.success) {
+    for (const i of parsedForm.error.issues) {
+      const k = String(i.path[0] ?? "form");
+      if (!liveErrors[k]) liveErrors[k] = i.message;
+    }
+  }
+  if (missingAttachment) {
+    liveErrors.attachmentRef = liveErrors.attachmentRef || "Attachment is required for this leave category";
+  }
+  if (!halfAllowed && form.halfDayPart !== "FULL") {
+    liveErrors.halfDayPart = "Half-day leave is not allowed for this category";
+  }
+
+  const schemaInvalid = !parsedForm.success || missingAttachment || !!liveErrors.halfDayPart;
+  const blockSubmit =
+    applyBlockedNoManager ||
+    !!previewError ||
+    previewLoading ||
+    schemaInvalid ||
+    typeList.length === 0 ||
+    !can("leave", "request");
+
+  const disableReason =
+    (applyBlockedNoManager ? noManagerMessage : "") ||
+    liveErrors.reason ||
+    liveErrors.attachmentRef ||
+    liveErrors.endDate ||
+    liveErrors.startDate ||
+    liveErrors.leaveTypeCode ||
+    liveErrors.halfDayPart ||
+    previewError ||
+    (previewLoading ? "Calculating preview…" : "") ||
+    (typeList.length === 0 ? "No leave types available" : "") ||
+    "";
+
+  // Show field errors after the user touches a field or tries to submit.
+  const fieldErrors: Record<string, string> = { ...errors };
+  for (const [k, msg] of Object.entries(liveErrors)) {
+    if (submitAttempted || touched[k]) fieldErrors[k] = msg;
+  }
+
+  function markTouched(key: string) {
+    setTouched((t) => (t[key] ? t : { ...t, [key]: true }));
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
     setFormError("");
-    if (apply.isPending) return;
-    if (blockSubmit) {
-      setFormError(previewError || (missingAttachment ? "Attachment is required for this category" : "Fix preview errors before submitting"));
+    setSubmitAttempted(true);
+    if (apply.isPending || blockSubmit) {
+      setErrors(liveErrors);
       return;
     }
-    const isHalf = form.halfDayPart !== "FULL";
-    const parsed = applySchema.safeParse({
-      ...form,
-      leaveTypeCode: effectiveType,
-      endDate: isHalf ? form.startDate : form.endDate,
-    });
-    if (!parsed.success) {
-      const next: Record<string, string> = {};
-      for (const i of parsed.error.issues) {
-        const k = String(i.path[0] ?? "form");
-        if (!next[k]) next[k] = i.message;
-      }
-      setErrors(next);
-      return;
-    }
-    if (needAttachment && !parsed.data.attachmentRef?.trim()) {
-      setErrors({ attachmentRef: "Attachment is required for this leave category" });
+    if (!parsedForm.success) {
+      setErrors(liveErrors);
       return;
     }
     setErrors({});
@@ -272,13 +363,13 @@ export default function MyLeavePage() {
     abortRef.current?.abort();
     setPreviewError("");
     apply.mutate({
-      leaveTypeCode: parsed.data.leaveTypeCode,
-      startDate: parsed.data.startDate,
-      endDate: parsed.data.endDate,
-      reason: parsed.data.reason,
+      leaveTypeCode: parsedForm.data.leaveTypeCode,
+      startDate: parsedForm.data.startDate,
+      endDate: parsedForm.data.endDate,
+      reason: parsedForm.data.reason,
       halfDay: isHalf || undefined,
-      halfDayPart: isHalf ? parsed.data.halfDayPart : undefined,
-      attachmentRef: parsed.data.attachmentRef || undefined,
+      halfDayPart: isHalf ? parsedForm.data.halfDayPart : undefined,
+      attachmentRef: parsedForm.data.attachmentRef || undefined,
     });
   }
 
@@ -290,6 +381,30 @@ export default function MyLeavePage() {
         : 0;
 
   const isPending = (s?: string | null) => String(s ?? "").toUpperCase().includes("PENDING");
+
+  if (!leaveEligible) {
+    return (
+      <div className="stack">
+        <PageHeader
+          title="My leave"
+          subtitle="Day-based leave is not available on an hourly work schedule."
+        />
+        <section className="card stack">
+          <p>
+            Your resolved work schedule is <b>hourly</b>
+            {me.scheduleMode ? ` (${me.scheduleMode})` : ""}
+            {me.workPattern ? ` · work pattern ${me.workPattern}` : ""}. Hourly-schedule staff do not
+            receive leave categories or balances (FR-LV-03). Payroll pay type alone does not block leave —
+            only the schedule mode does.
+          </p>
+          <p className="muted small">
+            If this looks wrong, ask HR to set your work pattern / location schedule to a fixed (day-based)
+            schedule.
+          </p>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="stack">
@@ -331,9 +446,9 @@ export default function MyLeavePage() {
                               <div className="mono small muted">{t.code}</div>
                             </td>
                             <td className="n">
-                              <b>{fmtNumber(t.availableDays ?? t.balanceDays)}</b>
+                              <b>{fmtLeaveDays(t.availableDays ?? t.balanceDays)}</b>
                             </td>
-                            <td className="n">{fmtNumber(t.pendingDays ?? 0)}</td>
+                            <td className="n">{fmtLeaveDays(t.pendingDays ?? 0)}</td>
                             <td className="small muted">
                               {t.periodStart || t.periodEnd
                                 ? `${str(t.periodStart, "…")} → ${str(t.periodEnd, "…")}`
@@ -349,26 +464,47 @@ export default function MyLeavePage() {
                 <p className="muted">No leave categories apply to you in the current period.</p>
               )}
 
+              {applyBlockedNoManager ? (
+                <div className="notice bad" role="status">
+                  <b>Apply unavailable.</b> {noManagerMessage}
+                </div>
+              ) : null}
+
               <form className="stack" onSubmit={submit} noValidate>
-                <FormField label="Leave type" required error={errors.leaveTypeCode}>
+                <fieldset
+                  disabled={applyBlockedNoManager}
+                  style={{ border: 0, margin: 0, padding: 0, minInlineSize: 0 }}
+                >
+                <FormField label="Leave type" required error={fieldErrors.leaveTypeCode}>
                   <select
                     value={effectiveType}
-                    onChange={(e) => setForm({ ...form, leaveTypeCode: e.target.value, halfDayPart: "FULL" })}
+                    onChange={(e) => {
+                      markTouched("leaveTypeCode");
+                      setForm({ ...form, leaveTypeCode: e.target.value, halfDayPart: "FULL" });
+                      setFormError("");
+                    }}
                   >
                     {typeList.map((t) => (
                       <option key={t.code} value={t.code}>
-                        {t.name} — {fmtNumber(t.availableDays ?? t.balanceDays)} available
+                        {t.name} — {fmtLeaveDays(t.availableDays ?? t.balanceDays)} available
                       </option>
                     ))}
                     {typeList.length === 0 ? <option value="">No leave types</option> : null}
                   </select>
                 </FormField>
 
-                <FormField label="Day type" hint={!halfAllowed ? "Half day not allowed for this category" : undefined}>
+                <FormField
+                  label="Day type"
+                  error={fieldErrors.halfDayPart}
+                  hint={!halfAllowed ? "Half day not allowed for this category" : undefined}
+                >
                   <select
                     value={form.halfDayPart}
                     disabled={!halfAllowed}
-                    onChange={(e) => setHalfDay(e.target.value as HalfDayPart)}
+                    onChange={(e) => {
+                      markTouched("halfDayPart");
+                      setHalfDay(e.target.value as HalfDayPart);
+                    }}
                   >
                     <option value="FULL">Full day</option>
                     <option value="FIRST_HALF">First half</option>
@@ -378,11 +514,12 @@ export default function MyLeavePage() {
 
                 <div className="row stack-sm" style={{ alignItems: "flex-start" }}>
                   <div style={{ flex: 1 }}>
-                    <FormField label="Start" required error={errors.startDate}>
+                    <FormField label="Start" required error={fieldErrors.startDate}>
                       <input
                         type="date"
                         value={form.startDate}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          markTouched("startDate");
                           setForm((f) => ({
                             ...f,
                             startDate: e.target.value,
@@ -392,38 +529,48 @@ export default function MyLeavePage() {
                                 : f.endDate < e.target.value
                                   ? e.target.value
                                   : f.endDate,
-                          }))
-                        }
+                          }));
+                          setFormError("");
+                        }}
                       />
                     </FormField>
                   </div>
                   <div style={{ flex: 1 }}>
-                    <FormField label="End" required error={errors.endDate}>
+                    <FormField label="End" required error={fieldErrors.endDate}>
                       <input
                         type="date"
                         min={form.startDate}
                         value={form.halfDayPart !== "FULL" ? form.startDate : form.endDate}
-                        disabled={form.halfDayPart !== "FULL" ? false : false}
                         readOnly={form.halfDayPart !== "FULL"}
-                        onChange={(e) =>
-                          form.halfDayPart === "FULL" && setForm({ ...form, endDate: e.target.value })
-                        }
+                        onChange={(e) => {
+                          if (form.halfDayPart === "FULL") {
+                            markTouched("endDate");
+                            setForm({ ...form, endDate: e.target.value });
+                            setFormError("");
+                          }
+                        }}
                       />
                     </FormField>
                   </div>
                 </div>
 
-                <FormField label="Reason" required error={errors.reason}>
+                <FormField label="Reason" required error={fieldErrors.reason}>
                   <textarea
                     value={form.reason}
-                    onChange={(e) => setForm({ ...form, reason: e.target.value })}
+                    onChange={(e) => {
+                      markTouched("reason");
+                      setForm({ ...form, reason: e.target.value });
+                      setFormError("");
+                    }}
+                    onBlur={() => markTouched("reason")}
+                    aria-invalid={!!fieldErrors.reason}
                   />
                 </FormField>
 
                 <FormField
                   label="Attachment reference"
                   required={needAttachment}
-                  error={errors.attachmentRef}
+                  error={fieldErrors.attachmentRef}
                   hint={
                     attachmentMode === "ALWAYS"
                       ? "Required for this category"
@@ -436,7 +583,13 @@ export default function MyLeavePage() {
                     type="text"
                     value={form.attachmentRef}
                     placeholder="e.g. doc-123 or https://…"
-                    onChange={(e) => setForm({ ...form, attachmentRef: e.target.value })}
+                    onChange={(e) => {
+                      markTouched("attachmentRef");
+                      setForm({ ...form, attachmentRef: e.target.value });
+                      setFormError("");
+                    }}
+                    onBlur={() => markTouched("attachmentRef")}
+                    aria-invalid={!!fieldErrors.attachmentRef}
                   />
                 </FormField>
 
@@ -453,6 +606,10 @@ export default function MyLeavePage() {
                   <p className="err" role="alert">
                     {formError}
                   </p>
+                ) : blockSubmit && disableReason && !previewLoading ? (
+                  <p className="muted small" role="status">
+                    {disableReason}
+                  </p>
                 ) : null}
 
                 <div>
@@ -460,11 +617,13 @@ export default function MyLeavePage() {
                     type="submit"
                     className="btn primary"
                     disabled={apply.isPending || blockSubmit}
-                    title={previewError || (missingAttachment ? "Attachment required" : undefined)}
+                    title={blockSubmit ? disableReason || "Complete the form to submit" : "Submit leave request"}
+                    aria-disabled={apply.isPending || blockSubmit}
                   >
                     {apply.isPending ? "Submitting…" : "Submit request"}
                   </button>
                 </div>
+                </fieldset>
               </form>
 
               {/* ── Preview panel ── */}
@@ -486,26 +645,26 @@ export default function MyLeavePage() {
                       {preview.workingDaysCounted != null ? (
                         <div className="row between small">
                           <span className="muted">Working days</span>
-                          <b>{fmtNumber(preview.workingDaysCounted)}</b>
+                          <b>{fmtLeaveDays(preview.workingDaysCounted)}</b>
                         </div>
                       ) : null}
                       {preview.available != null ? (
                         <div className="row between small">
                           <span className="muted">Available balance</span>
-                          <b>{fmtNumber(preview.available)}</b>
+                          <b>{fmtLeaveDays(preview.available)}</b>
                         </div>
                       ) : null}
                       {preview.pendingDays != null ? (
                         <div className="row between small">
                           <span className="muted">Pending reserved</span>
-                          <b>{fmtNumber(preview.pendingDays)}</b>
+                          <b>{fmtLeaveDays(preview.pendingDays)}</b>
                         </div>
                       ) : null}
                       {preview.balanceAfter != null ? (
                         <div className="row between small">
                           <span className="muted">Balance after</span>
                           <b style={{ color: Number(preview.balanceAfter) < 0 ? "var(--danger)" : undefined }}>
-                            {fmtNumber(preview.balanceAfter)}
+                            {fmtLeaveDays(preview.balanceAfter)}
                           </b>
                         </div>
                       ) : null}
@@ -596,7 +755,7 @@ export default function MyLeavePage() {
                 key: "workingDaysCounted",
                 header: "Days",
                 className: "n",
-                render: (r) => fmtNumber(r.workingDaysCounted),
+                render: (r) => fmtLeaveDays(r.workingDaysCounted),
               },
               {
                 key: "status",

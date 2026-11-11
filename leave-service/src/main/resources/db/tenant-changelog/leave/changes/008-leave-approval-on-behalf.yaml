@@ -1,0 +1,15 @@
+databaseChangeLog:
+  - changeSet:
+      id: 008-leave-approval-on-behalf
+      author: qii
+      comment: Track admin on-behalf approvals for idle steps (FR-LV-16)
+      changes:
+        - addColumn:
+            tableName: leave_approval
+            columns:
+              - column:
+                  name: acted_on_behalf
+                  type: boolean
+                  defaultValueBoolean: false
+                  constraints:
+                    nullable: false

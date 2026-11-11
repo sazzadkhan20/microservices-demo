@@ -30,7 +30,7 @@ import java.util.Optional;
 @Service
 public class LeaveCoverService {
 
-    public static final String SOURCE_COVER_REVERSAL = "COVER_REVERSAL";
+    public static final String SOURCE_COVER_REVERSAL = LeaveBalanceLedger.SOURCE_COVER_REVERSAL;
 
     private final LeaveBalanceService balances;
     private final LeaveCategoryRepository categories;
@@ -137,7 +137,7 @@ public class LeaveCoverService {
             }
             balances.adjustBySystem(row.getEmployeeId(), row.getLeaveTypeCode(), row.getDeltaDays().negate(),
                     "Payroll " + period + " reopened — absence cover returned", row.getYear(), key,
-                    SOURCE_COVER_REVERSAL, period);
+                    LeaveBalanceLedger.SOURCE_COVER_REVERSAL, period);
             n++;
         }
         return n;

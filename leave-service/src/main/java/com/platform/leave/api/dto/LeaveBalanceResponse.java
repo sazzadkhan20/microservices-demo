@@ -1,14 +1,14 @@
 package com.platform.leave.api.dto;
 
+import com.platform.leave.application.LeaveDays;
 import com.platform.leave.domain.LeaveBalance;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 
 /**
- * Balance breakdown:
- * {@code availableDays = quotaDays + carriedDays + adjustmentDays - takenDays - pendingDays}
- * (same as {@code balanceDays - pendingDays} when ledger and balance stay in sync).
+ * Balance breakdown: {@code availableDays = balanceDays - pendingDays}.
+ * All day fields use nearest 0.5 quantization — identical to apply-time checks.
  */
 public record LeaveBalanceResponse(
         Long id,
@@ -37,26 +37,27 @@ public record LeaveBalanceResponse(
             BigDecimal adjustmentDays,
             BigDecimal takenDays,
             BigDecimal pendingDays) {
-        BigDecimal balance = b.getBalanceDays() == null ? BigDecimal.ZERO : b.getBalanceDays();
-        BigDecimal pending = pendingDays == null ? BigDecimal.ZERO : pendingDays;
+        BigDecimal balance = LeaveDays.of(b.getBalanceDays());
+        BigDecimal pending = LeaveDays.of(pendingDays);
         return new LeaveBalanceResponse(
                 b.getId(),
                 b.getEmployeeId(),
                 b.getLeaveTypeCode(),
                 leaveTypeName,
                 b.getYear(),
-                nz(quotaDays),
-                nz(carriedDays),
-                nz(adjustmentDays),
-                nz(takenDays),
-                nz(pending),
+                LeaveDays.of(quotaDays),
+                LeaveDays.of(carriedDays),
+                LeaveDays.of(adjustmentDays),
+                LeaveDays.of(takenDays),
+                pending,
                 balance,
-                balance.subtract(pending),
+                LeaveDays.of(balance.subtract(pending)),
                 b.getUpdatedAt()
         );
     }
 
-    private static BigDecimal nz(BigDecimal v) {
-        return v == null ? BigDecimal.ZERO : v;
+    /** Prefer {@link LeaveDays#of(BigDecimal)}; kept for LeaveTypeResponse. */
+    public static BigDecimal days(BigDecimal v) {
+        return LeaveDays.of(v);
     }
 }

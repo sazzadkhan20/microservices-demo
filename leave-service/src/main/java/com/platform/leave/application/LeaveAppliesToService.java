@@ -18,7 +18,9 @@ import java.util.Map;
 /**
  * FR-LV-01 — who a leave category applies to.
  * {@code applies_to}: locations / employmentTypes / teams / employeeIds.
- * Empty (or all empty lists) = everyone except hourly staff, who never get leave categories.
+ * Empty (or all empty lists) = everyone except <b>hourly-schedule</b> staff (FR-LV-03).
+ * <p>Gate is the resolved work schedule mode (EMPLOYEE → TEAM → LOCATION), not payroll pay type.
+ * A day-based (FIXED) schedule may still take leave even when salary pay type is HOURLY.
  */
 @Service
 public class LeaveAppliesToService {
@@ -35,37 +37,59 @@ public class LeaveAppliesToService {
         this.employeeRepository = employeeRepository;
     }
 
-    /** Hourly by employment type, work pattern, or resolved schedule mode. */
+    /**
+     * FR-LV-03 — no day-based leave when the person's <em>work schedule</em> is HOURLY.
+     * Includes LOCATION_DEFAULT when the location (or team) schedule resolves to HOURLY.
+     * Does <b>not</b> use employment type or payroll pay type.
+     */
     public boolean isHourly(EmployeeView employee) {
-        if (employee == null) return false;
-        if (employee.getEmploymentType() != null
-                && "HOURLY".equalsIgnoreCase(employee.getEmploymentType().trim())) {
-            return true;
+        return isHourlySchedule(employee);
+    }
+
+    public boolean isHourlySchedule(EmployeeView employee) {
+        if (employee == null) {
+            return false;
         }
+        // Explicit HOURLY work pattern (syncs a personal HOURLY schedule).
         if (employee.getWorkPattern() != null
                 && "HOURLY".equalsIgnoreCase(employee.getWorkPattern().trim())) {
             return true;
         }
+        // Resolved schedule: EMPLOYEE → TEAM → LOCATION (location default covers the location).
         return workScheduleService.resolveForEmployee(employee)
                 .map(s -> s.getMode() != null && "HOURLY".equalsIgnoreCase(s.getMode().trim()))
                 .orElse(false);
+    }
+
+    /** Resolved schedule mode for APIs / FE (HOURLY, FIXED, or empty when unknown). */
+    public String resolvedScheduleMode(EmployeeView employee) {
+        if (employee == null) {
+            return "";
+        }
+        if (employee.getWorkPattern() != null
+                && "HOURLY".equalsIgnoreCase(employee.getWorkPattern().trim())) {
+            return "HOURLY";
+        }
+        return workScheduleService.resolveForEmployee(employee)
+                .map(s -> s.getMode() == null ? "" : s.getMode().trim().toUpperCase(Locale.ROOT))
+                .orElse("");
     }
 
     public boolean isEligible(EmployeeView employee, LeaveCategory category) {
         if (employee == null || category == null || !category.isActive()) {
             return false;
         }
-        // Hourly staff never receive leave categories.
-        if (isHourly(employee)) {
+        // Hourly-schedule staff never receive leave categories (FR-LV-03).
+        if (isHourlySchedule(employee)) {
             return false;
         }
         return matchesAppliesTo(employee, normalize(category.getAppliesTo()));
     }
 
     public void requireEligible(EmployeeView employee, LeaveCategory category) {
-        if (isHourly(employee)) {
+        if (isHourlySchedule(employee)) {
             throw new IllegalStateException(
-                    "Hourly employees cannot request leave categories");
+                    "Hourly-schedule employees cannot request leave (FR-LV-03)");
         }
         if (category == null) {
             return;
@@ -106,8 +130,9 @@ public class LeaveAppliesToService {
         out.put("employmentTypes", toStringList(src.get("employmentTypes")));
         out.put("teams", toIdList(src.get("teams")));
         out.put("employeeIds", namedPeople);
-        // Product rule: hourly never get leave — keep explicit for clients/tools.
-        out.put("blockHourly", true);
+        // Product rule: hourly-schedule staff never get leave — keep explicit for clients/tools.
+        out.put("blockHourlySchedule", true);
+        out.put("blockHourly", true); // legacy alias
         return out;
     }
 

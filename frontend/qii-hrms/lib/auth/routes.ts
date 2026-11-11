@@ -251,27 +251,42 @@ export function canAccessRoute(
   perms: PermissionSet | readonly string[] | null | undefined,
   pathname: string,
   scopes?: ScopeMap,
+  options?: NavOptions,
 ): boolean {
   const route = findRoute(pathname);
   if (!route) return true;
   if (!satisfies(perms, route.rule)) return false;
   if (isCompanyRoute(route) && !companyScopeAllows(perms, scopes, route.rule)) return false;
+  if (options?.leaveEligible === false && isPersonalLeaveRoute(route)) return false;
   return true;
 }
 
 export type NavItem = { href: string; label: string };
 export type NavSection = { group: NavGroup; items: NavItem[] };
 
+export type NavOptions = {
+  /** When false, hide personal "My leave" (hourly work schedule — FR-LV-03). */
+  leaveEligible?: boolean;
+};
+
+/** Personal leave routes hidden for hourly-schedule employees. Team approvals/calendar stay. */
+function isPersonalLeaveRoute(route: RouteDef): boolean {
+  return route.path === "/leave";
+}
+
 /** Nav sections visible to the permission set. Empty groups are dropped. */
 export function visibleNav(
   perms: PermissionSet | readonly string[] | null | undefined,
   scopes?: ScopeMap,
+  options?: NavOptions,
 ): NavSection[] {
+  const leaveEligible = options?.leaveEligible !== false;
   return NAV_GROUPS.map((group) => ({
     group,
     items: ROUTES.filter((r) => {
       if (r.nav?.group !== group || !satisfies(perms, r.rule)) return false;
       if (isCompanyRoute(r) && !companyScopeAllows(perms, scopes, r.rule)) return false;
+      if (!leaveEligible && isPersonalLeaveRoute(r)) return false;
       return true;
     }).map((r) => ({
       href: r.path,

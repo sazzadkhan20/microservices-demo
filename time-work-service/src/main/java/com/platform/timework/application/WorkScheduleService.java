@@ -44,6 +44,15 @@ public class WorkScheduleService {
     public static final List<String> DEFAULT_SCOPES = List.of("LOCATION", "TEAM", "EMPLOYEE");
     public static final List<String> DEFAULT_RESOLVE = List.of("EMPLOYEE", "TEAM", "LOCATION");
 
+    /** Product default for newly created locations (Mon–Fri office hours). Never overwrites an existing row. */
+    public static final List<String> LOCATION_DEFAULT_WORKING_DAYS =
+            List.of("MON", "TUE", "WED", "THU", "FRI");
+    public static final String LOCATION_DEFAULT_START = "09:00";
+    public static final String LOCATION_DEFAULT_END = "17:00";
+    public static final int LOCATION_DEFAULT_GRACE_MINUTES = 15;
+    public static final BigDecimal LOCATION_DEFAULT_HALF_DAY_HOURS = new BigDecimal("4");
+    public static final String LOCATION_DEFAULT_CHECKOUT_CUTOFF = "23:59";
+
     private final WorkScheduleRepository repository;
     private final PeopleEmployeeGateway employeeRepository;
     private final HolidayRepository holidayRepository;
@@ -187,6 +196,114 @@ public class WorkScheduleService {
         return repository.findAll();
     }
 
+    /**
+     * Idempotent LOCATION base schedule used when a site is created (or backfilled).
+     * Existing LOCATION rows are left untouched (Dhaka/Darwin keep their configured hours).
+     */
+    @Transactional
+    public WorkSchedule ensureDefaultLocationSchedule(Long locationId) {
+        if (locationId == null || locationId <= 0) {
+            throw new IllegalArgumentException("locationId is required");
+        }
+        Optional<WorkSchedule> existing = repository.findByScopeTypeAndScopeId("LOCATION", locationId);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        WorkSchedule s = buildProductDefaultLocationSchedule(locationId);
+        Rules rules = loadRules();
+        applyDefaults(s, rules);
+        normalizeAndValidate(s, rules, true);
+        WorkSchedule saved = repository.save(s);
+        auditService.record(AuthContext.getEmployeeId(), "CREATE", "WorkSchedule",
+                String.valueOf(saved.getId()), null, snapshot(saved));
+        return saved;
+    }
+
+    @Transactional
+    public List<WorkSchedule> ensureDefaultLocationSchedules(List<Long> locationIds) {
+        if (locationIds == null || locationIds.isEmpty()) {
+            return List.of();
+        }
+        List<WorkSchedule> out = new ArrayList<>();
+        for (Long id : locationIds.stream().filter(Objects::nonNull).distinct().toList()) {
+            out.add(ensureDefaultLocationSchedule(id));
+        }
+        return out;
+    }
+
+    /** Direct scope lookup + form preview (stored row, else product defaults). */
+    @Transactional(readOnly = true)
+    public Map<String, Object> scopePreview(String scopeType, Long scopeId) {
+        if (scopeType == null || scopeType.isBlank()) {
+            throw new IllegalArgumentException("scopeType is required");
+        }
+        if (scopeId == null || scopeId <= 0) {
+            throw new IllegalArgumentException("scopeId is required");
+        }
+        String scope = scopeType.trim().toUpperCase(Locale.ROOT);
+        if (!DEFAULT_SCOPES.contains(scope)) {
+            throw new IllegalArgumentException("scopeType must be LOCATION, TEAM, or EMPLOYEE");
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("scopeType", scope);
+        out.put("scopeId", scopeId);
+
+        if ("EMPLOYEE".equals(scope)) {
+            Map<String, Object> resolved = resolveView(scopeId);
+            Object schedule = resolved.get("resolved");
+            String source = resolved.get("source") == null ? null : String.valueOf(resolved.get("source"));
+            out.put("found", schedule != null && "EMPLOYEE".equalsIgnoreCase(source));
+            out.put("schedule", schedule);
+            out.put("source", source == null ? "DEFAULT" : source);
+            out.put("preview", schedule != null ? schedule : productDefaultPreviewMap(scope, scopeId));
+            out.put("employeeId", scopeId);
+            out.put("locationId", resolved.get("locationId"));
+            out.put("teamId", resolved.get("teamId"));
+            out.put("workPattern", resolved.get("workPattern"));
+            return out;
+        }
+
+        Optional<WorkSchedule> hit = repository.findByScopeTypeAndScopeId(scope, scopeId);
+        if (hit.isPresent()) {
+            Map<String, Object> snap = snapshot(hit.get());
+            out.put("found", true);
+            out.put("schedule", snap);
+            out.put("preview", snap);
+            out.put("source", "STORED");
+            return out;
+        }
+        Map<String, Object> preview = productDefaultPreviewMap(scope, scopeId);
+        out.put("found", false);
+        out.put("schedule", null);
+        out.put("preview", preview);
+        out.put("source", "DEFAULT");
+        return out;
+    }
+
+    public WorkSchedule buildProductDefaultLocationSchedule(Long locationId) {
+        WorkSchedule s = new WorkSchedule();
+        s.setScopeType("LOCATION");
+        s.setScopeId(locationId);
+        s.setMode("FIXED");
+        s.setWorkingDays(toJsonDays(LOCATION_DEFAULT_WORKING_DAYS));
+        s.setStartTime(LOCATION_DEFAULT_START);
+        s.setEndTime(LOCATION_DEFAULT_END);
+        s.setGraceMinutes(LOCATION_DEFAULT_GRACE_MINUTES);
+        s.setHalfDayHours(LOCATION_DEFAULT_HALF_DAY_HOURS);
+        s.setCheckoutCutoff(LOCATION_DEFAULT_CHECKOUT_CUTOFF);
+        s.setWeeklyHours(null);
+        return s;
+    }
+
+    private Map<String, Object> productDefaultPreviewMap(String scopeType, Long scopeId) {
+        WorkSchedule s = buildProductDefaultLocationSchedule(scopeId);
+        s.setScopeType(scopeType);
+        Map<String, Object> m = snapshot(s);
+        m.put("id", null);
+        return m;
+    }
+
     @Transactional
     public WorkSchedule create(WorkSchedule incoming) {
         Rules rules = loadRules();
@@ -246,6 +363,10 @@ public class WorkScheduleService {
     public void delete(Long id) {
         WorkSchedule existing = repository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Schedule not found: " + id));
+        if ("LOCATION".equalsIgnoreCase(existing.getScopeType())) {
+            throw new IllegalStateException(
+                    "Location base schedules cannot be removed — edit the location hours instead");
+        }
         Map<String, Object> before = snapshot(existing);
         repository.delete(existing);
         auditService.record(AuthContext.getEmployeeId(), "DELETE", "WorkSchedule",

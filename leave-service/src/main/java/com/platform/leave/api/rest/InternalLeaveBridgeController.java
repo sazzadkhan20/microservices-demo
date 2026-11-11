@@ -2,6 +2,7 @@ package com.platform.leave.api.rest;
 
 import com.platform.common.security.InternalCalls;
 import com.platform.common.security.PublicEndpoint;
+import com.platform.leave.application.LeaveCategorySyncService;
 import com.platform.leave.domain.LeaveApplication;
 import com.platform.leave.domain.LeaveApproval;
 import com.platform.leave.domain.LeaveBalance;
@@ -39,17 +40,32 @@ public class InternalLeaveBridgeController {
     private final LeaveApplicationRepository applicationRepository;
     private final LeaveApprovalRepository approvalRepository;
     private final LeaveBalanceRepository balanceRepository;
+    private final LeaveCategorySyncService leaveCategorySyncService;
     private final String internalKey;
 
     public InternalLeaveBridgeController(
             LeaveApplicationRepository applicationRepository,
             LeaveApprovalRepository approvalRepository,
             LeaveBalanceRepository balanceRepository,
+            LeaveCategorySyncService leaveCategorySyncService,
             @Value("${platform.security.internal-key}") String internalKey) {
         this.applicationRepository = applicationRepository;
         this.approvalRepository = approvalRepository;
         this.balanceRepository = balanceRepository;
+        this.leaveCategorySyncService = leaveCategorySyncService;
         this.internalKey = internalKey;
+    }
+
+    /**
+     * Seed pro-rata (or full) opening balances for one employee against current-period categories.
+     * Called by People after hire commit.
+     */
+    @PostMapping("/leave-balances/ensure-opening/{employeeId}")
+    public Map<String, Object> ensureOpening(
+            @PathVariable Long employeeId, HttpServletRequest request) {
+        requireInternal(request);
+        int seeded = leaveCategorySyncService.ensureOpeningBalancesForEmployee(employeeId);
+        return Map.of("employeeId", employeeId, "seeded", seeded);
     }
 
     @GetMapping("/approvals/pending-for/{employeeId}")

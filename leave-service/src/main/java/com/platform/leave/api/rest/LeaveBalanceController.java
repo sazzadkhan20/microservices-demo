@@ -34,10 +34,11 @@ public class LeaveBalanceController {
 
     @GetMapping("/employee/{employeeId}")
     @RequiresPermission(feature = "leave", action = "view")
-    @Operation(summary = "List leave balances for an employee with breakdown (optional year)")
+    @Operation(summary = "List leave balances for an employee with breakdown (optional year / currentOnly)")
     public List<LeaveBalanceResponse> list(@PathVariable Long employeeId,
-                                           @RequestParam(required = false) Integer year) {
-        return leaveBalanceService.listForEmployee(employeeId, year);
+                                           @RequestParam(required = false) Integer year,
+                                           @RequestParam(required = false, defaultValue = "false") boolean currentOnly) {
+        return leaveBalanceService.listForEmployee(employeeId, year, currentOnly);
     }
 
     @GetMapping("/employee/{employeeId}/ledger")
@@ -99,6 +100,16 @@ public class LeaveBalanceController {
                 ? null
                 : new BigDecimal(String.valueOf(body.get("carryMaxDays")));
         return leaveBalanceService.yearEndConfirm(code, fromYear, toYear, cap);
+    }
+
+    @PostMapping("/reconcile")
+    @RequiresPermission(feature = "leave", action = "manage")
+    @Operation(summary = "Reconcile ledger composition to running balances for a year (payroll-safe)")
+    public Map<String, Object> reconcile(@RequestParam(required = false) Integer year) {
+        int fixed = leaveBalanceService.reconcileAllForYear(year);
+        return Map.of(
+                "year", year == null ? java.time.LocalDate.now().getYear() : year,
+                "balancesFixed", fixed);
     }
 
     public record OpeningRequest(

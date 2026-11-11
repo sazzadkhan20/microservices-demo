@@ -1,0 +1,21 @@
+databaseChangeLog:
+  - changeSet:
+      id: leave-006-balance-whole-days
+      author: qii
+      comment: Round leave balances and ledger deltas to whole days (no pro-rata decimals)
+      changes:
+        - sql:
+            sql: >
+              UPDATE leave_balance
+                 SET balance_days = ROUND(balance_days),
+                     updated_at = NOW()
+               WHERE balance_days IS NOT NULL
+                 AND balance_days <> ROUND(balance_days);
+        # Ledger keeps historical half-day (±0.5) rows; only scrub pro-rata noise.
+        - sql:
+            sql: >
+              UPDATE leave_balance_ledger
+                 SET delta_days = ROUND(delta_days)
+               WHERE delta_days IS NOT NULL
+                 AND delta_days <> ROUND(delta_days)
+                 AND ABS(delta_days - ROUND(delta_days)) <> 0.5;

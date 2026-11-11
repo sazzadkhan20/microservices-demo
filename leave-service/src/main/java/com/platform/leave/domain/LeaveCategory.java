@@ -117,8 +117,8 @@ public class LeaveCategory {
     public boolean isActive() { return active; }
     public void setActive(boolean active) { this.active = active; }
 
-    public String getAppliesTo() { return appliesTo; }
-    public void setAppliesTo(String appliesTo) { this.appliesTo = appliesTo; }
+    public java.util.Map<String, Object> getAppliesTo() { return appliesTo; }
+    public void setAppliesTo(java.util.Map<String, Object> appliesTo) { this.appliesTo = appliesTo; }
 
     public boolean isProRata() { return proRata; }
     public void setProRata(boolean proRata) { this.proRata = proRata; }

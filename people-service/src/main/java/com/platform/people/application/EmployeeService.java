@@ -27,6 +27,7 @@ import com.platform.people.infrastructure.persistence.TeamRepository;
 import com.platform.people.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.people.messaging.EmployeeProjectionPublisher;
 import com.platform.people.client.FilesGatewayClient;
+import com.platform.people.client.LeaveClient;
 import com.platform.people.client.TimeWorkClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -77,6 +78,7 @@ public class EmployeeService {
     private final ChecklistAssignmentService checklistAssignmentService;
     private final FilesGatewayClient filesGatewayClient;
     private final TimeWorkClient timeWorkClient;
+    private final LeaveClient leaveClient;
     private final ObjectProvider<EmployeeProjectionPublisher> employeeProjectionPublisher;
 
     public EmployeeService(
@@ -101,6 +103,7 @@ public class EmployeeService {
             ChecklistAssignmentService checklistAssignmentService,
             FilesGatewayClient filesGatewayClient,
             TimeWorkClient timeWorkClient,
+            LeaveClient leaveClient,
             ObjectProvider<EmployeeProjectionPublisher> employeeProjectionPublisher) {
         this.repository = repository;
         this.departmentRepository = departmentRepository;
@@ -123,6 +126,7 @@ public class EmployeeService {
         this.checklistAssignmentService = checklistAssignmentService;
         this.filesGatewayClient = filesGatewayClient;
         this.timeWorkClient = timeWorkClient;
+        this.leaveClient = leaveClient;
         this.employeeProjectionPublisher = employeeProjectionPublisher;
     }
 
@@ -272,6 +276,8 @@ public class EmployeeService {
         List<String> roles = applyCreateRoles(saved.getId(), request.roleCodes());
         // After commit — Time&Work looks the employee up in People; mid-txn the row is invisible.
         scheduleWorkPatternSync(saved.getId(), saved.getWorkPattern(), saved.getLocationId());
+        // After commit — Leave seeds pro-rata openings from startDate against current categories.
+        scheduleLeaveOpeningSeed(saved.getId());
 
         if (Boolean.TRUE.equals(request.attachOnboardingChecklist())) {
             try {
@@ -593,6 +599,23 @@ public class EmployeeService {
             });
         } else {
             timeWorkClient.syncEmployeeWorkPattern(employeeId, workPattern, locationId);
+        }
+    }
+
+    /** Seed leave openings after hire is visible to Leave's People gateway. */
+    private void scheduleLeaveOpeningSeed(Long employeeId) {
+        if (employeeId == null) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    leaveClient.ensureOpeningBalances(employeeId);
+                }
+            });
+        } else {
+            leaveClient.ensureOpeningBalances(employeeId);
         }
     }
 

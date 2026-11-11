@@ -5,6 +5,7 @@ import com.platform.people.domain.Department;
 import com.platform.people.domain.Designation;
 import com.platform.people.domain.Employee;
 import com.platform.people.domain.Location;
+import com.platform.people.client.TimeWorkClient;
 import com.platform.people.infrastructure.persistence.DepartmentRepository;
 import com.platform.people.infrastructure.persistence.DesignationRepository;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -26,18 +28,21 @@ public class AuthFacadeService {
     private final DesignationRepository designationRepository;
     private final LocationRepository locationRepository;
     private final RbacService rbacService;
+    private final TimeWorkClient timeWorkClient;
 
     public AuthFacadeService(
             EmployeeRepository employeeRepository,
             DepartmentRepository departmentRepository,
             DesignationRepository designationRepository,
             LocationRepository locationRepository,
-            RbacService rbacService) {
+            RbacService rbacService,
+            TimeWorkClient timeWorkClient) {
         this.employeeRepository = employeeRepository;
         this.departmentRepository = departmentRepository;
         this.designationRepository = designationRepository;
         this.locationRepository = locationRepository;
         this.rbacService = rbacService;
+        this.timeWorkClient = timeWorkClient;
     }
 
     /**
@@ -111,6 +116,18 @@ public class AuthFacadeService {
             m.put("locationName", null);
             m.put("locationTimeZone", null);
         }
+        // FR-LV-03 — leave UI uses schedule mode (not payroll pay type).
+        String workPattern = e.getWorkPattern() == null ? "" : e.getWorkPattern().trim();
+        String scheduleMode = "";
+        if ("HOURLY".equalsIgnoreCase(workPattern)) {
+            scheduleMode = "HOURLY";
+        } else {
+            scheduleMode = timeWorkClient.resolveScheduleMode(e.getId());
+        }
+        boolean leaveEligible = !"HOURLY".equalsIgnoreCase(scheduleMode);
+        m.put("workPattern", workPattern.isEmpty() ? null : workPattern);
+        m.put("scheduleMode", scheduleMode.isEmpty() ? null : scheduleMode.toUpperCase(Locale.ROOT));
+        m.put("leaveEligible", leaveEligible);
         return m;
     }
 }

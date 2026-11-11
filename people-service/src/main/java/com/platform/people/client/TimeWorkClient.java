@@ -50,4 +50,51 @@ public class TimeWorkClient {
             log.warn("Time&Work schedule sync failed for employee {}: {}", employeeId, e.getMessage());
         }
     }
+
+    /**
+     * Ensure a LOCATION base work schedule exists (Mon–Fri 09:00–17:00 defaults).
+     * Idempotent — existing location hours are never overwritten.
+     */
+    public void ensureLocationDefaultSchedule(Long locationId) {
+        if (locationId == null) {
+            return;
+        }
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("locationId", locationId);
+            client.post()
+                    .uri("/api/internal/work-schedules/ensure-location-default")
+                    .header(InternalCalls.HEADER, internalKey)
+                    .body(body)
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (Exception e) {
+            log.warn("Time&Work location default schedule ensure failed for {}: {}", locationId, e.getMessage());
+        }
+    }
+
+    /**
+     * Resolved schedule mode for the employee (EMPLOYEE → TEAM → LOCATION).
+     * Empty string when Time&amp;Work is unreachable or no schedule exists.
+     */
+    @SuppressWarnings("unchecked")
+    public String resolveScheduleMode(Long employeeId) {
+        if (employeeId == null) {
+            return "";
+        }
+        try {
+            Map<String, Object> body = client.get()
+                    .uri("/api/internal/schedules/resolve/{id}", employeeId)
+                    .header(InternalCalls.HEADER, internalKey)
+                    .retrieve()
+                    .body(Map.class);
+            if (body == null || body.get("mode") == null) {
+                return "";
+            }
+            return String.valueOf(body.get("mode")).trim().toUpperCase();
+        } catch (Exception e) {
+            log.warn("Time&Work schedule resolve failed for {}: {}", employeeId, e.getMessage());
+            return "";
+        }
+    }
 }

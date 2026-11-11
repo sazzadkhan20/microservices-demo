@@ -1,7 +1,9 @@
 package com.platform.leave.api.rest;
 
 import com.platform.common.security.InternalCalls;
+import com.platform.leave.application.LeaveAppliesToService;
 import com.platform.leave.application.LeaveCoverService;
+import com.platform.leave.client.people.PeopleEmployeeGateway;
 import com.platform.leave.domain.LeaveApplication;
 import com.platform.leave.infrastructure.persistence.LeaveApplicationRepository;
 import com.platform.common.security.PublicEndpoint;
@@ -22,11 +24,13 @@ import java.time.YearMonth;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * S2S payroll facts owned by Leave (docs/PAYROLL_SPEC.md §2.1): approved leave in a month and the
@@ -40,12 +44,20 @@ public class InternalPayrollLeaveController {
 
     private final LeaveApplicationRepository applications;
     private final LeaveCoverService cover;
+    private final LeaveAppliesToService leaveAppliesToService;
+    private final PeopleEmployeeGateway employees;
     private final String internalKey;
 
-    public InternalPayrollLeaveController(LeaveApplicationRepository applications, LeaveCoverService cover,
-                                          @Value("${platform.security.internal-key}") String internalKey) {
+    public InternalPayrollLeaveController(
+            LeaveApplicationRepository applications,
+            LeaveCoverService cover,
+            LeaveAppliesToService leaveAppliesToService,
+            PeopleEmployeeGateway employees,
+            @Value("${platform.security.internal-key}") String internalKey) {
         this.applications = applications;
         this.cover = cover;
+        this.leaveAppliesToService = leaveAppliesToService;
+        this.employees = employees;
         this.internalKey = internalKey;
     }
 
@@ -82,6 +94,13 @@ public class InternalPayrollLeaveController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "period must be YYYY-MM");
         }
         List<Long> ids = ids(employeeIds);
+        // FR-LV-03 — hourly-schedule staff never feed leave/cover into payroll (pay type alone does not).
+        Set<Long> hourlySchedule = new HashSet<>();
+        for (Long id : ids) {
+            if (leaveAppliesToService.isHourlySchedule(employees.findById(id).orElse(null))) {
+                hourlySchedule.add(id);
+            }
+        }
         List<LeaveCoverService.CoverCategory> categories = new ArrayList<>();
         for (String family : coverOrder.split(",")) {
             if (!family.isBlank()) {
@@ -94,18 +113,23 @@ public class InternalPayrollLeaveController {
             Map<String, Object> e = new LinkedHashMap<>();
             e.put("leaves", new ArrayList<Map<String, Object>>());
             List<Map<String, Object>> balances = new ArrayList<>();
-            for (LeaveCoverService.CoverCategory c : categories) {
-                Map<String, Object> b = new LinkedHashMap<>();
-                b.put("family", c.family());
-                b.put("category", c.code());
-                b.put("year", c.year());
-                b.put("available", cover.usable(id, c));
-                balances.add(b);
+            if (!hourlySchedule.contains(id)) {
+                for (LeaveCoverService.CoverCategory c : categories) {
+                    Map<String, Object> b = new LinkedHashMap<>();
+                    b.put("family", c.family());
+                    b.put("category", c.code());
+                    b.put("year", c.year());
+                    b.put("available", cover.usable(id, c));
+                    balances.add(b);
+                }
             }
             e.put("coverBalances", balances);
             byEmp.put(String.valueOf(id), e);
         }
         for (LeaveApplication a : applications.findApprovedOverlapping(ids, ym.atDay(1), ym.atEndOfMonth())) {
+            if (hourlySchedule.contains(a.getEmployeeId())) {
+                continue;
+            }
             Map<String, Object> e = byEmp.get(String.valueOf(a.getEmployeeId()));
             if (e != null) {
                 @SuppressWarnings("unchecked")

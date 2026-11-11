@@ -80,7 +80,7 @@ public class TenantConfigLoader {
         fallback.setNoticeMode(LeavePolicy.NOTICE_NONE);
         fallback.setCoverageMode(LeavePolicy.COVERAGE_NONE);
         fallback.setRequireReliefOnCoverageFail(false);
-        fallback.setApprovalChain(List.of(Map.of("step", 1, "role", "HR")));
+        fallback.setApprovalChain(com.platform.leave.application.ApprovalChainSupport.defaultChain());
         fallback.setUpdatedAt(Instant.now());
         return fallback;
     }

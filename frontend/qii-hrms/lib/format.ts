@@ -164,6 +164,27 @@ export function fmtNumber(v: unknown, digits = 2): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: 0 });
 }
 
+/**
+ * Leave day amounts — nearest half-day step (same rule as leave-service LeaveDays.of).
+ * Examples: 2.79 → 3, 2.3 → 2.5, 0.5 → 0.5. Whole days show without ".0".
+ */
+export function fmtLeaveDays(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  const stepped = Math.round(n * 2) / 2;
+  return stepped.toLocaleString(undefined, {
+    maximumFractionDigits: 1,
+    minimumFractionDigits: 0,
+  });
+}
+
+/** True when n is a half-day step (…, -1, -0.5, 0, 0.5, 1, …). */
+export function isLeaveHalfDayStep(n: number): boolean {
+  if (!Number.isFinite(n)) return false;
+  return Math.abs(n * 2 - Math.round(n * 2)) < 1e-9;
+}
+
 export function fmtMoney(v: unknown, currency?: string | null): string {
   if (v === null || v === undefined || v === "") return "—";
   if (typeof v === "object" && v !== null) {

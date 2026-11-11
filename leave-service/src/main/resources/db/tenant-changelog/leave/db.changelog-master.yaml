@@ -54,3 +54,9 @@ databaseChangeLog:
       file: db/tenant-changelog/leave/changes/004-rename-audit-log.yaml
   - include:
       file: db/tenant-changelog/leave/changes/005-leave-balance-integrity.yaml
+  - include:
+      file: db/tenant-changelog/leave/changes/006-leave-balance-whole-days.yaml
+  - include:
+      file: db/tenant-changelog/leave/changes/007-leave-balance-half-day-steps.yaml
+  - include:
+      file: db/tenant-changelog/leave/changes/008-leave-approval-on-behalf.yaml

@@ -79,6 +79,34 @@ public class LeaveClient {
     }
 
     /**
+     * Best-effort: seed current-period leave openings (pro-rata aware) after hire.
+     * Failures are logged only — leave service downtime must not block employee create.
+     */
+    public int ensureOpeningBalances(Long employeeId) {
+        if (employeeId == null) {
+            return 0;
+        }
+        try {
+            Map<?, ?> body = client.post()
+                    .uri("/api/internal/leave-balances/ensure-opening/{id}", employeeId)
+                    .header(InternalCalls.HEADER, internalKey)
+                    .retrieve()
+                    .body(Map.class);
+            if (body == null) {
+                return 0;
+            }
+            Object seeded = body.get("seeded");
+            if (seeded instanceof Number n) {
+                return Math.max(0, n.intValue());
+            }
+            return 0;
+        } catch (Exception e) {
+            log.warn("Leave ensure-opening failed for employee {}: {}", employeeId, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
      * Move pending leave-approval steps for one applicant from old manager → new manager
      * when a reporting-line change becomes effective.
      */

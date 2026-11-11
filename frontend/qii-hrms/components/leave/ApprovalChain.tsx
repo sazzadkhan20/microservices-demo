@@ -11,9 +11,17 @@ export function ApprovalChain({ steps }: { steps?: LeaveRow["approvals"] }) {
         return (
           <span key={i} style={{ display: "contents" }}>
             {i > 0 ? <span className="muted">→</span> : null}
-            <span className={`st ${cls}`} title={s.comment ?? undefined}>
+            <span
+              className={`st ${cls}`}
+              title={
+                s.actedOnBehalf
+                  ? `On behalf${s.comment ? `: ${s.comment}` : ""}`
+                  : (s.comment ?? undefined)
+              }
+            >
               {s.approverRole ?? `Step ${s.stepOrder ?? i + 1}`}
               {s.actorName ? ` · ${s.actorName}` : ""}
+              {s.actedOnBehalf ? " · on behalf" : ""}
             </span>
           </span>
         );

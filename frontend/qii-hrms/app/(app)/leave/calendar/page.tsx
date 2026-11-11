@@ -11,7 +11,7 @@ import { api, apiFetch, apiFetchPage } from "@/lib/api/client";
 import { useDirectory, useHolidaysForYear } from "@/lib/api/directory";
 import { useLocations, useTeams } from "@/lib/api/lookups";
 import { MONTH_NAMES, datesBetween, dowOf, monthCells, ymd, DOW_LABEL, DOW } from "@/lib/admin";
-import { fmtNumber, fmtRange, isoDate, todayIso } from "@/lib/format";
+import { fmtLeaveDays, fmtNumber, fmtRange, isoDate, todayIso } from "@/lib/format";
 import { leaveAppRowSchema, leavePolicySchema, type LeaveAppRow } from "@/lib/schemas/admin";
 
 /** Still blocks the calendar until cancel is fully approved (or denied back to APPROVED). */
@@ -278,7 +278,7 @@ export default function LeaveCalendarPage() {
                     <td>{nameFor(a)}</td>
                     <td>{a.leaveTypeCode}</td>
                     <td className="mono">{fmtRange(a.startDate, a.endDate)}</td>
-                    <td className="n">{fmtNumber(a.workingDaysCounted)}</td>
+                    <td className="n">{fmtLeaveDays(a.workingDaysCounted)}</td>
                     <td>
                       <StatusPill status={a.status} />
                     </td>

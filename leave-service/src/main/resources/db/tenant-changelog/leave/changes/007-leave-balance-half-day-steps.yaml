@@ -1,0 +1,19 @@
+databaseChangeLog:
+  - changeSet:
+      id: leave-007-balance-half-day-steps
+      author: qii
+      comment: Quantize leave balances and ledger deltas to nearest 0.5 day (2.79→3, 2.3→2.5)
+      changes:
+        - sql:
+            sql: >
+              UPDATE leave_balance
+                 SET balance_days = ROUND(balance_days * 2) / 2,
+                     updated_at = NOW()
+               WHERE balance_days IS NOT NULL
+                 AND balance_days <> ROUND(balance_days * 2) / 2;
+        - sql:
+            sql: >
+              UPDATE leave_balance_ledger
+                 SET delta_days = ROUND(delta_days * 2) / 2
+               WHERE delta_days IS NOT NULL
+                 AND delta_days <> ROUND(delta_days * 2) / 2;

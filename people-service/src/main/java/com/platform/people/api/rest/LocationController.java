@@ -3,6 +3,7 @@ package com.platform.people.api.rest;
 import com.platform.common.api.PageQuery;
 import com.platform.common.api.PageResponse;
 import com.platform.people.application.support.DynamicListSupport;
+import com.platform.people.client.TimeWorkClient;
 import com.platform.people.domain.Location;
 import com.platform.people.infrastructure.persistence.LocationRepository;
 import com.platform.people.security.RequiresPermission;
@@ -29,9 +30,11 @@ import java.util.Map;
 public class LocationController {
 
     private final LocationRepository locationRepository;
+    private final TimeWorkClient timeWorkClient;
 
-    public LocationController(LocationRepository locationRepository) {
+    public LocationController(LocationRepository locationRepository, TimeWorkClient timeWorkClient) {
         this.locationRepository = locationRepository;
+        this.timeWorkClient = timeWorkClient;
     }
 
     @GetMapping
@@ -68,7 +71,10 @@ public class LocationController {
         loc.setCountry(requireText(body, "country"));
         loc.setTimeZone(validTimeZone(requireText(body, "timeZone")));
         loc.setDefaultCurrency(requireCurrency(body));
-        return locationRepository.save(loc);
+        Location saved = locationRepository.save(loc);
+        // FR-SCH — every new site immediately gets a LOCATION base schedule (Mon–Fri 09:00–17:00).
+        timeWorkClient.ensureLocationDefaultSchedule(saved.getId());
+        return saved;
     }
 
     @PutMapping("/{id}")

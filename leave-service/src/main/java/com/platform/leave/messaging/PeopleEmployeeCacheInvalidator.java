@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.platform.common.messaging.EventTypes;
 import com.platform.common.messaging.PlatformQueues;
 import com.platform.common.people.PeopleDirectoryClient;
+import com.platform.leave.application.LeaveCategorySyncService;
 import com.platform.messaging.correlation.CorrelationContext;
 import com.platform.messaging.outbox.InboxGuard;
 import org.slf4j.Logger;
@@ -17,7 +18,8 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 
 /**
- * Leave does not store employees — only invalidates People API cache on upsert events (guide §3).
+ * Invalidates People API cache on employee upsert and seeds pro-rata opening leave balances
+ * for new / updated staff against current-period categories.
  */
 @Component
 @ConditionalOnProperty(prefix = "platform.messaging", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -29,14 +31,17 @@ public class PeopleEmployeeCacheInvalidator {
     private final ObjectMapper objectMapper;
     private final InboxGuard inboxGuard;
     private final PeopleDirectoryClient people;
+    private final LeaveCategorySyncService leaveCategorySyncService;
 
     public PeopleEmployeeCacheInvalidator(
             ObjectMapper objectMapper,
             InboxGuard inboxGuard,
-            PeopleDirectoryClient people) {
+            PeopleDirectoryClient people,
+            LeaveCategorySyncService leaveCategorySyncService) {
         this.objectMapper = objectMapper;
         this.inboxGuard = inboxGuard;
         this.people = people;
+        this.leaveCategorySyncService = leaveCategorySyncService;
     }
 
     @RabbitListener(queues = PlatformQueues.PEOPLE_EMPLOYEE_UPSERTED_LEAVE_Q)
@@ -62,8 +67,14 @@ public class PeopleEmployeeCacheInvalidator {
             inboxGuard.processOnce(eventId, eventType, CONSUMER, envelope, () -> {
                 Long id = employeeIdOf(envelope);
                 people.invalidateEmployee(id);
-                log.debug("Leave People cache invalidated employeeId={}", id);
-                return Map.of("ok", true, "employeeId", id == null ? "" : id);
+                int seeded = 0;
+                try {
+                    seeded = leaveCategorySyncService.ensureOpeningBalancesForEmployee(id);
+                } catch (Exception e) {
+                    log.warn("Leave opening seed failed employeeId={}: {}", id, e.getMessage());
+                }
+                log.debug("Leave People cache invalidated employeeId={} seeded={}", id, seeded);
+                return Map.of("ok", true, "employeeId", id == null ? "" : id, "seeded", seeded);
             });
         } finally {
             CorrelationContext.clear();

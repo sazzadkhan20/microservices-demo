@@ -25,7 +25,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -43,20 +45,46 @@ public class WorkScheduleController {
 
     @GetMapping
     @RequiresPermission(feature = "attendance_settings", action = "view")
-    @Operation(summary = "List work schedules (LOCATION / TEAM / EMPLOYEE)")
+    @Operation(summary = "List work schedules (LOCATION / TEAM / EMPLOYEE), paginated")
     public PageResponse<WorkSchedule> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
+        // Stable product order: location bases first, then team/person overrides.
+        List<WorkSchedule> all = workScheduleService.listAll().stream()
+                .sorted(java.util.Comparator
+                        .comparingInt((WorkSchedule s) -> scopeRank(s.getScopeType()))
+                        .thenComparing(s -> s.getScopeId() == null ? 0L : s.getScopeId())
+                        .thenComparing(s -> s.getId() == null ? 0L : s.getId()))
+                .toList();
         return DynamicListSupport.page(
-                workScheduleService.listAll(),
+                all,
                 query,
                 s -> DynamicListSupport.containsIgnoreCase(s.getScopeType(), query.q())
-                        || DynamicListSupport.containsIgnoreCase(s.getMode(), query.q()),
+                        || DynamicListSupport.containsIgnoreCase(s.getMode(), query.q())
+                        || DynamicListSupport.containsIgnoreCase(
+                        s.getScopeId() == null ? "" : String.valueOf(s.getScopeId()), query.q())
+                        || DynamicListSupport.containsIgnoreCase(s.getStartTime(), query.q())
+                        || DynamicListSupport.containsIgnoreCase(s.getEndTime(), query.q()),
                 s -> Map.of(
+                        "id", s.getId() == null ? "" : String.valueOf(s.getId()),
                         "scopeType", s.getScopeType() == null ? "" : s.getScopeType(),
                         "scopeId", s.getScopeId() == null ? "" : String.valueOf(s.getScopeId()),
-                        "mode", s.getMode() == null ? "" : s.getMode()
+                        "mode", s.getMode() == null ? "" : s.getMode(),
+                        "startTime", s.getStartTime() == null ? "" : s.getStartTime(),
+                        "endTime", s.getEndTime() == null ? "" : s.getEndTime()
                 )
         );
+    }
+
+    private static int scopeRank(String scopeType) {
+        if (scopeType == null) {
+            return 99;
+        }
+        return switch (scopeType.trim().toUpperCase(java.util.Locale.ROOT)) {
+            case "LOCATION" -> 0;
+            case "TEAM" -> 1;
+            case "EMPLOYEE" -> 2;
+            default -> 50;
+        };
     }
 
     @GetMapping("/rules")
@@ -76,11 +104,56 @@ public class WorkScheduleController {
         return out;
     }
 
+    @GetMapping("/mine")
+    @RequiresPermission(feature = "attendance", action = "view")
+    @Operation(summary = "Resolved schedule for the current employee (home / self-service)")
+    public Map<String, Object> mine() {
+        return workScheduleService.resolveView(AuthContext.requireEmployeeId());
+    }
+
     @GetMapping("/resolve/{employeeId}")
     @RequiresPermission(feature = "attendance_settings", action = "view")
     @Operation(summary = "Resolved schedule for an employee (EMPLOYEE > TEAM > LOCATION)")
     public Map<String, Object> resolve(@PathVariable Long employeeId) {
         return workScheduleService.resolveView(employeeId);
+    }
+
+    @GetMapping("/for-scope")
+    @RequiresPermission(feature = "attendance_settings", action = "view")
+    @Operation(summary = "Current schedule for a LOCATION/TEAM/EMPLOYEE scope (or product defaults)")
+    public Map<String, Object> forScope(
+            @RequestParam String scopeType,
+            @RequestParam Long scopeId) {
+        return workScheduleService.scopePreview(scopeType, scopeId);
+    }
+
+    @PostMapping("/ensure-location-defaults")
+    @RequiresPermission(feature = "attendance_settings", action = "edit")
+    @Operation(summary = "Create missing LOCATION base schedules (Mon–Fri 09:00–17:00); never overwrite existing")
+    public Map<String, Object> ensureLocationDefaults(@RequestBody Map<String, Object> body) {
+        List<Long> ids = new ArrayList<>();
+        Object raw = body == null ? null : body.get("locationIds");
+        if (raw instanceof List<?> list) {
+            for (Object o : list) {
+                if (o == null) continue;
+                if (o instanceof Number n) {
+                    ids.add(n.longValue());
+                } else {
+                    String s = String.valueOf(o).trim();
+                    if (!s.isEmpty()) {
+                        ids.add(Long.valueOf(s));
+                    }
+                }
+            }
+        } else if (body != null && body.get("locationId") != null) {
+            Object one = body.get("locationId");
+            ids.add(one instanceof Number n ? n.longValue() : Long.valueOf(String.valueOf(one).trim()));
+        }
+        List<WorkSchedule> saved = workScheduleService.ensureDefaultLocationSchedules(ids);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("ensured", saved.size());
+        out.put("schedules", saved);
+        return out;
     }
 
     @GetMapping("/expected-hours")

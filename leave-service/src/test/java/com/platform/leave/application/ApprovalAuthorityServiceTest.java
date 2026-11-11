@@ -17,11 +17,14 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -30,7 +33,7 @@ import com.platform.leave.client.people.PeopleAuthzClient;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
-@DisplayName("ApprovalAuthorityService — config-driven resolvers")
+@DisplayName("ApprovalAuthorityService — step match + idle on-behalf")
 class ApprovalAuthorityServiceTest {
 
     @Mock PeopleEmployeeGateway employeeRepository;
@@ -50,6 +53,8 @@ class ApprovalAuthorityServiceTest {
         app = new LeaveApplication();
         ReflectionTestUtils.setField(app, "id", 50L);
         app.setEmployeeId(1L);
+        app.setCreatedAt(Instant.now());
+        app.setUpdatedAt(Instant.now());
 
         policy = new LeavePolicy();
         policy.setApprovalChain(List.of(
@@ -58,7 +63,8 @@ class ApprovalAuthorityServiceTest {
         ));
         when(configLoader.loadLeavePolicyOrDefault()).thenReturn(policy);
         when(configLoader.loadSettingsMap()).thenReturn(Map.of(
-                "approvalAuthority", ApprovalAuthorityService.defaultApprovalAuthority()
+                "approvalAuthority", ApprovalAuthorityService.defaultApprovalAuthority(),
+                "leaveIdleReminder", Map.of("enabled", true, "idleWorkingDays", 2)
         ));
         when(employeeRepository.findById(1L)).thenReturn(Optional.of(applicant));
     }
@@ -71,23 +77,41 @@ class ApprovalAuthorityServiceTest {
         when(rbacService.roleCodesFor(10L)).thenReturn(List.of("MANAGER"));
 
         LeaveApproval step = step(1, "MANAGER");
-        assertDoesNotThrow(() -> service.assertCanApprove(10L, step, app));
+        ApprovalAuthorityService.Decision d = service.assertCanApprove(10L, step, app);
+        assertEquals(ApprovalAuthorityService.Authority.STEP, d.authority());
     }
 
     @Test
-    @DisplayName("SUPERADMIN wildcard may override")
-    void wildcard_mayOverride() {
+    @DisplayName("Requester never decides own request even with leave:manage")
+    void requester_cannotDecideOwn() {
+        when(employeeRepository.findById(1L)).thenReturn(Optional.of(applicant));
+        when(rbacService.hasWildcard(1L)).thenReturn(false);
+        when(rbacService.hasPermission(eq(1L), eq("leave"), eq("manage"))).thenReturn(true);
+        when(rbacService.roleCodesFor(1L)).thenReturn(List.of("HR", "ADMIN"));
+        app.setUpdatedAt(Instant.now().minus(14, ChronoUnit.DAYS));
+
+        LeaveApproval step = step(1, "MANAGER");
+        assertThrows(IllegalStateException.class, () -> service.assertCanApprove(1L, step, app));
+    }
+
+    @Test
+    @DisplayName("SUPERADMIN may on-behalf only after idle working days")
+    void wildcard_onBehalf_requiresIdle() {
         EmployeeView stranger = emp(99L, null, null, null);
         when(employeeRepository.findById(99L)).thenReturn(Optional.of(stranger));
         when(rbacService.hasWildcard(99L)).thenReturn(true);
 
         LeaveApproval step = step(1, "MANAGER");
-        assertDoesNotThrow(() -> service.assertCanApprove(99L, step, app));
+        assertThrows(IllegalStateException.class, () -> service.assertCanApprove(99L, step, app));
+
+        app.setUpdatedAt(Instant.now().minus(14, ChronoUnit.DAYS));
+        ApprovalAuthorityService.Decision d = service.assertCanApprove(99L, step, app);
+        assertEquals(ApprovalAuthorityService.Authority.ON_BEHALF, d.authority());
     }
 
     @Test
-    @DisplayName("HR with leave:manage may approve on the approver's behalf (FR-LV-16 admin override)")
-    void hrLeaveManage_mayActOnBehalf() {
+    @DisplayName("HR leave:manage cannot skip manager step immediately")
+    void hrLeaveManage_cannotSkipManagerWithoutIdle() {
         EmployeeView hr = emp(20L, null, 200L, "HR");
         when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr));
         when(rbacService.hasWildcard(20L)).thenReturn(false);
@@ -95,24 +119,26 @@ class ApprovalAuthorityServiceTest {
         when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
 
         LeaveApproval step = step(1, "MANAGER");
-        assertDoesNotThrow(() -> service.assertCanApprove(20L, step, app));
-    }
-
-    @Test
-    @DisplayName("HR without leave:manage cannot decide MANAGER step")
-    void hrWithoutManage_cannotSkipManagerStep() {
-        EmployeeView hr = emp(20L, null, 200L, "HR");
-        when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr));
-        when(rbacService.hasWildcard(20L)).thenReturn(false);
-        when(rbacService.hasPermission(eq(20L), eq("leave"), eq("manage"))).thenReturn(false);
-        when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
-
-        LeaveApproval step = step(1, "MANAGER");
         assertThrows(IllegalStateException.class, () -> service.assertCanApprove(20L, step, app));
     }
 
     @Test
-    @DisplayName("HR can approve HR step after manager has acted")
+    @DisplayName("HR leave:manage may on-behalf after idle")
+    void hrLeaveManage_onBehalfWhenIdle() {
+        EmployeeView hr = emp(20L, null, 200L, "HR");
+        when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr));
+        when(rbacService.hasWildcard(20L)).thenReturn(false);
+        when(rbacService.hasPermission(eq(20L), eq("leave"), eq("manage"))).thenReturn(true);
+        when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
+        app.setUpdatedAt(Instant.now().minus(14, ChronoUnit.DAYS));
+
+        LeaveApproval step = step(1, "MANAGER");
+        ApprovalAuthorityService.Decision d = service.assertCanApprove(20L, step, app);
+        assertEquals(ApprovalAuthorityService.Authority.ON_BEHALF, d.authority());
+    }
+
+    @Test
+    @DisplayName("HR can approve HR step as normal STEP authority")
     void hr_mayApproveHrStep() {
         EmployeeView hr = emp(20L, null, 200L, "HR");
         when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr));
@@ -121,12 +147,27 @@ class ApprovalAuthorityServiceTest {
         when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
 
         LeaveApproval step = step(2, "HR");
-        assertDoesNotThrow(() -> service.assertCanApprove(20L, step, app));
+        ApprovalAuthorityService.Decision d = service.assertCanApprove(20L, step, app);
+        assertEquals(ApprovalAuthorityService.Authority.STEP, d.authority());
     }
 
     @Test
-    @DisplayName("ADMIN overrideRoleCodes may skip manager step when allowOverride=true")
-    void adminOverride_maySkipManagerStep() {
+    @DisplayName("HR cannot approve ADMIN step without being ADMIN or idle on-behalf")
+    void hr_cannotApproveAdminStepImmediately() {
+        EmployeeView hr = emp(20L, null, 200L, "HR");
+        when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr));
+        when(rbacService.hasWildcard(20L)).thenReturn(false);
+        when(rbacService.hasPermission(eq(20L), eq("leave"), eq("manage"))).thenReturn(true);
+        when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
+
+        LeaveApproval step = step(3, "ADMIN");
+        step.setResolver(ApprovalAuthorityService.RESOLVER_RBAC_ROLE);
+        assertThrows(IllegalStateException.class, () -> service.assertCanApprove(20L, step, app));
+    }
+
+    @Test
+    @DisplayName("ADMIN may not skip manager step until idle")
+    void adminOverride_requiresIdle() {
         EmployeeView admin = emp(5L, null, null, null);
         when(employeeRepository.findById(5L)).thenReturn(Optional.of(admin));
         when(rbacService.hasWildcard(5L)).thenReturn(false);
@@ -134,6 +175,9 @@ class ApprovalAuthorityServiceTest {
         when(rbacService.roleCodesFor(5L)).thenReturn(List.of("ADMIN"));
 
         LeaveApproval step = step(1, "MANAGER");
+        assertThrows(IllegalStateException.class, () -> service.assertCanApprove(5L, step, app));
+
+        app.setUpdatedAt(Instant.now().minus(14, ChronoUnit.DAYS));
         assertDoesNotThrow(() -> service.assertCanApprove(5L, step, app));
     }
 
@@ -189,7 +233,8 @@ class ApprovalAuthorityServiceTest {
         when(rbacService.roleCodesFor(5L)).thenReturn(List.of("ADMIN"));
 
         LeaveApproval step = step(1, "ADMIN");
-        assertDoesNotThrow(() -> service.assertCanApprove(5L, step, app));
+        ApprovalAuthorityService.Decision d = service.assertCanApprove(5L, step, app);
+        assertEquals(ApprovalAuthorityService.Authority.STEP, d.authority());
     }
 
     private static LeaveApproval step(int order, String role) {

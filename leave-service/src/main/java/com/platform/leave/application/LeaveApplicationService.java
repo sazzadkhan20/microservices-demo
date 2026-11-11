@@ -37,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import com.platform.leave.client.people.PeopleAuthzClient;
 import com.platform.leave.client.timework.TimeWorkScheduleGateway;
@@ -141,7 +142,10 @@ public class LeaveApplicationService {
     }
 
     /**
-     * Pending approvals the caller can actually decide now: data scope + current-step authority.
+     * Pending approvals the caller can decide now — driven by current-step authority, not org-tree
+     * data scope. Named / Manager's-manager / Admin assignees must see their item even when the
+     * applicant is outside {@code leave:approve} TEAM/OWN scope (notifications already target
+     * {@code expectedApproverId}; Approvals must match).
      * Includes {@code PENDING_CANCEL} (FR-LV-18 cancel chain uses the same resolvers).
      * HR with leave:approve does not see manager-step items until the reporting manager has acted.
      * <p>Legacy/seed rows awaiting a decision with zero approval steps are rebuilt from the
@@ -150,18 +154,25 @@ public class LeaveApplicationService {
     @Transactional
     public List<LeaveApplicationResponse> pendingForCaller() {
         Long actorId = AuthContext.requireEmployeeId();
-        DataScopeService.Visibility visible = dataScopeService.visibility(actorId, "leave", "approve");
         return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
                 .filter(a -> isAwaitingApprovalDecision(a.getStatus()))
-                .filter(a -> visible.allows(a.getEmployeeId()))
                 .peek(this::ensureApprovalStepsIfMissing)
-                .filter(a -> {
+                .map(a -> {
                     LeaveApproval step = currentApprovalStep(a.getId(), Math.max(1, a.getCurrentStep()));
-                    return step != null
-                            && LeaveApproval.STATUS_PENDING.equals(step.getStatus())
-                            && approvalAuthorityService.canApprove(actorId, step, a);
+                    if (step == null || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
+                        return null;
+                    }
+                    ApprovalAuthorityService.Authority auth =
+                            approvalAuthorityService.authorityOf(actorId, step, a);
+                    if (auth == ApprovalAuthorityService.Authority.NONE) {
+                        return null;
+                    }
+                    return LeaveApplicationResponse.from(
+                            a,
+                            approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId()),
+                            auth.name());
                 })
-                .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
+                .filter(Objects::nonNull)
                 .toList();
     }
 
@@ -174,16 +185,41 @@ public class LeaveApplicationService {
                 .toList();
     }
 
-    /** Single application with leave:view scope enforced (owner of the request is the scope target). */
+    /**
+     * Single application: {@code leave:view} scope, or current-step / on-behalf authority
+     * (named approvers outside the applicant's org tree must open deep links from notifications).
+     */
     @Transactional(readOnly = true)
     public LeaveApplicationResponse getForCaller(Long id) {
         LeaveApplication app = applicationRepository.findById(id).orElse(null);
         Long actor = AuthContext.requireEmployeeId();
-        if (app == null || !dataScopeService.canAccess(actor, app.getEmployeeId(), "leave", "view")) {
+        if (app == null || !canCallerSeeApplication(actor, app)) {
             // Same answer for "missing" and "not yours" so ids cannot be probed.
             throw new SecurityException("Forbidden: leave application " + id + " is not visible to you");
         }
         return LeaveApplicationResponse.from(app, approvalRepository.findByApplicationIdOrderByStepOrderAsc(id));
+    }
+
+    /**
+     * Visible via leave:view data scope, or because the caller is the designated current-step
+     * (or idle on-behalf) approver for an application still awaiting a decision.
+     */
+    boolean canCallerSeeApplication(Long actorEmployeeId, LeaveApplication app) {
+        if (actorEmployeeId == null || app == null) {
+            return false;
+        }
+        if (dataScopeService.canAccess(actorEmployeeId, app.getEmployeeId(), "leave", "view")) {
+            return true;
+        }
+        if (!isAwaitingApprovalDecision(app.getStatus())) {
+            return false;
+        }
+        LeaveApproval step = currentApprovalStep(app.getId(), Math.max(1, app.getCurrentStep()));
+        if (step == null || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
+            return false;
+        }
+        return approvalAuthorityService.authorityOf(actorEmployeeId, step, app)
+                != ApprovalAuthorityService.Authority.NONE;
     }
 
     @Transactional(readOnly = true)
@@ -205,12 +241,13 @@ public class LeaveApplicationService {
         // Instead we call buildApplyContext to get everything without saving.
         ApplyContext ctx = buildApplyContext(request);
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("workingDaysCounted", ctx.daysCounted());
+        BigDecimal requested = LeaveDays.of(ctx.daysCounted()); // half-day stays 0.5
+        result.put("workingDaysCounted", requested);
         BigDecimal balance = leaveBalanceService.available(ctx.employee().getId(), ctx.leaveType().getCode(), ctx.year());
         BigDecimal afterPending = leaveBalanceService.availableAfterPending(ctx.employee().getId(), ctx.leaveType().getCode(), ctx.year());
         result.put("available", afterPending);
-        result.put("pendingDays", balance.subtract(afterPending));
-        result.put("balanceAfter", afterPending.subtract(ctx.daysCounted()));
+        result.put("pendingDays", LeaveDays.of(balance.subtract(afterPending)));
+        result.put("balanceAfter", LeaveDays.of(afterPending.subtract(requested)));
         result.put("warnings", ctx.warnings());
         result.put("teamClashAlert", ctx.teamClashAlert());
 
@@ -234,14 +271,37 @@ public class LeaveApplicationService {
         List<Map<String, Object>> approvers = new ArrayList<>();
         Long requesterId = employee == null ? null : employee.getId();
         Long prevExpectedId = null;
+        String prevRoleKey = null;
         int stepNum = 1;
         for (Map<String, Object> item : chain) {
-            if (stepNum > 4) break;
+            if (stepNum > ApprovalChainSupport.MAX_STEPS) break;
             String resolver = item.get("resolver") != null
                     ? String.valueOf(item.get("resolver")).trim().toUpperCase(Locale.ROOT) : "";
-            String role = item.get("role") != null ? String.valueOf(item.get("role")).trim() : "HR";
-            if (resolver.isEmpty()) resolver = resolverFromRole(role);
+            String role = item.get("role") != null ? String.valueOf(item.get("role")).trim() : "ADMIN";
+            if (resolver.isEmpty()) resolver = ApprovalChainSupport.defaultResolverForRole(role);
+            List<String> roleCodes = roleCodesFrom(item.get("roleCodes"), role);
             Long expectedId = resolveExpectedApprover(employee, item);
+            Long namedId = null;
+            Object nid = item.get("namedEmployeeId");
+            if (nid instanceof Number n) namedId = n.longValue();
+            String roleKey = role.toUpperCase(Locale.ROOT)
+                    + (namedId != null ? ":" + namedId : "")
+                    + ":" + resolver;
+            boolean rolePool = ApprovalAuthorityService.RESOLVER_RBAC_ROLE.equals(resolver)
+                    || ApprovalAuthorityService.RESOLVER_DESIGNATION_OR_RBAC.equals(resolver);
+            if (rolePool) {
+                if (requesterId != null
+                        && approvalAuthorityService.requesterHoldsStepRole(requesterId, role, roleCodes)) {
+                    continue;
+                }
+                if (prevExpectedId != null
+                        && approvalAuthorityService.employeeHoldsStepRole(prevExpectedId, role, roleCodes)) {
+                    continue;
+                }
+                if (roleKey.equals(prevRoleKey)) {
+                    continue;
+                }
+            }
             // Skip: holds no one / inactive / requester / same as previous step
             if (isPersonBoundResolver(resolver, role)) {
                 if (expectedId == null) continue;
@@ -267,6 +327,7 @@ public class LeaveApplicationService {
             }
             approvers.add(a);
             prevExpectedId = expectedId;
+            prevRoleKey = roleKey;
             stepNum++;
         }
         return approvers;
@@ -461,11 +522,13 @@ public class LeaveApplicationService {
                             + ". Choose dates inside the category period.");
         }
 
-        // FR-LV-01 / FR-LV-03 — applies_to + hourly never get leave categories.
+        // FR-LV-01 / FR-LV-03 — applies_to + hourly-schedule never get leave categories
+        // (pay type HOURLY with a FIXED/day schedule may still request leave).
         if (category != null) {
             leaveAppliesToService.requireEligible(employee, category);
-        } else if (leaveAppliesToService.isHourly(employee)) {
-            throw new IllegalStateException("Hourly employees cannot request leave categories");
+        } else if (leaveAppliesToService.isHourlySchedule(employee)) {
+            throw new IllegalStateException(
+                    "Hourly-schedule employees cannot request leave (FR-LV-03)");
         }
 
         // FR-LV-11: period eligibility (open-ended when start/end null)
@@ -598,17 +661,26 @@ public class LeaveApplicationService {
         int year = category != null
                 ? leaveCategoryService.balanceYear(category)
                 : request.startDate().getYear();
-        // FR-LV-11: use availableAfterPending for balance check; negativeCap
-        BigDecimal availableAfterPending = leaveBalanceService.availableAfterPending(employee.getId(), leaveType.getCode(), year);
+        // FR-LV-11: whole-day balance check (same integer the UI shows).
+        // negativeCap -2 (or 2) = may overdraw by 2 days → effective = available + 2
+        BigDecimal availableAfterPending = leaveBalanceService.availableAfterPending(
+                employee.getId(), leaveType.getCode(), year);
+        BigDecimal requested = LeaveDays.of(daysCounted); // half-day stays 0.5
         if (leaveType.isRequiresBalance() && !leaveType.isAllowWhenZeroBalance()) {
             BigDecimal effectiveAvailable = availableAfterPending;
+            BigDecimal overdraft = BigDecimal.ZERO;
             if (category != null && category.getNegativeCap() != null) {
-                effectiveAvailable = availableAfterPending.add(category.getNegativeCap());
+                overdraft = LeaveDays.whole(category.getNegativeCap().abs()); // whole-day overdraft
+                effectiveAvailable = availableAfterPending.add(overdraft);
             }
-            if (effectiveAvailable.compareTo(daysCounted) < 0) {
+            if (effectiveAvailable.compareTo(requested) < 0) {
                 throw new IllegalStateException(
-                        "Insufficient " + leaveType.getCode() + " balance: available=" + availableAfterPending
-                                + ", requested=" + daysCounted);
+                        "Insufficient " + leaveType.getCode() + " balance: available="
+                                + LeaveDays.format(availableAfterPending)
+                                + ", requested=" + LeaveDays.format(requested)
+                                + (overdraft.signum() > 0
+                                ? " (negative cap allows +" + LeaveDays.format(overdraft) + ")"
+                                : ""));
             }
         }
 
@@ -770,13 +842,22 @@ public class LeaveApplicationService {
         }
 
         // BE-03: the approver is ALWAYS the authenticated employee; any approverEmployeeId in the body is ignored.
-        EmployeeView approver = requireActiveApprover(AuthContext.requireEmployeeId(), step, app);
+        ApprovalAuthorityService.Decision decision =
+                approvalAuthorityService.assertCanApprove(AuthContext.requireEmployeeId(), step, app);
+        EmployeeView approver = decision.actor();
 
         Instant now = Instant.now();
         step.setStatus(LeaveApproval.STATUS_APPROVED);
         step.setApproverEmployeeId(approver.getId());
         step.setActorName(approver.getFullName());
-        step.setCommentText(request == null ? null : request.comment());
+        step.setActedOnBehalf(decision.onBehalf());
+        String comment = request == null ? null : request.comment();
+        if (decision.onBehalf()) {
+            String note = comment == null || comment.isBlank() ? "Admin on-behalf after idle threshold" : comment.trim();
+            step.setCommentText("[ON_BEHALF] " + note);
+        } else {
+            step.setCommentText(comment);
+        }
         step.setDecidedAt(now);
         approvalRepository.save(step);
 
@@ -847,8 +928,12 @@ public class LeaveApplicationService {
         // BE-03: approver identity comes from the JWT/AuthContext, never from the request body.
         Long approverId = AuthContext.requireEmployeeId();
         EmployeeView approver;
+        boolean onBehalf = false;
         if (step != null && LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
-            approver = requireActiveApprover(approverId, step, app);
+            ApprovalAuthorityService.Decision decision =
+                    approvalAuthorityService.assertCanApprove(approverId, step, app);
+            approver = decision.actor();
+            onBehalf = decision.onBehalf();
         } else if (isCancelChain) {
             // Cancel reject must still go through current-step authority when a step exists.
             throw new IllegalStateException("Missing pending cancel-approval step");
@@ -861,7 +946,13 @@ public class LeaveApplicationService {
             step.setStatus(LeaveApproval.STATUS_REJECTED);
             step.setApproverEmployeeId(approver.getId());
             step.setActorName(approver.getFullName());
-            step.setCommentText(request == null ? null : request.comment());
+            step.setActedOnBehalf(onBehalf);
+            String rejectComment = request == null ? null : request.comment();
+            if (onBehalf && rejectComment != null) {
+                step.setCommentText("[ON_BEHALF] " + rejectComment.trim());
+            } else {
+                step.setCommentText(rejectComment);
+            }
             step.setDecidedAt(now);
             approvalRepository.save(step);
         }
@@ -973,10 +1064,6 @@ public class LeaveApplicationService {
                 .orElse(1);
     }
 
-    private EmployeeView requireActiveApprover(Long approverEmployeeId, LeaveApproval step, LeaveApplication app) {
-        return approvalAuthorityService.assertCanApprove(approverEmployeeId, step, app);
-    }
-
     private EmployeeView requireActiveEmployee(Long id) {
         EmployeeView e = employeeRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Approver employee not found: " + id));
@@ -987,64 +1074,27 @@ public class LeaveApplicationService {
     }
 
     /**
-     * Category chain wins when present (per-type config); else leave_policy.approval_chain.
-     * Each step may carry resolver / allowOverride for ApprovalAuthorityService.
+     * Category chain wins when present (per-type config); else leave_policy.approval_chain;
+     * else production default Manager → Admin.
      */
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> resolveApprovalChain(LeaveCategory category, LeavePolicy policy) {
         if (category != null && category.getApprovalChain() != null && !category.getApprovalChain().isBlank()) {
             try {
-                Object parsed = new com.fasterxml.jackson.databind.ObjectMapper()
-                        .readValue(category.getApprovalChain(), List.class);
-                if (parsed instanceof List<?> list && !list.isEmpty()) {
-                    List<Map<String, Object>> out = new ArrayList<>();
-                    for (Object o : list) {
-                        if (o instanceof Map<?, ?> m) {
-                            Map<String, Object> row = new HashMap<>();
-                            m.forEach((k, v) -> {
-                                if (k != null) {
-                                    row.put(String.valueOf(k), v);
-                                }
-                            });
-                            if (!row.isEmpty()) {
-                                out.add(row);
-                            }
-                        }
-                    }
-                    if (!out.isEmpty()) {
-                        return normalizeChainSteps(out);
-                    }
-                }
-            } catch (Exception ignored) {
-                // fall through to policy chain
+                return ApprovalChainSupport.parseAndValidateJson(category.getApprovalChain());
+            } catch (IllegalArgumentException ex) {
+                // Corrupt stored JSON — fall through rather than blocking historic applications.
             }
         }
         List<Map<String, Object>> chain = policy.getApprovalChain();
         if (chain == null || chain.isEmpty()) {
-            return List.of(Map.of("step", 1, "role", "HR"));
+            return ApprovalChainSupport.defaultChain();
         }
-        return normalizeChainSteps(chain);
-    }
-
-    private static List<Map<String, Object>> normalizeChainSteps(List<Map<String, Object>> chain) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        int i = 1;
-        for (Map<String, Object> item : chain) {
-            if (item == null || item.isEmpty()) {
-                continue;
-            }
-            Map<String, Object> copy = new HashMap<>(item);
-            Object step = copy.get("step");
-            if (!(step instanceof Number)) {
-                copy.put("step", i);
-            }
-            if (copy.get("role") == null || String.valueOf(copy.get("role")).isBlank()) {
-                copy.put("role", "HR");
-            }
-            out.add(copy);
-            i++;
+        try {
+            return ApprovalChainSupport.normalizeAndValidate(chain);
+        } catch (IllegalArgumentException ex) {
+            return ApprovalChainSupport.defaultChain();
         }
-        return out.isEmpty() ? List.of(Map.of("step", 1, "role", "HR")) : out;
     }
 
     private void assertReportingManagerPresent(EmployeeView employee, List<Map<String, Object>> chain) {
@@ -1147,8 +1197,8 @@ public class LeaveApplicationService {
 
     /**
      * FR-LV-12/13 — materialize approval chain with skip logic.
-     * Resolvers: MANAGER, REPORTING_MANAGER, MANAGER_OF_MANAGER, NAMED_EMPLOYEE, RBAC_ROLE, DESIGNATION_OR_RBAC.
-     * Skip when: expected approver is null/inactive, equals requester, or equals previous step's expected approver.
+     * Skip when: empty/inactive person, approver is requester, same as previous step,
+     * or requester holds a role-pool step (example: Fayaz's own request → Asman only).
      * Max 4 steps; throws if no steps remain.
      */
     private void createApprovalSteps(LeaveApplication app, List<Map<String, Object>> chain, EmployeeView employee) {
@@ -1158,17 +1208,19 @@ public class LeaveApplicationService {
         Long requesterId = app.getEmployeeId();
         List<LeaveApproval> steps = new ArrayList<>();
         Long prevExpectedId = null;
+        String prevRoleKey = null;
         int stepNum = 1;
 
         for (Map<String, Object> item : chain) {
-            if (stepNum > 4) break;
-            String resolver = item.get("resolver") != null ? String.valueOf(item.get("resolver")).trim().toUpperCase(Locale.ROOT) : "";
-            String role = item.get("role") != null ? String.valueOf(item.get("role")).trim() : "HR";
-
-            // Determine resolver from role defaults if not set
+            if (stepNum > ApprovalChainSupport.MAX_STEPS) break;
+            String resolver = item.get("resolver") != null
+                    ? String.valueOf(item.get("resolver")).trim().toUpperCase(Locale.ROOT) : "";
+            String role = item.get("role") != null ? String.valueOf(item.get("role")).trim() : "ADMIN";
             if (resolver.isEmpty()) {
-                resolver = resolverFromRole(role);
+                resolver = ApprovalChainSupport.defaultResolverForRole(role);
             }
+            @SuppressWarnings("unchecked")
+            List<String> roleCodes = roleCodesFrom(item.get("roleCodes"), role);
 
             Long expectedId = null;
             Long namedId = null;
@@ -1184,9 +1236,28 @@ public class LeaveApplicationService {
             } else if (resolver.equals(ApprovalAuthorityService.RESOLVER_MANAGER_OF_MANAGER)) {
                 expectedId = resolveManagerOfManager(employee);
             }
-            // For RBAC_ROLE and DESIGNATION_OR_RBAC, expectedId stays null (any matching user)
 
-            // Skip: holds no one / inactive / requester / same as previous step
+            String roleKey = role.toUpperCase(Locale.ROOT)
+                    + (namedId != null ? ":" + namedId : "")
+                    + ":" + resolver;
+
+            // Role / designation pools — skip when requester (or previous expected person) holds the role.
+            boolean rolePool = ApprovalAuthorityService.RESOLVER_RBAC_ROLE.equals(resolver)
+                    || ApprovalAuthorityService.RESOLVER_DESIGNATION_OR_RBAC.equals(resolver);
+            if (rolePool) {
+                if (approvalAuthorityService.requesterHoldsStepRole(requesterId, role, roleCodes)) {
+                    continue;
+                }
+                if (prevExpectedId != null
+                        && approvalAuthorityService.employeeHoldsStepRole(prevExpectedId, role, roleCodes)) {
+                    continue;
+                }
+                if (roleKey.equals(prevRoleKey)) {
+                    continue;
+                }
+            }
+
+            // Person-bound — skip empty / inactive / requester / same as previous.
             if (isPersonBoundResolver(resolver, role)) {
                 if (expectedId == null) continue;
                 EmployeeView exp = employeeRepository.findById(expectedId).orElse(null);
@@ -1208,9 +1279,11 @@ public class LeaveApplicationService {
             a.setResolver(resolver.isEmpty() ? null : resolver);
             a.setNamedEmployeeId(namedId);
             a.setExpectedApproverId(expectedId);
+            a.setActedOnBehalf(false);
             approvalRepository.save(a);
             steps.add(a);
             prevExpectedId = expectedId;
+            prevRoleKey = roleKey;
             stepNum++;
         }
 
@@ -1220,13 +1293,23 @@ public class LeaveApplicationService {
         }
     }
 
-    private String resolverFromRole(String role) {
-        return switch (role.toUpperCase(Locale.ROOT)) {
-            case "MANAGER" -> ApprovalAuthorityService.RESOLVER_REPORTING_MANAGER;
-            case "MANAGER_OF_MANAGER" -> ApprovalAuthorityService.RESOLVER_MANAGER_OF_MANAGER;
-            case "STORE_MANAGER" -> ApprovalAuthorityService.RESOLVER_REPORTING_MANAGER_AND_DESIGNATION;
-            case "NAMED_EMPLOYEE" -> ApprovalAuthorityService.RESOLVER_NAMED_EMPLOYEE;
-            default -> ApprovalAuthorityService.RESOLVER_DESIGNATION_OR_RBAC;
+    private static List<String> roleCodesFrom(Object raw, String role) {
+        if (raw instanceof List<?> list && !list.isEmpty()) {
+            List<String> out = new ArrayList<>();
+            for (Object o : list) {
+                if (o != null && !String.valueOf(o).isBlank()) {
+                    out.add(String.valueOf(o).trim().toUpperCase(Locale.ROOT));
+                }
+            }
+            if (!out.isEmpty()) return out;
+        }
+        if (role == null || role.isBlank()) return List.of();
+        String r = role.toUpperCase(Locale.ROOT);
+        return switch (r) {
+            case "ADMIN" -> List.of("ADMIN", "SUPERADMIN");
+            case "SUPER_ADMIN", "SUPERADMIN" -> List.of("SUPERADMIN");
+            case "HR" -> List.of("HR");
+            default -> List.of(r);
         };
     }
 
@@ -1240,8 +1323,8 @@ public class LeaveApplicationService {
     /** Resolve expected approver for preview (non-persisted). */
     private Long resolveExpectedApprover(EmployeeView employee, Map<String, Object> step) {
         String resolver = step.get("resolver") != null ? String.valueOf(step.get("resolver")).trim().toUpperCase(Locale.ROOT) : "";
-        String role = step.get("role") != null ? String.valueOf(step.get("role")).trim() : "HR";
-        if (resolver.isEmpty()) resolver = resolverFromRole(role);
+        String role = step.get("role") != null ? String.valueOf(step.get("role")).trim() : "ADMIN";
+        if (resolver.isEmpty()) resolver = ApprovalChainSupport.defaultResolverForRole(role);
         return switch (resolver) {
             case ApprovalAuthorityService.RESOLVER_REPORTING_MANAGER,
                     ApprovalAuthorityService.RESOLVER_REPORTING_MANAGER_AND_DESIGNATION -> employee.getManagerId();

@@ -6,7 +6,10 @@ import com.platform.common.security.AuthContext;
 import com.platform.leave.api.dto.LeaveApplicationResponse;
 import com.platform.leave.api.dto.LeaveApplyRequest;
 import com.platform.leave.application.LeaveApplicationService;
+import com.platform.leave.application.LeaveAppliesToService;
 import com.platform.leave.application.support.DynamicListSupport;
+import com.platform.leave.client.people.EmployeeView;
+import com.platform.leave.client.people.PeopleEmployeeGateway;
 import com.platform.leave.infrastructure.persistence.LeaveApplicationRepository;
 import com.platform.leave.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
@@ -20,6 +23,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -32,12 +36,37 @@ public class LeaveFacadeController {
 
     private final LeaveApplicationService leaveApplicationService;
     private final LeaveApplicationRepository applicationRepository;
+    private final LeaveAppliesToService leaveAppliesToService;
+    private final PeopleEmployeeGateway employeeRepository;
 
     public LeaveFacadeController(
             LeaveApplicationService leaveApplicationService,
-            LeaveApplicationRepository applicationRepository) {
+            LeaveApplicationRepository applicationRepository,
+            LeaveAppliesToService leaveAppliesToService,
+            PeopleEmployeeGateway employeeRepository) {
         this.leaveApplicationService = leaveApplicationService;
         this.applicationRepository = applicationRepository;
+        this.leaveAppliesToService = leaveAppliesToService;
+        this.employeeRepository = employeeRepository;
+    }
+
+    @GetMapping("/eligibility")
+    @RequiresPermission(feature = "leave", action = "view")
+    @Operation(summary = "Whether the caller may use day-based leave (FR-LV-03 schedule mode)")
+    public Map<String, Object> eligibility() {
+        Long empId = AuthContext.requireEmployeeId();
+        EmployeeView emp = employeeRepository.findById(empId).orElse(null);
+        boolean hourly = leaveAppliesToService.isHourlySchedule(emp);
+        String mode = leaveAppliesToService.resolvedScheduleMode(emp);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("employeeId", empId);
+        out.put("leaveEligible", !hourly);
+        out.put("scheduleMode", mode == null || mode.isBlank() ? null : mode);
+        out.put("workPattern", emp == null ? null : emp.getWorkPattern());
+        out.put("reason", hourly
+                ? "Hourly work schedule — day-based leave is not available (FR-LV-03)"
+                : null);
+        return out;
     }
 
     @GetMapping("/my")
@@ -46,6 +75,10 @@ public class LeaveFacadeController {
     public PageResponse<LeaveApplicationResponse> my(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
         Long empId = AuthContext.requireEmployeeId();
+        EmployeeView emp = employeeRepository.findById(empId).orElse(null);
+        if (leaveAppliesToService.isHourlySchedule(emp)) {
+            return DynamicListSupport.page(java.util.List.of(), query, a -> false, a -> Map.of());
+        }
         var all = applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(empId).stream()
                 .map(a -> leaveApplicationService.get(a.getId()))
                 .toList();

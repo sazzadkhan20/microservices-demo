@@ -27,10 +27,14 @@ public class LeaveCategoryService {
         this.repository = repository;
     }
 
+    public List<LeaveCategory> findAll() {
+        return repository.findAll();
+    }
+
     public List<LeaveCategory> findAllByCode(String code) {
         if (code == null || code.isBlank()) return List.of();
         String normalized = code.trim().toUpperCase(Locale.ROOT);
-        return repository.findAll().stream()
+        return findAll().stream()
                 .filter(c -> c.getCode() != null && normalized.equalsIgnoreCase(c.getCode().trim()))
                 .sorted(Comparator
                         .comparing(LeaveCategory::getPeriodStart, Comparator.nullsLast(Comparator.naturalOrder()))
@@ -128,7 +132,7 @@ public class LeaveCategoryService {
         if (category == null || category.getQuotaDays() == null) {
             return BigDecimal.ZERO;
         }
-        BigDecimal quota = category.getQuotaDays();
+        BigDecimal quota = LeaveDays.of(category.getQuotaDays());
         if (!category.isProRata() || employee == null) {
             return quota;
         }
@@ -147,8 +151,12 @@ public class LeaveCategoryService {
         }
         long totalDays = ChronoUnit.DAYS.between(periodStart, periodEnd) + 1;
         long remaining = ChronoUnit.DAYS.between(join, periodEnd) + 1;
-        if (totalDays <= 0) return quota;
-        return quota.multiply(BigDecimal.valueOf(remaining))
-                .divide(BigDecimal.valueOf(totalDays), 2, RoundingMode.HALF_UP);
+        if (totalDays <= 0) {
+            return LeaveDays.of(quota);
+        }
+        // Exact fraction, then sell to nearest half-day (same rule as balances / UI).
+        BigDecimal raw = quota.multiply(BigDecimal.valueOf(remaining))
+                .divide(BigDecimal.valueOf(totalDays), 6, RoundingMode.HALF_UP);
+        return LeaveDays.of(raw);
     }
 }

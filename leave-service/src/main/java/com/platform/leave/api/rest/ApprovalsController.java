@@ -29,8 +29,9 @@ public class ApprovalsController {
     @GetMapping("/pending")
     @RequiresPermission(feature = "leave", action = "approve")
     @Operation(summary = "Leave waiting on the current user for the active approval step",
-            description = "Filtered by leave:approve data scope AND step authority "
-                    + "(e.g. HR does not see items still waiting on the reporting manager).")
+            description = "Filtered by current-step / on-behalf authority only (not org TEAM scope), "
+                    + "so named approvers outside the applicant's reporting tree still see their items. "
+                    + "HR does not see items still waiting on the reporting manager.")
     public List<LeaveApplicationResponse> pending() {
         return leaveApplicationService.pendingForCaller();
     }

@@ -46,6 +46,7 @@ public class LeaveBalanceService {
     private final DataScopeService dataScopeService;
     private final LeaveApplicationRepository leaveApplicationRepository;
     private final LeaveCategoryService leaveCategoryService;
+    private final LeaveAppliesToService leaveAppliesToService;
     private final AuditService auditService;
     private final EntityManager entityManager;
 
@@ -65,6 +66,7 @@ public class LeaveBalanceService {
             DataScopeService dataScopeService,
             LeaveApplicationRepository leaveApplicationRepository,
             LeaveCategoryService leaveCategoryService,
+            LeaveAppliesToService leaveAppliesToService,
             AuditService auditService,
             EntityManager entityManager) {
         this.balanceRepository = balanceRepository;
@@ -74,19 +76,74 @@ public class LeaveBalanceService {
         this.dataScopeService = dataScopeService;
         this.leaveApplicationRepository = leaveApplicationRepository;
         this.leaveCategoryService = leaveCategoryService;
+        this.leaveAppliesToService = leaveAppliesToService;
         this.auditService = auditService;
         this.entityManager = entityManager;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public List<LeaveBalanceResponse> listForEmployee(Long employeeId, Integer year) {
+        return listForEmployee(employeeId, year, false);
+    }
+
+    /**
+     * @param currentOnly when true, only categories whose period covers today and that apply to
+     *                    the employee (same gate as the apply form / home dashboard).
+     *                    Not read-only: may expire carry and reconcile ledger → balance_days.
+     */
+    @Transactional
+    public List<LeaveBalanceResponse> listForEmployee(Long employeeId, Integer year, boolean currentOnly) {
         dataScopeService.requireAccess(AuthContext.requireEmployeeId(), employeeId, "leave", "view");
-        int y = year == null ? LocalDate.now().getYear() : year;
-        employeeRepository.findById(employeeId)
+        EmployeeView employee = employeeRepository.findById(employeeId)
                 .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + employeeId));
+        // FR-LV-03 — hourly-schedule staff have no day-based leave balances.
+        if (leaveAppliesToService.isHourlySchedule(employee)) {
+            return List.of();
+        }
+        if (currentOnly) {
+            return listCurrentPeriodBalances(employee);
+        }
+        int y = year == null ? LocalDate.now().getYear() : year;
         return balanceRepository.findByEmployeeIdAndYear(employeeId, y).stream()
                 .map(b -> toBreakdown(b))
                 .toList();
+    }
+
+    /** Home / employee self-view: ongoing eligible categories only (no past or future periods). */
+    private List<LeaveBalanceResponse> listCurrentPeriodBalances(EmployeeView employee) {
+        LocalDate today = LocalDate.now();
+        Map<String, LeaveBalanceResponse> byCode = new LinkedHashMap<>();
+        for (LeaveCategory category : leaveCategoryService.findAll()) {
+            if (category == null || !category.isActive() || category.getCode() == null || category.getCode().isBlank()) {
+                continue;
+            }
+            if (!leaveCategoryService.covers(category, today)) {
+                continue;
+            }
+            if (!leaveAppliesToService.isEligible(employee, category)) {
+                continue;
+            }
+            String code = category.getCode().trim().toUpperCase(Locale.ROOT);
+            if (byCode.containsKey(code)) {
+                continue;
+            }
+            int y = leaveCategoryService.balanceYear(category);
+            LeaveBalance balance = balanceRepository
+                    .findByEmployeeIdAndLeaveTypeCodeAndYear(employee.getId(), code, y)
+                    .orElse(null);
+            if (balance == null) {
+                // Surface a zero row so the dashboard still lists the ongoing category.
+                LeaveBalance zero = new LeaveBalance();
+                zero.setEmployeeId(employee.getId());
+                zero.setLeaveTypeCode(code);
+                zero.setYear(y);
+                zero.setBalanceDays(BigDecimal.ZERO);
+                byCode.put(code, toBreakdown(zero));
+            } else {
+                byCode.put(code, toBreakdown(balance));
+            }
+        }
+        return List.copyOf(byCode.values());
     }
 
     @Transactional(readOnly = true)
@@ -128,6 +185,10 @@ public class LeaveBalanceService {
                 .orElseThrow(() -> new IllegalArgumentException("Leave type not found: " + request.leaveTypeCode()));
         EmployeeView employee = employeeRepository.findById(request.employeeId())
                 .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + request.employeeId()));
+        if (leaveAppliesToService.isHourlySchedule(employee)) {
+            throw new IllegalStateException(
+                    "Hourly-schedule employees cannot receive leave balances (FR-LV-03)");
+        }
         Long actorId = request.actorEmployeeId() != null
                 ? request.actorEmployeeId()
                 : AuthContext.getEmployeeId();
@@ -137,11 +198,15 @@ public class LeaveBalanceService {
 
         int year = request.year() == null ? LocalDate.now().getYear() : request.year();
         LeaveBalance balance = getOrCreate(employee.getId(), type.getCode(), year);
-        BigDecimal before = balance.getBalanceDays();
-        BigDecimal next = before.add(request.deltaDays());
+        BigDecimal delta = LeaveDays.of(request.deltaDays());
+        if (delta.compareTo(BigDecimal.ZERO) == 0) {
+            throw new IllegalArgumentException("deltaDays must be a non-zero half-day step (0.5) amount");
+        }
+        BigDecimal before = LeaveDays.of(balance.getBalanceDays());
+        BigDecimal next = LeaveDays.of(before.add(delta));
         if (next.compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalStateException("Balance would go negative: current="
-                    + before + ", delta=" + request.deltaDays());
+                    + LeaveDays.format(before) + ", delta=" + LeaveDays.format(delta));
         }
         Instant now = Instant.now();
         balance.setBalanceDays(next);
@@ -152,7 +217,7 @@ public class LeaveBalanceService {
                 employee.getId(),
                 type.getCode(),
                 year,
-                request.deltaDays(),
+                delta,
                 request.reason().trim(),
                 actorId,
                 now,
@@ -163,7 +228,7 @@ public class LeaveBalanceService {
         auditService.record(actorId, "ADJUST", "LeaveBalance",
                 employee.getId() + ":" + type.getCode() + ":" + year,
                 Map.of("balanceDays", before),
-                Map.of("balanceDays", next, "deltaDays", request.deltaDays(), "reason", request.reason().trim()));
+                Map.of("balanceDays", next, "deltaDays", delta, "reason", request.reason().trim()));
 
         return toBreakdown(balance);
     }
@@ -182,13 +247,18 @@ public class LeaveBalanceService {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("reason is required for opening balances");
         }
-        if (days == null || days.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("Opening grant must be a positive number of days");
+        BigDecimal grant = LeaveDays.of(days);
+        if (grant.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Opening grant must be a positive half-day step amount");
         }
         LeaveType type = leaveTypeRepository.findByCodeAndActiveTrue(leaveTypeCode)
                 .orElseThrow(() -> new IllegalArgumentException("Leave type not found: " + leaveTypeCode));
         EmployeeView employee = employeeRepository.findById(employeeId)
                 .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + employeeId));
+        if (leaveAppliesToService.isHourlySchedule(employee)) {
+            throw new IllegalStateException(
+                    "Hourly-schedule employees cannot receive leave balances (FR-LV-03)");
+        }
 
         String openKey = "OPENING:" + employeeId + ":" + type.getCode() + ":" + year;
         if (ledgerRepository.findByOperationKey(openKey).isPresent()) {
@@ -196,10 +266,20 @@ public class LeaveBalanceService {
                     "Opening balance already recorded for " + type.getCode() + " / " + year
                             + ". Use Adjust balances for later corrections.");
         }
+        LeaveLedgerMath.Parts existing = LeaveLedgerMath.classify(
+                ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId),
+                type.getCode(),
+                year);
+        if (existing.quota().compareTo(BigDecimal.ZERO) > 0) {
+            throw new IllegalStateException(
+                    "Quota/opening already present for " + type.getCode() + " / " + year
+                            + " (" + LeaveDays.format(existing.quota())
+                            + " d). Use Adjust balances for later corrections.");
+        }
 
         LeaveBalance balance = getOrCreate(employeeId, type.getCode(), year);
-        BigDecimal before = balance.getBalanceDays();
-        BigDecimal next = before.add(days);
+        BigDecimal before = LeaveDays.of(balance.getBalanceDays());
+        BigDecimal next = LeaveDays.of(before.add(grant));
         Instant now = Instant.now();
         balance.setBalanceDays(next);
         balance.setUpdatedAt(now);
@@ -210,7 +290,7 @@ public class LeaveBalanceService {
                 employeeId,
                 type.getCode(),
                 year,
-                days,
+                grant,
                 reason.trim(),
                 actorId,
                 now,
@@ -221,29 +301,41 @@ public class LeaveBalanceService {
         auditService.record(actorId, "OPENING", "LeaveBalance",
                 employeeId + ":" + type.getCode() + ":" + year,
                 Map.of("balanceDays", before),
-                Map.of("balanceDays", next, "deltaDays", days, "reason", reason.trim()));
+                Map.of("balanceDays", next, "deltaDays", grant, "reason", reason.trim()));
 
         return toBreakdown(balance);
     }
 
     @Transactional
     public BigDecimal available(Long employeeId, String leaveTypeCode, int year) {
-        return balanceRepository.findByEmployeeIdAndLeaveTypeCodeAndYear(employeeId, leaveTypeCode, year)
-                .map(LeaveBalance::getBalanceDays)
-                .orElse(BigDecimal.ZERO);
+        expireCarriedDaysIfDue(employeeId, leaveTypeCode, year);
+        LeaveBalance bal = balanceRepository
+                .findByEmployeeIdAndLeaveTypeCodeAndYear(employeeId, leaveTypeCode, year)
+                .orElse(null);
+        if (bal == null) {
+            return BigDecimal.ZERO;
+        }
+        // Heal any leftover decimal rows so UI and apply checks always match.
+        BigDecimal whole = LeaveDays.of(bal.getBalanceDays());
+        if (bal.getBalanceDays() == null || bal.getBalanceDays().compareTo(whole) != 0) {
+            bal.setBalanceDays(whole);
+            bal.setUpdatedAt(Instant.now());
+            balanceRepository.save(bal);
+        }
+        return whole;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public BigDecimal availableAfterPending(Long employeeId, String leaveTypeCode, int year) {
         BigDecimal balance = available(employeeId, leaveTypeCode, year);
-        return balance.subtract(pendingDays(employeeId, leaveTypeCode, year));
+        return LeaveDays.of(balance.subtract(pendingDays(employeeId, leaveTypeCode, year)));
     }
 
     @Transactional(readOnly = true)
     public BigDecimal pendingDays(Long employeeId, String leaveTypeCode, int year) {
         LocalDate yearStart = LocalDate.of(year, 1, 1);
         LocalDate yearEnd = LocalDate.of(year + 1, 1, 1);
-        return leaveApplicationRepository
+        BigDecimal pending = leaveApplicationRepository
                 .findByEmployeeIdOrderByCreatedAtDesc(employeeId).stream()
                 .filter(a -> leaveTypeCode.equalsIgnoreCase(a.getLeaveTypeCode()))
                 .filter(a -> PENDING_STATUSES.contains(a.getStatus()))
@@ -253,6 +345,7 @@ public class LeaveBalanceService {
                         && a.getStartDate().isBefore(yearEnd))
                 .map(a -> a.getWorkingDaysCounted() == null ? BigDecimal.ZERO : a.getWorkingDaysCounted())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return LeaveDays.of(pending);
     }
 
     @Transactional
@@ -280,7 +373,9 @@ public class LeaveBalanceService {
         }
         LeaveBalance balance = getOrCreate(employeeId, leaveTypeCode, year);
         Instant now = Instant.now();
-        balance.setBalanceDays(balance.getBalanceDays().add(restore));
+        BigDecimal restoreAmt = LeaveDays.of(restore);
+        balance.setBalanceDays(LeaveDays.of(
+                LeaveDays.of(balance.getBalanceDays()).add(restoreAmt)));
         balance.setUpdatedAt(now);
         balanceRepository.save(balance);
 
@@ -288,7 +383,7 @@ public class LeaveBalanceService {
                 employeeId,
                 leaveTypeCode,
                 year,
-                restore,
+                restoreAmt,
                 "Leave cancel restore",
                 AuthContext.getEmployeeId(),
                 now,
@@ -303,14 +398,15 @@ public class LeaveBalanceService {
      */
     @Transactional
     public int cascadeQuotaDelta(String leaveTypeCode, BigDecimal delta, int year) {
-        if (delta == null || delta.compareTo(BigDecimal.ZERO) == 0) {
+        BigDecimal deltaAmt = LeaveDays.of(delta);
+        if (deltaAmt.compareTo(BigDecimal.ZERO) == 0) {
             return 0;
         }
         List<LeaveBalance> balances = balanceRepository.findAll().stream()
                 .filter(b -> leaveTypeCode.equalsIgnoreCase(b.getLeaveTypeCode()) && b.getYear() == year)
                 .toList();
         for (LeaveBalance b : balances) {
-            BigDecimal next = b.getBalanceDays().add(delta);
+            BigDecimal next = LeaveDays.of(LeaveDays.of(b.getBalanceDays()).add(deltaAmt));
             if (next.compareTo(BigDecimal.ZERO) < 0) {
                 throw new IllegalStateException(
                         "Quota change would make balance negative for employee " + b.getEmployeeId()
@@ -322,8 +418,8 @@ public class LeaveBalanceService {
         Instant now = Instant.now();
         Long actorId = AuthContext.getEmployeeId();
         for (LeaveBalance b : balances) {
-            BigDecimal before = b.getBalanceDays();
-            BigDecimal next = before.add(delta);
+            BigDecimal before = LeaveDays.of(b.getBalanceDays());
+            BigDecimal next = LeaveDays.of(before.add(deltaAmt));
             b.setBalanceDays(next);
             b.setUpdatedAt(now);
             balanceRepository.save(b);
@@ -332,7 +428,7 @@ public class LeaveBalanceService {
                     b.getEmployeeId(),
                     leaveTypeCode,
                     year,
-                    delta,
+                    deltaAmt,
                     "Quota change mid-period",
                     actorId,
                     now,
@@ -344,7 +440,7 @@ public class LeaveBalanceService {
             auditService.record(actorId, "CASCADE_QUOTA", "LeaveBalance",
                     b.getEmployeeId() + ":" + leaveTypeCode + ":" + year,
                     Map.of("balanceDays", before),
-                    Map.of("balanceDays", next, "deltaDays", delta));
+                    Map.of("balanceDays", next, "deltaDays", deltaAmt));
         }
         return balances.size();
     }
@@ -362,14 +458,22 @@ public class LeaveBalanceService {
         }
         String sourceId = applicationId == null ? null : String.valueOf(applicationId);
         withOptimisticRetry(() -> {
+            expireCarriedDaysIfDue(employeeId, leaveTypeCode, year);
             LeaveBalance balance = getOrCreate(employeeId, leaveTypeCode, year);
-            if (balance.getBalanceDays().compareTo(days) < 0) {
+            BigDecimal floor = negativeBalanceFloor(leaveTypeCode, year);
+            BigDecimal debit = LeaveDays.of(days); // keeps half-day 0.5
+            BigDecimal have = LeaveDays.of(balance.getBalanceDays());
+            BigDecimal next = LeaveDays.of(have.subtract(debit));
+            if (next.compareTo(floor) < 0) {
                 throw new IllegalStateException(
                         "Insufficient leave balance for " + leaveTypeCode + ": have "
-                                + balance.getBalanceDays() + ", need " + days);
+                                + LeaveDays.format(have) + ", need " + LeaveDays.format(debit)
+                                + (floor.compareTo(BigDecimal.ZERO) < 0
+                                ? " (negative cap " + LeaveDays.format(floor) + ")"
+                                : ""));
             }
             Instant now = Instant.now();
-            balance.setBalanceDays(balance.getBalanceDays().subtract(days));
+            balance.setBalanceDays(next);
             balance.setUpdatedAt(now);
             balanceRepository.saveAndFlush(balance);
 
@@ -377,7 +481,7 @@ public class LeaveBalanceService {
                     employeeId,
                     leaveTypeCode,
                     year,
-                    days.negate(),
+                    debit.negate(),
                     "Leave approved deduction",
                     AuthContext.getEmployeeId(),
                     now,
@@ -386,6 +490,22 @@ public class LeaveBalanceService {
                     sourceId);
             return null;
         });
+    }
+
+    /**
+     * Lowest allowed running balance after approve. Category negativeCap of -2 (or 2) means
+     * balance may go down to -2.
+     */
+    private BigDecimal negativeBalanceFloor(String leaveTypeCode, int year) {
+        LeaveCategory category = leaveCategoryService.resolveForCodeOn(
+                        leaveTypeCode, LocalDate.of(year, 6, 15))
+                .or(() -> leaveCategoryService.findAllByCode(leaveTypeCode).stream().findFirst())
+                .orElse(null);
+        if (category == null || category.getNegativeCap() == null) {
+            return BigDecimal.ZERO;
+        }
+        // Whole-day overdraft only (e.g. -2 or 2 → floor -2).
+        return LeaveDays.whole(category.getNegativeCap().abs()).negate();
     }
 
     @Transactional(readOnly = true)
@@ -401,14 +521,14 @@ public class LeaveBalanceService {
             if (!leaveTypeCode.equalsIgnoreCase(bal.getLeaveTypeCode()) || bal.getYear() != fromYear) {
                 continue;
             }
-            BigDecimal carry = resolveCarryDays(bal.getBalanceDays(), category, carryMaxDays);
+            BigDecimal carry = LeaveDays.of(resolveCarryDays(bal.getBalanceDays(), category, carryMaxDays));
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("employeeId", bal.getEmployeeId());
             row.put("employeeName", employeeRepository.findById(bal.getEmployeeId()).map(EmployeeView::getFullName).orElse(null));
             row.put("fromYear", fromYear);
             row.put("toYear", toYear);
             row.put("leaveTypeCode", leaveTypeCode);
-            row.put("currentBalance", bal.getBalanceDays());
+            row.put("currentBalance", LeaveDays.of(bal.getBalanceDays()));
             row.put("carryDays", carry);
             row.put("carryMode", category != null ? category.getCarryMode() : "CAP");
             row.put("carryCapDays", category != null ? category.getCarryCapDays() : carryMaxDays);
@@ -420,6 +540,12 @@ public class LeaveBalanceService {
     @Transactional
     public Map<String, Object> yearEndConfirm(String leaveTypeCode, int fromYear, int toYear, BigDecimal carryMaxDays) {
         validateYearEnd(leaveTypeCode, fromYear, toYear);
+        LeaveCategory fromCategory = leaveCategoryService.resolveForCodeOn(
+                        leaveTypeCode, LocalDate.of(fromYear, 12, 31))
+                .or(() -> leaveCategoryService.findAllByCode(leaveTypeCode).stream().findFirst())
+                .orElse(null);
+        LocalDate carryExpiry = fromCategory != null ? fromCategory.getCarryExpiryDate() : null;
+
         List<Map<String, Object>> preview = yearEndPreview(leaveTypeCode, fromYear, toYear, carryMaxDays);
         int created = 0;
         Instant now = Instant.now();
@@ -435,22 +561,29 @@ public class LeaveBalanceService {
                 continue;
             }
             LeaveBalance next = getOrCreate(employeeId, leaveTypeCode, toYear);
-            BigDecimal before = next.getBalanceDays();
-            next.setBalanceDays(before.add(carry));
+            BigDecimal carryAmt = LeaveDays.of(carry);
+            BigDecimal before = LeaveDays.of(next.getBalanceDays());
+            next.setBalanceDays(LeaveDays.of(before.add(carryAmt)));
             next.setUpdatedAt(now);
             balanceRepository.save(next);
 
+            String sourceId = String.valueOf(fromYear);
+            String reason = "Year-end carry from " + fromYear;
+            if (carryExpiry != null) {
+                sourceId = fromYear + "|" + carryExpiry;
+                reason = reason + "; expires " + carryExpiry;
+            }
             writeLedger(
                     employeeId,
                     leaveTypeCode,
                     toYear,
-                    carry,
-                    "Year-end carry from " + fromYear,
+                    carryAmt,
+                    reason,
                     actorId,
                     now,
                     carryKey,
                     LeaveBalanceLedger.SOURCE_CARRY,
-                    String.valueOf(fromYear));
+                    sourceId);
             created++;
         }
         auditService.record(actorId, "YEAR_END_CARRY", "LeaveBalance",
@@ -550,15 +683,15 @@ public class LeaveBalanceService {
                 case "NONE" -> BigDecimal.ZERO;
                 case "ALL" -> balance.max(BigDecimal.ZERO);
                 case "CAP" -> {
-                    BigDecimal cap = category.getCarryCapDays() != null ? category.getCarryCapDays()
-                            : (paramCap != null ? paramCap : new BigDecimal("5"));
-                    yield balance.min(cap).max(BigDecimal.ZERO);
+                    BigDecimal cap = LeaveDays.of(category.getCarryCapDays() != null ? category.getCarryCapDays()
+                            : (paramCap != null ? paramCap : new BigDecimal("5")));
+                    yield LeaveDays.of(balance.min(cap).max(BigDecimal.ZERO));
                 }
                 default -> BigDecimal.ZERO;
             };
         }
-        BigDecimal cap = paramCap == null ? new BigDecimal("5") : paramCap;
-        return balance.min(cap).max(BigDecimal.ZERO);
+        BigDecimal cap = LeaveDays.of(paramCap == null ? new BigDecimal("5") : paramCap);
+        return LeaveDays.of(balance.min(cap).max(BigDecimal.ZERO));
     }
 
     @Transactional
@@ -575,12 +708,17 @@ public class LeaveBalanceService {
             return;
         }
         LeaveBalance balance = getOrCreate(employeeId, leaveTypeCode, year);
-        BigDecimal next = balance.getBalanceDays().add(delta);
+        BigDecimal deltaAmt = LeaveDays.of(delta);
+        if (deltaAmt.compareTo(BigDecimal.ZERO) == 0) {
+            return;
+        }
+        BigDecimal next = LeaveDays.of(LeaveDays.of(balance.getBalanceDays()).add(deltaAmt));
         if (next.compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalStateException(
                     "Insufficient leave balance for system adjust " + leaveTypeCode
-                            + " employee " + employeeId + ": have " + balance.getBalanceDays()
-                            + ", delta " + delta);
+                            + " employee " + employeeId + ": have "
+                            + LeaveDays.format(balance.getBalanceDays())
+                            + ", delta " + LeaveDays.format(deltaAmt));
         }
         Instant now = Instant.now();
         balance.setBalanceDays(next);
@@ -591,7 +729,7 @@ public class LeaveBalanceService {
                 employeeId,
                 leaveTypeCode,
                 year,
-                delta,
+                deltaAmt,
                 reason == null ? "system-adjust" : reason,
                 null,
                 now,
@@ -600,36 +738,234 @@ public class LeaveBalanceService {
                 sourceId);
     }
 
+    /**
+     * Breakdown for payroll/UI. Ensures:
+     * {@code balanceDays = quota + carried + adjustments − taken}
+     * and {@code availableDays = balanceDays − pending}.
+     */
+    @Transactional
     public LeaveBalanceResponse toBreakdown(LeaveBalance b) {
         String code = b.getLeaveTypeCode();
         int year = b.getYear();
+        expireCarriedDaysIfDue(b.getEmployeeId(), code, year);
+        LeaveBalance fresh = balanceRepository
+                .findByEmployeeIdAndLeaveTypeCodeAndYear(b.getEmployeeId(), code, year)
+                .orElse(b);
+
+        // Heal half-day quantization on the running balance first.
+        BigDecimal whole = LeaveDays.of(fresh.getBalanceDays());
+        if (fresh.getBalanceDays() == null || fresh.getBalanceDays().compareTo(whole) != 0) {
+            fresh.setBalanceDays(whole);
+            fresh.setUpdatedAt(Instant.now());
+            balanceRepository.save(fresh);
+        }
+
+        backfillBlankSourceTypes(fresh.getEmployeeId(), code, year);
+        reconcileLedgerToRunningBalance(fresh);
+
+        fresh = balanceRepository
+                .findByEmployeeIdAndLeaveTypeCodeAndYear(fresh.getEmployeeId(), code, year)
+                .orElse(fresh);
+
         String name = leaveTypeRepository.findByCodeIgnoreCase(code).map(LeaveType::getName).orElse(code);
+        LeaveLedgerMath.Parts parts = LeaveLedgerMath.classify(
+                ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(fresh.getEmployeeId()),
+                code,
+                year);
+        BigDecimal pending = pendingDays(fresh.getEmployeeId(), code, year);
+        return LeaveBalanceResponse.bare(
+                fresh, name, parts.quota(), parts.carried(), parts.adjustments(), parts.taken(), pending);
+    }
 
-        BigDecimal quota = BigDecimal.ZERO;
-        BigDecimal carried = BigDecimal.ZERO;
-        BigDecimal adjustments = BigDecimal.ZERO;
-        BigDecimal taken = BigDecimal.ZERO;
+    /**
+     * Align ledger composition with {@code balance_days} without changing the running balance.
+     * Missing OPENING for legacy seed rows is back-filled; residual gaps become ADJUST.
+     */
+    @Transactional
+    public void reconcileLedgerToRunningBalance(LeaveBalance balance) {
+        if (balance == null || balance.getEmployeeId() == null || balance.getLeaveTypeCode() == null) {
+            return;
+        }
+        Long employeeId = balance.getEmployeeId();
+        String code = balance.getLeaveTypeCode();
+        int year = balance.getYear();
 
-        for (LeaveBalanceLedger l : ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(b.getEmployeeId())) {
-            if (!code.equalsIgnoreCase(l.getLeaveTypeCode()) || l.getYear() != year) continue;
-            BigDecimal d = l.getDeltaDays() == null ? BigDecimal.ZERO : l.getDeltaDays();
-            String src = l.getSourceType() == null ? "" : l.getSourceType().toUpperCase(Locale.ROOT);
-            switch (src) {
-                case LeaveBalanceLedger.SOURCE_OPENING, LeaveBalanceLedger.SOURCE_QUOTA -> quota = quota.add(d);
-                case LeaveBalanceLedger.SOURCE_CARRY -> carried = carried.add(d);
-                case LeaveBalanceLedger.SOURCE_ADJUST, LeaveBalanceLedger.SOURCE_COVER -> adjustments = adjustments.add(d);
-                case LeaveBalanceLedger.SOURCE_APPROVE -> taken = taken.add(d.abs());
-                case LeaveBalanceLedger.SOURCE_CANCEL -> taken = taken.subtract(d.abs());
-                default -> {
-                    // unknown: treat positive as adjustment-like for display safety
-                    if (d.compareTo(BigDecimal.ZERO) >= 0) adjustments = adjustments.add(d);
-                    else taken = taken.add(d.abs());
-                }
+        List<LeaveBalanceLedger> ledgers = ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId).stream()
+                .filter(l -> code.equalsIgnoreCase(l.getLeaveTypeCode()) && l.getYear() == year)
+                .toList();
+
+        LeaveLedgerMath.Parts parts = LeaveLedgerMath.classify(ledgers, code, year);
+        BigDecimal stored = LeaveDays.of(balance.getBalanceDays());
+        BigDecimal ledgerNet = parts.netBalance();
+        BigDecimal gap = LeaveDays.of(stored.subtract(ledgerNet));
+        if (gap.compareTo(BigDecimal.ZERO) == 0) {
+            return;
+        }
+
+        boolean hasQuotaGrant = ledgers.stream()
+                .anyMatch(l -> LeaveLedgerMath.isQuotaGrant(LeaveLedgerMath.resolveSource(l)));
+
+        Instant now = Instant.now();
+        String openKey = "OPENING:" + employeeId + ":" + code + ":" + year;
+        if (!hasQuotaGrant
+                && gap.compareTo(BigDecimal.ZERO) > 0
+                && ledgerRepository.findByOperationKey(openKey).isEmpty()) {
+            writeLedger(
+                    employeeId,
+                    code,
+                    year,
+                    gap,
+                    "Reconciled opening to running balance",
+                    null,
+                    now,
+                    openKey,
+                    LeaveBalanceLedger.SOURCE_OPENING,
+                    code);
+            return;
+        }
+
+        String reconKey = "RECONCILE:" + employeeId + ":" + code + ":" + year;
+        if (ledgerRepository.findByOperationKey(reconKey).isPresent()) {
+            reconKey = reconKey + ":" + now.toEpochMilli();
+        }
+        writeLedger(
+                employeeId,
+                code,
+                year,
+                gap,
+                "Reconcile ledger to running balance",
+                null,
+                now,
+                reconKey,
+                LeaveBalanceLedger.SOURCE_ADJUST,
+                code);
+    }
+
+    /** Persist inferred source_type for legacy null/blank ledger rows (idempotent). */
+    private void backfillBlankSourceTypes(Long employeeId, String leaveTypeCode, int year) {
+        for (LeaveBalanceLedger l : ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId)) {
+            if (!leaveTypeCode.equalsIgnoreCase(l.getLeaveTypeCode()) || l.getYear() != year) {
+                continue;
+            }
+            if (l.getSourceType() != null && !l.getSourceType().isBlank()) {
+                continue;
+            }
+            String inferred = LeaveLedgerMath.resolveSource(l);
+            l.setSourceType(inferred);
+            if (l.getDeltaDays() != null) {
+                l.setDeltaDays(LeaveDays.of(l.getDeltaDays()));
+            }
+            ledgerRepository.save(l);
+        }
+    }
+
+    /**
+     * Payroll / HR: reconcile every balance for a year so formula matches running days.
+     * @return number of balances that needed a ledger correction
+     */
+    @Transactional
+    public int reconcileAllForYear(Integer year) {
+        int y = year == null ? LocalDate.now().getYear() : year;
+        int fixed = 0;
+        for (LeaveBalance bal : balanceRepository.findAll()) {
+            if (bal.getYear() != y) {
+                continue;
+            }
+            LeaveLedgerMath.Parts before = LeaveLedgerMath.classify(
+                    ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(bal.getEmployeeId()),
+                    bal.getLeaveTypeCode(),
+                    bal.getYear());
+            BigDecimal gap = LeaveDays.of(LeaveDays.of(bal.getBalanceDays()).subtract(before.netBalance()));
+            backfillBlankSourceTypes(bal.getEmployeeId(), bal.getLeaveTypeCode(), bal.getYear());
+            reconcileLedgerToRunningBalance(bal);
+            if (gap.compareTo(BigDecimal.ZERO) != 0) {
+                fixed++;
             }
         }
-        if (taken.compareTo(BigDecimal.ZERO) < 0) taken = BigDecimal.ZERO;
-        BigDecimal pending = pendingDays(b.getEmployeeId(), code, year);
-        return LeaveBalanceResponse.bare(b, name, quota, carried, adjustments, taken, pending);
+        return fixed;
+    }
+
+    /**
+     * When a CARRY ledger's encoded expiry date has passed, remove unused carried days
+     * without touching the period's OPENING/QUOTA entitlement.
+     * CARRY sourceId formats: {@code fromYear} or {@code fromYear|YYYY-MM-DD}.
+     */
+    @Transactional
+    public void expireCarriedDaysIfDue(Long employeeId, String leaveTypeCode, int year) {
+        if (employeeId == null || leaveTypeCode == null || leaveTypeCode.isBlank()) {
+            return;
+        }
+        LocalDate today = LocalDate.now();
+        List<LeaveBalanceLedger> ledgers = ledgerRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId).stream()
+                .filter(l -> leaveTypeCode.equalsIgnoreCase(l.getLeaveTypeCode()) && l.getYear() == year)
+                .toList();
+
+        LeaveLedgerMath.Parts parts = LeaveLedgerMath.classify(ledgers, leaveTypeCode, year);
+        // Protect remaining annual quota so expiry only burns unused carry.
+        BigDecimal protectedFloor = parts.quota().subtract(parts.taken()).max(BigDecimal.ZERO);
+
+        Instant now = Instant.now();
+        for (LeaveBalanceLedger carry : ledgers) {
+            if (!LeaveBalanceLedger.SOURCE_CARRY.equalsIgnoreCase(
+                    carry.getSourceType() == null ? "" : carry.getSourceType())) {
+                continue;
+            }
+            LocalDate expiry = parseCarryExpiry(carry.getSourceId());
+            if (expiry == null || today.isBefore(expiry)) {
+                continue;
+            }
+            String expireKey = "EXPIRE:" + (carry.getOperationKey() == null ? carry.getId() : carry.getOperationKey());
+            if (ledgerRepository.findByOperationKey(expireKey).isPresent()) {
+                continue;
+            }
+            BigDecimal carryAmt = LeaveDays.of(carry.getDeltaDays());
+            if (carryAmt.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            LeaveBalance balance = balanceRepository
+                    .findByEmployeeIdAndLeaveTypeCodeAndYear(employeeId, leaveTypeCode, year)
+                    .orElse(null);
+            if (balance == null) {
+                continue;
+            }
+            BigDecimal have = LeaveDays.of(balance.getBalanceDays());
+            BigDecimal burnable = have.subtract(LeaveDays.of(protectedFloor)).max(BigDecimal.ZERO);
+            BigDecimal toExpire = LeaveDays.of(carryAmt.min(burnable));
+            if (toExpire.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            balance.setBalanceDays(LeaveDays.of(have.subtract(toExpire)));
+            balance.setUpdatedAt(now);
+            balanceRepository.save(balance);
+            writeLedger(
+                    employeeId,
+                    leaveTypeCode,
+                    year,
+                    toExpire.negate(),
+                    "Carry expired on " + expiry,
+                    null,
+                    now,
+                    expireKey,
+                    LeaveBalanceLedger.SOURCE_EXPIRE,
+                    carry.getSourceId());
+            protectedFloor = protectedFloor; // unchanged — quota floor stays
+        }
+    }
+
+    private static LocalDate parseCarryExpiry(String sourceId) {
+        if (sourceId == null || sourceId.isBlank()) {
+            return null;
+        }
+        String s = sourceId.trim();
+        int pipe = s.indexOf('|');
+        if (pipe < 0 || pipe + 1 >= s.length()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(s.substring(pipe + 1).trim());
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private LeaveBalance getOrCreate(Long employeeId, String leaveTypeCode, int year) {

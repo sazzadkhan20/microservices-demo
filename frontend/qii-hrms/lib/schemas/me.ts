@@ -21,6 +21,16 @@ export const meSchema = z.object({
   locationId: z.union([z.number(), z.string()]).nullable().optional(),
   locationName: z.string().nullable().optional(),
   locationTimeZone: z.string().nullable().optional(),
+  /** People workPattern (LOCATION_DEFAULT / FIXED / HOURLY / …). */
+  workPattern: z.string().nullable().optional(),
+  /** Resolved schedule mode (EMPLOYEE → TEAM → LOCATION). HOURLY ⇒ no day-based leave (FR-LV-03). */
+  scheduleMode: z.string().nullable().optional(),
+  /**
+   * False when the caller's resolved work schedule is HOURLY.
+   * Pay type HOURLY with a FIXED/day schedule remains eligible.
+   * Default true so older /me payloads keep showing leave until BE is upgraded.
+   */
+  leaveEligible: z.boolean().optional().default(true),
 });
 
 export type Me = z.infer<typeof meSchema>;

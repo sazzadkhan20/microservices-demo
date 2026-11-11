@@ -36,7 +36,9 @@ public record LeaveApplicationResponse(
         String halfDayPart,
         String attachmentRef,
         boolean teamClashAlert,
-        Map<String, Object> warnings
+        Map<String, Object> warnings,
+        /** STEP | ON_BEHALF | null when not in caller's pending queue. */
+        String decisionAuthority
 ) {
     public record ApprovalStepView(
             int stepOrder,
@@ -47,7 +49,8 @@ public record LeaveApplicationResponse(
             String comment,
             Instant decidedAt,
             String resolver,
-            Long expectedApproverId
+            Long expectedApproverId,
+            boolean actedOnBehalf
     ) {
         public static ApprovalStepView from(LeaveApproval a) {
             return new ApprovalStepView(
@@ -59,12 +62,18 @@ public record LeaveApplicationResponse(
                     a.getCommentText(),
                     a.getDecidedAt(),
                     a.getResolver(),
-                    a.getExpectedApproverId()
+                    a.getExpectedApproverId(),
+                    a.isActedOnBehalf()
             );
         }
     }
 
     public static LeaveApplicationResponse from(LeaveApplication app, List<LeaveApproval> approvals) {
+        return from(app, approvals, null);
+    }
+
+    public static LeaveApplicationResponse from(
+            LeaveApplication app, List<LeaveApproval> approvals, String decisionAuthority) {
         return new LeaveApplicationResponse(
                 app.getId(),
                 app.getEmployeeId(),
@@ -92,7 +101,8 @@ public record LeaveApplicationResponse(
                 app.getHalfDayPart(),
                 app.getAttachmentRef(),
                 app.isTeamClashAlert(),
-                app.getWarnings()
+                app.getWarnings(),
+                decisionAuthority
         );
     }
 }

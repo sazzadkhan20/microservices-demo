@@ -55,6 +55,10 @@ public class LeaveApproval {
     @Column(name = "expected_approver_id")
     private Long expectedApproverId;
 
+    /** True when an admin/superadmin decided this step on the expected approver's behalf (idle). */
+    @Column(name = "acted_on_behalf", nullable = false)
+    private boolean actedOnBehalf;
+
     public Long getId() {
         return id;
     }
@@ -131,4 +135,7 @@ public class LeaveApproval {
 
     public Long getExpectedApproverId() { return expectedApproverId; }
     public void setExpectedApproverId(Long expectedApproverId) { this.expectedApproverId = expectedApproverId; }
+
+    public boolean isActedOnBehalf() { return actedOnBehalf; }
+    public void setActedOnBehalf(boolean actedOnBehalf) { this.actedOnBehalf = actedOnBehalf; }
 }

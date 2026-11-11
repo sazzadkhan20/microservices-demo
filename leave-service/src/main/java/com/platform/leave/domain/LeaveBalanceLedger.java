@@ -21,6 +21,10 @@ public class LeaveBalanceLedger {
     public static final String SOURCE_CARRY = "CARRY";
     public static final String SOURCE_OPENING = "OPENING";
     public static final String SOURCE_COVER = "COVER";
+    /** Payroll cover undo — classified with COVER for formula adjustments. */
+    public static final String SOURCE_COVER_REVERSAL = "COVER_REVERSAL";
+    /** Unused carried days removed after category carryExpiryDate. */
+    public static final String SOURCE_EXPIRE = "EXPIRE";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

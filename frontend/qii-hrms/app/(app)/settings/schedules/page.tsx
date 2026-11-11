@@ -1,9 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
+import { DataTable } from "@/components/ui/DataTable";
 import { FormField } from "@/components/ui/FormField";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { useToast } from "@/components/ui/Toast";
@@ -11,8 +12,7 @@ import { ScheduleEditorModal, DAYS, parseDays, type ScheduleEditorTarget } from 
 import { api, apiFetch } from "@/lib/api/client";
 import { byId, useEmployeesLookup, useLocations, useTeams, type Rec } from "@/lib/api/lookups";
 import { fmtNumber, str } from "@/lib/format";
-import { scheduleRowSchema } from "@/lib/schemas/admin";
-import { pageResponseSchema } from "@/lib/schemas/page";
+import { scheduleRowSchema, type ScheduleRow } from "@/lib/schemas/admin";
 
 type ScopeFilter = "ALL" | "LOCATION" | "TEAM" | "EMPLOYEE";
 
@@ -37,29 +37,28 @@ export default function SchedulesPage() {
   const teamName = useMemo(() => byId(teams.data, (l) => l.name), [teams.data]);
   const empName = useMemo(() => byId(employees.data, (l) => l.fullName || `#${l.id}`), [employees.data]);
 
-  const listQ = useQuery({
-    queryKey: ["work-schedules", "all"],
-    queryFn: async ({ signal }) => {
-      const data = await apiFetch(api.hrms("work-schedules"), {
-        query: { page: 1, size: 200 },
-        signal,
+  // Backfill missing LOCATION base schedules (idempotent; never overwrites existing hours).
+  useEffect(() => {
+    if (!canManage || !locations.data?.length) return;
+    let cancelled = false;
+    void apiFetch(api.hrms("work-schedules/ensure-location-defaults"), {
+      method: "POST",
+      body: { locationIds: locations.data.map((l) => l.id) },
+    })
+      .then(() => {
+        if (!cancelled) void qc.invalidateQueries({ queryKey: ["work-schedules"] });
+      })
+      .catch(() => {
+        /* create path still seeds on new locations */
       });
-      const parsed = pageResponseSchema(scheduleRowSchema).safeParse(data);
-      if (!parsed.success) {
-        const content = Array.isArray((data as { content?: unknown })?.content)
-          ? ((data as { content: Rec[] }).content as Rec[])
-          : [];
-        if (content.length) return { content, page: 1, size: 200, totalElements: content.length, totalPages: 1 };
-        throw new Error("Schedules response shape was unexpected");
-      }
-      return parsed.data;
-    },
-    enabled: canView,
-  });
+    return () => {
+      cancelled = true;
+    };
+  }, [canManage, locations.data, qc]);
 
   const showEmployeeFilter = scopeFilter === "ALL" || scopeFilter === "EMPLOYEE";
+  const resolveEmployee = showEmployeeFilter && !!employeeFilter;
 
-  /** When an employee is picked, show the single schedule that wins for them (person → team → location). */
   const resolveQ = useQuery({
     queryKey: ["work-schedule-resolve", employeeFilter],
     queryFn: ({ signal }) =>
@@ -67,44 +66,22 @@ export default function SchedulesPage() {
         api.hrms(`work-schedules/resolve/${employeeFilter}`),
         { signal },
       ),
-    enabled: canView && showEmployeeFilter && !!employeeFilter,
+    enabled: canView && resolveEmployee,
   });
 
-  const rows = useMemo(() => {
-    const all = (listQ.data?.content ?? []) as Rec[];
-
-    // Employee picked: one resolved row only (personal if set, else team, else location default).
-    if (showEmployeeFilter && employeeFilter) {
-      const resolved = resolveQ.data?.resolved;
-      if (!resolved) return [];
-      // Prefer the live list row (has id for edit/remove) when it matches the resolved source.
-      const source = String(resolveQ.data?.source ?? resolved.scopeType ?? "").toUpperCase();
-      const sourceId = String(resolveQ.data?.sourceId ?? resolved.scopeId ?? "");
-      const fromList = all.find(
-        (r) =>
-          String(r.scopeType).toUpperCase() === source && String(r.scopeId) === sourceId,
-      );
-      return [fromList ?? ({ ...resolved, scopeType: source, scopeId: sourceId } as Rec)];
+  const tableFilters = useMemo(() => {
+    const f: Record<string, string> = {};
+    if (scopeFilter === "LOCATION") {
+      f.scopeType = "LOCATION";
+      if (locationFilter) f.scopeId = locationFilter;
+    } else if (scopeFilter === "TEAM") {
+      f.scopeType = "TEAM";
+      if (teamFilter) f.scopeId = teamFilter;
+    } else if (scopeFilter === "EMPLOYEE") {
+      f.scopeType = "EMPLOYEE";
     }
-
-    const byScope =
-      scopeFilter === "ALL" ? all : all.filter((r) => String(r.scopeType).toUpperCase() === scopeFilter);
-    if (scopeFilter === "LOCATION" && locationFilter) {
-      return byScope.filter((r) => String(r.scopeId) === locationFilter);
-    }
-    if (scopeFilter === "TEAM" && teamFilter) {
-      return byScope.filter((r) => String(r.scopeId) === teamFilter);
-    }
-    return byScope;
-  }, [
-    listQ.data,
-    scopeFilter,
-    locationFilter,
-    teamFilter,
-    employeeFilter,
-    showEmployeeFilter,
-    resolveQ.data,
-  ]);
+    return f;
+  }, [scopeFilter, locationFilter, teamFilter]);
 
   const rulesQ = useQuery({
     queryKey: ["work-schedule-rules"],
@@ -115,7 +92,7 @@ export default function SchedulesPage() {
   });
   const resolveOrder = (rulesQ.data?.resolveOrder ?? ["EMPLOYEE", "TEAM", "LOCATION"]).join(" → ");
 
-  function whoLabel(r: Rec) {
+  function whoLabel(r: Rec | ScheduleRow) {
     const id = String(r.scopeId);
     const t = String(r.scopeType).toUpperCase();
     const name =
@@ -149,19 +126,47 @@ export default function SchedulesPage() {
     );
   }
 
-  const empResolvedSource =
-    showEmployeeFilter && employeeFilter
-      ? String(resolveQ.data?.source ?? "").toUpperCase()
-      : "";
-  const empNameLabel = employeeFilter
-    ? empName.get(employeeFilter) ?? `#${employeeFilter}`
-    : "";
+  const empResolvedSource = resolveEmployee ? String(resolveQ.data?.source ?? "").toUpperCase() : "";
+  const empNameLabel = employeeFilter ? empName.get(employeeFilter) ?? `#${employeeFilter}` : "";
+  const resolvedRow = resolveEmployee ? (resolveQ.data?.resolved as Rec | undefined) : undefined;
+
+  function renderScheduleCells(r: Rec | ScheduleRow, appliesLabel: string) {
+    const hourly = String(r.mode).toUpperCase() === "HOURLY";
+    const on = parseDays(r.workingDays);
+    return {
+      applies: <b>{appliesLabel}</b>,
+      mode: <span className="pill info">{str(r.mode)}</span>,
+      days: hourly ? (
+        <span className="muted">No fixed days</span>
+      ) : (
+        <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+          {DAYS.map((d) => (
+            <span key={d} className={`code ${on.includes(d) ? "c-P" : "c-WO"}`} style={{ minWidth: 34 }}>
+              {d}
+            </span>
+          ))}
+        </div>
+      ),
+      hours: (
+        <span className="mono">
+          {hourly
+            ? r.weeklyHours == null
+              ? "—"
+              : `${fmtNumber(r.weeklyHours)} h/wk`
+            : `${str(r.startTime)}–${str(r.endTime)}`}
+        </span>
+      ),
+      grace: hourly ? "—" : `${str(r.graceMinutes, "0")} min`,
+      half: hourly || r.halfDayHours == null ? "—" : `${fmtNumber(r.halfDayHours)} h`,
+      cutoff: <span className="mono">{hourly ? "—" : str(r.checkoutCutoff, "—")}</span>,
+    };
+  }
 
   return (
     <div className="stack">
       <PageHeader
         title="Work schedules"
-        subtitle={`Resolve order ${resolveOrder}. Saving a location or team schedule never changes an existing personal schedule.`}
+        subtitle={`Resolve order ${resolveOrder}. Locations always show their base hours; team/person rows appear only when they have an override.`}
         actions={
           canManage ? (
             <button
@@ -198,8 +203,8 @@ export default function SchedulesPage() {
           [
             ["ALL", "All"],
             ["LOCATION", "Locations"],
-            ["TEAM", "Teams"],
-            ["EMPLOYEE", "People"],
+            ["TEAM", "Team overrides"],
+            ["EMPLOYEE", "Person overrides"],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -214,15 +219,6 @@ export default function SchedulesPage() {
             {label}
           </button>
         ))}
-        {canManage && scopeFilter === "ALL" ? (
-          <button
-            type="button"
-            className="btn sm"
-            onClick={() => setEditor({ mode: "new", preferScope: "LOCATION" })}
-          >
-            + Location schedule
-          </button>
-        ) : null}
       </div>
 
       <div className="card">
@@ -269,10 +265,9 @@ export default function SchedulesPage() {
             </FormField>
           ) : null}
         </div>
-        {showEmployeeFilter && employeeFilter && resolveQ.data ? (
+        {resolveEmployee && resolveQ.data ? (
           <p className="small muted" style={{ marginTop: 8 }}>
-            {empNameLabel}: effective source{" "}
-            <b>{empResolvedSource || "none"}</b>
+            {empNameLabel}: effective source <b>{empResolvedSource || "none"}</b>
             {resolveQ.data.workPattern ? (
               <>
                 {" "}
@@ -283,116 +278,218 @@ export default function SchedulesPage() {
         ) : null}
       </div>
 
-      <div className="card">
-        {listQ.error ? <div className="notice bad">{(listQ.error as Error).message}</div> : null}
-        {showEmployeeFilter && employeeFilter && resolveQ.isLoading ? (
-          <div className="notice">Resolving schedule for {empNameLabel}…</div>
-        ) : null}
-        <div className="tbl-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Applies to</th>
-                <th>Mode</th>
-                <th>Working days</th>
-                <th>Office hours</th>
-                <th className="n">Grace</th>
-                <th className="n">Half day under</th>
-                <th>Check-out cut-off</th>
-                {canManage ? <th></th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={canManage ? 8 : 7} className="empty">
-                    {listQ.isLoading || (employeeFilter && resolveQ.isLoading)
-                      ? "Loading…"
-                      : employeeFilter
-                        ? `No schedule resolved for ${empNameLabel} — set a location/team schedule or a personal override.`
-                        : "No schedules yet — add a location schedule (e.g. BD Sun–Thu 10:00–18:00), then team or person overrides."}
-                  </td>
-                </tr>
-              ) : (
-                rows.map((r) => {
+      <div className="card stack">
+        {resolveEmployee ? (
+          <>
+            {resolveQ.error ? <div className="notice bad">{(resolveQ.error as Error).message}</div> : null}
+            <div className="tbl-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Applies to</th>
+                    <th>Mode</th>
+                    <th>Working days</th>
+                    <th>Office hours</th>
+                    <th className="n">Grace</th>
+                    <th className="n">Half day under</th>
+                    <th>Check-out cut-off</th>
+                    {canManage ? <th></th> : null}
+                  </tr>
+                </thead>
+                <tbody>
+                  {!resolvedRow ? (
+                    <tr>
+                      <td colSpan={canManage ? 8 : 7} className="empty">
+                        {resolveQ.isLoading
+                          ? `Resolving schedule for ${empNameLabel}…`
+                          : `No schedule resolved for ${empNameLabel} — set a location schedule or a team/person override.`}
+                      </td>
+                    </tr>
+                  ) : (
+                    (() => {
+                      const who = whoLabel(resolvedRow);
+                      const appliesLabel =
+                        empResolvedSource === "EMPLOYEE"
+                          ? `Person · ${empNameLabel}`
+                          : `${who.kind} · ${who.name} (via ${empNameLabel})`;
+                      const cells = renderScheduleCells(resolvedRow, appliesLabel);
+                      return (
+                        <tr key={String(resolvedRow.id ?? `${resolvedRow.scopeType}-${resolvedRow.scopeId}`)}>
+                          <td>{cells.applies}</td>
+                          <td>{cells.mode}</td>
+                          <td>{cells.days}</td>
+                          <td>{cells.hours}</td>
+                          <td className="n">{cells.grace}</td>
+                          <td className="n">{cells.half}</td>
+                          <td>{cells.cutoff}</td>
+                          {canManage ? (
+                            <td>
+                              <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
+                                <button
+                                  type="button"
+                                  className="btn sm"
+                                  onClick={() => setEditor({ mode: "edit", row: resolvedRow })}
+                                >
+                                  Edit
+                                </button>
+                                {String(resolvedRow.scopeType).toUpperCase() !== "LOCATION" ? (
+                                  <button
+                                    type="button"
+                                    className="btn sm danger"
+                                    onClick={() => setRemoveRow(resolvedRow)}
+                                  >
+                                    Remove
+                                  </button>
+                                ) : null}
+                              </div>
+                            </td>
+                          ) : null}
+                        </tr>
+                      );
+                    })()
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <DataTable<ScheduleRow>
+            queryKey={`work-schedules-${scopeFilter}-${locationFilter}-${teamFilter}`}
+            path={api.hrms("work-schedules")}
+            itemSchema={scheduleRowSchema}
+            filters={tableFilters}
+            search
+            pageSizes={[10, 20, 50, 100]}
+            initialSize={20}
+            emptyText={
+              scopeFilter === "TEAM"
+                ? "No team overrides yet — locations use their own base hours until a team override is added."
+                : scopeFilter === "EMPLOYEE"
+                  ? "No person overrides yet."
+                  : "No location schedules yet — create a location in Organization to seed Mon–Fri 09:00–17:00 defaults."
+            }
+            rowKey={(r) => String(r.id)}
+            columns={[
+              {
+                key: "scopeType",
+                header: "Applies to",
+                sortable: true,
+                render: (r) => {
                   const who = whoLabel(r);
+                  return <b>{`${who.kind} · ${who.name}`}</b>;
+                },
+              },
+              {
+                key: "mode",
+                header: "Mode",
+                sortable: true,
+                render: (r) => <span className="pill info">{str(r.mode)}</span>,
+              },
+              {
+                key: "workingDays",
+                header: "Working days",
+                render: (r) => {
                   const hourly = String(r.mode).toUpperCase() === "HOURLY";
                   const on = parseDays(r.workingDays);
-                  const isResolvedView = !!employeeFilter;
-                  const appliesLabel = isResolvedView
-                    ? empResolvedSource === "EMPLOYEE"
-                      ? `Person · ${empNameLabel}`
-                      : `${who.kind} · ${who.name} (via ${empNameLabel})`
-                    : `${who.kind} · ${who.name}`;
+                  if (hourly) return <span className="muted">No fixed days</span>;
                   return (
-                    <tr key={String(r.id ?? `${r.scopeType}-${r.scopeId}`)}>
-                      <td>
-                        <b>{appliesLabel}</b>
-                      </td>
-                      <td>
-                        <span className="pill info">{str(r.mode)}</span>
-                      </td>
-                      <td>
-                        {hourly ? (
-                          <span className="muted">No fixed days</span>
-                        ) : (
-                          <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
-                            {DAYS.map((d) => (
-                              <span
-                                key={d}
-                                className={`code ${on.includes(d) ? "c-P" : "c-WO"}`}
-                                style={{ minWidth: 34 }}
-                              >
-                                {d}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </td>
-                      <td className="mono">
-                        {hourly
-                          ? r.weeklyHours == null
-                            ? "—"
-                            : `${fmtNumber(r.weeklyHours)} h/wk`
-                          : `${str(r.startTime)}–${str(r.endTime)}`}
-                      </td>
-                      <td className="n">{hourly ? "—" : `${str(r.graceMinutes, "0")} min`}</td>
-                      <td className="n">
-                        {hourly || r.halfDayHours == null ? "—" : `${fmtNumber(r.halfDayHours)} h`}
-                      </td>
-                      <td className="mono">{hourly ? "—" : str(r.checkoutCutoff, "—")}</td>
-                      {canManage ? (
-                        <td>
-                          <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
+                    <div className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+                      {DAYS.map((d) => (
+                        <span
+                          key={d}
+                          className={`code ${on.includes(d) ? "c-P" : "c-WO"}`}
+                          style={{ minWidth: 34 }}
+                        >
+                          {d}
+                        </span>
+                      ))}
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "startTime",
+                header: "Office hours",
+                sortable: true,
+                render: (r) => {
+                  const hourly = String(r.mode).toUpperCase() === "HOURLY";
+                  return (
+                    <span className="mono">
+                      {hourly
+                        ? r.weeklyHours == null
+                          ? "—"
+                          : `${fmtNumber(r.weeklyHours)} h/wk`
+                        : `${str(r.startTime)}–${str(r.endTime)}`}
+                    </span>
+                  );
+                },
+              },
+              {
+                key: "graceMinutes",
+                header: "Grace",
+                className: "n",
+                render: (r) =>
+                  String(r.mode).toUpperCase() === "HOURLY" ? "—" : `${str(r.graceMinutes, "0")} min`,
+              },
+              {
+                key: "halfDayHours",
+                header: "Half day under",
+                className: "n",
+                render: (r) =>
+                  String(r.mode).toUpperCase() === "HOURLY" || r.halfDayHours == null
+                    ? "—"
+                    : `${fmtNumber(r.halfDayHours)} h`,
+              },
+              {
+                key: "checkoutCutoff",
+                header: "Check-out cut-off",
+                render: (r) => (
+                  <span className="mono">
+                    {String(r.mode).toUpperCase() === "HOURLY" ? "—" : str(r.checkoutCutoff, "—")}
+                  </span>
+                ),
+              },
+              ...(canManage
+                ? [
+                    {
+                      key: "actions",
+                      header: "",
+                      render: (r: ScheduleRow) => (
+                        <div className="row" style={{ gap: 6, justifyContent: "flex-end" }}>
+                          <button
+                            type="button"
+                            className="btn sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditor({ mode: "edit", row: r as Rec });
+                            }}
+                          >
+                            Edit
+                          </button>
+                          {String(r.scopeType).toUpperCase() !== "LOCATION" ? (
                             <button
                               type="button"
-                              className="btn sm"
-                              onClick={() => setEditor({ mode: "edit", row: r })}
+                              className="btn sm danger"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRemoveRow(r as Rec);
+                              }}
                             >
-                              Edit
+                              Remove
                             </button>
-                            {String(r.scopeType).toUpperCase() !== "LOCATION" ? (
-                              <button
-                                type="button"
-                                className="btn sm danger"
-                                onClick={() => setRemoveRow(r)}
-                              >
-                                Remove
-                              </button>
-                            ) : null}
-                          </div>
-                        </td>
-                      ) : null}
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-        <p className="small muted" style={{ marginTop: 12 }}>
-          Location is the base; team overrides location; person overrides both. Less-specific saves never rewrite a
-          more-specific row. Missing check-out cut-off defaults to office end + 6 hours.
+                          ) : null}
+                        </div>
+                      ),
+                    },
+                  ]
+                : []),
+            ]}
+          />
+        )}
+        <p className="small muted" style={{ marginTop: 4 }}>
+          Every location keeps a base schedule (new sites default to Mon–Fri 09:00–17:00, grace 15, half-day 4h,
+          cut-off 23:59). Team overrides location; person overrides both. Location rows cannot be removed — edit them
+          instead.
         </p>
       </div>
 

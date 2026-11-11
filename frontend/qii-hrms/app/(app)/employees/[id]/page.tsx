@@ -36,6 +36,7 @@ import {
   fmtDate,
   fmtDateTime,
   fmtMoney,
+  fmtLeaveDays,
   fmtNumber,
   fmtRange,
   fmtTime,
@@ -889,30 +890,45 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
 
 function LeaveTab({ empId }: { empId: string }) {
   const balances = useQuery({
-    queryKey: ["employee-balances", empId],
-    queryFn: ({ signal }) => apiFetch(api.hrms(`leave-balances/employee/${empId}`), { signal }),
+    queryKey: ["employee-balances-current", empId],
+    queryFn: ({ signal }) =>
+      apiFetch(api.hrms(`leave-balances/employee/${empId}`), {
+        query: { currentOnly: "true" },
+        signal,
+      }),
   });
   const requests = useQuery({
     queryKey: ["employee-leave", empId],
     queryFn: ({ signal }) =>
       apiFetch(api.hrms(`leave/employee/${empId}`), { query: { page: 1, size: 50 }, signal }),
   });
-  const bal = rowsOf<Rec>(balances.data);
+  const bal = rowsOf<Rec>(balances.data)
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(b.availableDays ?? b.balanceDays ?? 0) - Number(a.availableDays ?? a.balanceDays ?? 0),
+    )
+    .slice(0, 5);
   const reqs = rowsOf<Rec>(requests.data);
 
   return (
     <div className="stack">
       <div className="card stack">
         <h2>Balances</h2>
+        <p className="small muted" style={{ marginTop: -8 }}>
+          Current period only — up to 5 categories.
+        </p>
         <ErrorNote error={balances.error} />
         <div className="grid g4">
-          {bal.length === 0 ? <p className="muted">{balances.isLoading ? "Loading…" : "No balances recorded"}</p> : null}
+          {bal.length === 0 ? (
+            <p className="muted">{balances.isLoading ? "Loading…" : "No current-period balances"}</p>
+          ) : null}
           {bal.map((b) => (
-            <div key={String(b.id)} className="card" style={{ background: "var(--sunk)" }}>
+            <div key={String(b.id ?? `${b.leaveTypeCode}-${b.year}`)} className="card" style={{ background: "var(--sunk)" }}>
               <div className="stat">
-                <span className="s">{str(b.leaveTypeCode)} · {str(b.year)}</span>
-                <span className="v">{fmtNumber(b.balanceDays)}</span>
-                <span className="s">days left</span>
+                <span className="s">{str(b.leaveTypeName, str(b.leaveTypeCode))}</span>
+                <span className="v">{fmtLeaveDays(b.availableDays ?? b.balanceDays)}</span>
+                <span className="s">available{b.year != null ? ` · ${str(b.year)}` : ""}</span>
               </div>
             </div>
           ))}
@@ -944,7 +960,7 @@ function LeaveTab({ empId }: { empId: string }) {
                   <tr key={String(r.id)}>
                     <td>{str(r.leaveTypeCode)}</td>
                     <td>{fmtRange(r.startDate, r.endDate)}</td>
-                    <td className="n">{fmtNumber(r.workingDaysCounted)}</td>
+                    <td className="n">{fmtLeaveDays(r.workingDaysCounted)}</td>
                     <td>
                       <StatusPill status={r.status} />
                     </td>

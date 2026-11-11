@@ -189,6 +189,33 @@ class WorkScheduleServiceTest {
     }
 
     @Test
+    @DisplayName("ensureDefaultLocationSchedule seeds Mon–Fri 09:00–17:00 when missing")
+    void ensureDefaultLocationScheduleCreatesProductDefault() {
+        when(repository.findByScopeTypeAndScopeId("LOCATION", 3L)).thenReturn(Optional.empty());
+        WorkSchedule saved = service.ensureDefaultLocationSchedule(3L);
+        assertEquals("LOCATION", saved.getScopeType());
+        assertEquals(3L, saved.getScopeId());
+        assertEquals("FIXED", saved.getMode());
+        assertEquals("09:00", saved.getStartTime());
+        assertEquals("17:00", saved.getEndTime());
+        assertEquals(15, saved.getGraceMinutes());
+        assertEquals(0, saved.getHalfDayHours().compareTo(new BigDecimal("4")));
+        assertEquals("23:59", saved.getCheckoutCutoff());
+        verify(repository).save(any(WorkSchedule.class));
+    }
+
+    @Test
+    @DisplayName("ensureDefaultLocationSchedule does not overwrite existing location hours")
+    void ensureDefaultLocationScheduleKeepsExisting() {
+        WorkSchedule loc = sch("LOCATION", 1L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "18:00");
+        when(repository.findByScopeTypeAndScopeId("LOCATION", 1L)).thenReturn(Optional.of(loc));
+        WorkSchedule got = service.ensureDefaultLocationSchedule(1L);
+        assertEquals(loc.getId(), got.getId());
+        assertEquals("10:00", got.getStartTime());
+        verify(repository, never()).save(any());
+    }
+
+    @Test
     void hourlyCreateClearsFixedFields() {
         when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
         WorkSchedule incoming = new WorkSchedule();

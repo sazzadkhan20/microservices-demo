@@ -41,7 +41,7 @@ jobs:
       environment: ${{ steps.r.outputs.environment }}
       sha: ${{ steps.r.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: r
@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - uses: actions/setup-java@v4
@@ -108,7 +108,7 @@ jobs:
           - { service: report-service,       ports: "8085" }
           - { service: qii-frontend,         ports: "3000" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - if: matrix.service != 'qii-frontend'
@@ -221,7 +221,7 @@ jobs:
     environment:
       name: ${{ needs.plan.outputs.environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.sha }}
       - uses: actions/download-artifact@v4

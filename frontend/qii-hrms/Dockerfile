@@ -9,6 +9,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+# Git does not keep empty folders: make sure public/ exists in a clean checkout (CI), and never ship
+# the placeholder that keeps it tracked.
+RUN mkdir -p public && rm -f public/.gitkeep
 RUN npm run build
 
 FROM node:22-alpine AS runner

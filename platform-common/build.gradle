@@ -10,7 +10,7 @@ dependencies {
     api 'com.fasterxml.jackson.core:jackson-databind'
     api 'io.jsonwebtoken:jjwt-api:0.12.7'
     api 'com.zaxxer:HikariCP'
-    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.7'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.13.0'
     runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.7'
     compileOnly 'org.slf4j:slf4j-api'
     // EnvironmentPostProcessor (loads repo-root .env for IDE Run/Debug)

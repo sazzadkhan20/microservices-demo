@@ -11,7 +11,7 @@ dependencies {
     api 'io.jsonwebtoken:jjwt-api:0.12.7'
     api 'com.zaxxer:HikariCP'
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.7'
-    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.7'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.13.0'
     compileOnly 'org.slf4j:slf4j-api'
     // EnvironmentPostProcessor (loads repo-root .env for IDE Run/Debug)
     compileOnly 'org.springframework.boot:spring-boot'

@@ -76,7 +76,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
       - run: ./gradlew build --no-daemon --console=plain
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: jars
           retention-days: 7
@@ -170,7 +170,7 @@ jobs:
           push-to-registry: true
       - name: Record digest
         run: echo "${{ matrix.service }}=${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}" > digest-${{ matrix.service }}.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.service }}
           path: digest-${{ matrix.service }}.txt
@@ -204,7 +204,7 @@ jobs:
             docker buildx imagetools create -t "${IMAGE_PREFIX}-${s}:${TAG}" -t "${IMAGE_PREFIX}-${s}:prod" "${IMAGE_PREFIX}-${s}@${DIGEST}"
             echo "${s}=${IMAGE_PREFIX}-${s}@${DIGEST}" > "digest-${s}.txt"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digests-production
           path: digest-*.txt
@@ -233,7 +233,7 @@ jobs:
           cat digest-*.txt | sort > release-manifest.env
           echo "### Images (${{ needs.plan.outputs.tag }})" >> "$GITHUB_STEP_SUMMARY"
           sed 's/^/- /' release-manifest.env >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-manifest-${{ needs.plan.outputs.environment }}
           path: release-manifest.env

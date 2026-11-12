@@ -1,0 +1,61 @@
+# Time & Work read-path indexes (SRS NFR-07, measured on a 3-year / 50-employee dataset).
+# Read-path indexes only: no column, constraint or data change, so query results are identical.
+# Plain CREATE INDEX inside the changeset transaction (atomic, rolls back cleanly). The database is
+# owned by this service and Liquibase runs before it accepts traffic; at 3-year volume every build
+# takes well under a second. IF NOT EXISTS keeps the changeset safe to re-apply. See docs/DATABASE_INDEXING.md.
+databaseChangeLog:
+  - changeSet:
+      id: timework-002-idx_work_log_employee_date
+      author: qii-hrms
+      dbms: postgresql
+      comment: "WorkLogRepository findByEmployeeId* / team range: seq scan 5-7 ms -> 0.1 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_work_log_employee_date ON work_log (employee_id, work_date)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_work_log_employee_date
+  - changeSet:
+      id: timework-002-idx_attendance_work_date
+      author: qii-hrms
+      dbms: postgresql
+      comment: "findByWorkDate (team day view, dashboard, reminders loop per day): 0.56 -> 0.04 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_attendance_work_date ON attendance_record (work_date)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_attendance_work_date
+  - changeSet:
+      id: timework-002-idx_attendance_open_session
+      author: qii-hrms
+      dbms: postgresql
+      comment: "findByCheckInAtIsNotNullAndCheckOutAtIsNull (live board): seq scan 2.2 -> 0.06 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_attendance_open_session ON attendance_record (employee_id) WHERE check_in_at IS NOT NULL AND check_out_at IS NULL
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_attendance_open_session
+  - changeSet:
+      id: timework-002-idx_work_task_assignee_employee
+      author: qii-hrms
+      dbms: postgresql
+      comment: "WorkTaskAssigneeRepository.findByEmployeeId (PK leads with task_id)"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_work_task_assignee_employee ON work_task_assignee (employee_id)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_work_task_assignee_employee
+  - changeSet:
+      id: timework-002-idx_timework_audit_at
+      author: qii-hrms
+      dbms: postgresql
+      comment: "Audit federation newest-first page: sort 21 ms -> 0.06 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_timework_audit_at ON timework_audit_log (at DESC)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_timework_audit_at

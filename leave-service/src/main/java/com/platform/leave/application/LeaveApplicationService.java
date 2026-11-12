@@ -111,12 +111,36 @@ public class LeaveApplicationService {
         this.approvalChains = approvalChains;
     }
 
+    /** IN-list size per batch query (well under the PostgreSQL bind-parameter limit). */
+    private static final int APPROVAL_BATCH = 500;
+
+    /**
+     * Maps applications to responses with their approval steps, loading the steps in batches instead of one
+     * query per application. Order of applications and of steps is exactly as before
+     * ({@code findByApplicationIdOrderByStepOrderAsc} per application).
+     */
+    List<LeaveApplicationResponse> withApprovals(List<LeaveApplication> apps) {
+        if (apps.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, List<LeaveApproval>> byApp = new HashMap<>();
+        List<Long> ids = apps.stream().map(LeaveApplication::getId).distinct().toList();
+        for (int from = 0; from < ids.size(); from += APPROVAL_BATCH) {
+            List<Long> chunk = ids.subList(from, Math.min(ids.size(), from + APPROVAL_BATCH));
+            for (LeaveApproval step
+                    : approvalRepository.findByApplicationIdInOrderByApplicationIdAscStepOrderAscIdAsc(chunk)) {
+                byApp.computeIfAbsent(step.getApplicationId(), k -> new ArrayList<>()).add(step);
+            }
+        }
+        return apps.stream()
+                .map(a -> LeaveApplicationResponse.from(a, byApp.getOrDefault(a.getId(), List.of())))
+                .toList();
+    }
+
     /** Unscoped (internal use only). HTTP callers must use {@link #listForCaller()}. */
     @Transactional(readOnly = true)
     public List<LeaveApplicationResponse> listAll() {
-        return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
-                .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
-                .toList();
+        return withApprovals(applicationRepository.findAllByOrderByCreatedAtDesc());
     }
 
     /** leave:view data scope: OWN = own requests, TEAM = self + direct reports, ALL = everyone. */
@@ -124,10 +148,9 @@ public class LeaveApplicationService {
     public List<LeaveApplicationResponse> listForCaller() {
         DataScopeService.Visibility visible = dataScopeService.visibility(
                 AuthContext.requireEmployeeId(), "leave", "view");
-        return applicationRepository.findAllByOrderByCreatedAtDesc().stream()
+        return withApprovals(applicationRepository.findAllByOrderByCreatedAtDesc().stream()
                 .filter(a -> visible.allows(a.getEmployeeId()))
-                .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
-                .toList();
+                .toList());
     }
 
     /**
@@ -237,9 +260,7 @@ public class LeaveApplicationService {
     @Transactional(readOnly = true)
     public List<LeaveApplicationResponse> listForEmployee(Long employeeId) {
         dataScopeService.requireAccess(AuthContext.requireEmployeeId(), employeeId, "leave", "view");
-        return applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId).stream()
-                .map(a -> LeaveApplicationResponse.from(a, approvalRepository.findByApplicationIdOrderByStepOrderAsc(a.getId())))
-                .toList();
+        return withApprovals(applicationRepository.findByEmployeeIdOrderByCreatedAtDesc(employeeId));
     }
 
     /**

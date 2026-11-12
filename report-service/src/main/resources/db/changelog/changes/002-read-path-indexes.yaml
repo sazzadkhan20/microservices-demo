@@ -1,0 +1,17 @@
+# Report read-path indexes (SRS NFR-07, measured on a 3-year dataset).
+# Read-path indexes only: no column, constraint or data change, so query results are identical.
+# Plain CREATE INDEX inside the changeset transaction (atomic, rolls back cleanly). The database is
+# owned by this service and Liquibase runs before it accepts traffic; at 3-year volume every build
+# takes well under a second. IF NOT EXISTS keeps the changeset safe to re-apply. See docs/DATABASE_INDEXING.md.
+databaseChangeLog:
+  - changeSet:
+      id: report-002-idx_report_export_created
+      author: qii-hrms
+      dbms: postgresql
+      comment: "Export history findTop50ByOrderByCreatedAtDesc: sort 0.8 -> 0.05 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_report_export_created ON report_export (created_at DESC)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_report_export_created

@@ -11,6 +11,13 @@ import java.util.List;
 public interface LeaveApprovalRepository extends JpaRepository<LeaveApproval, Long> {
     List<LeaveApproval> findByApplicationIdOrderByStepOrderAsc(Long applicationId);
 
+    /**
+     * Batch form of {@link #findByApplicationIdOrderByStepOrderAsc} for list views (one query instead of one
+     * per application). Same per-application order: (application_id, step_order) is unique.
+     */
+    List<LeaveApproval> findByApplicationIdInOrderByApplicationIdAscStepOrderAscIdAsc(
+            java.util.Collection<Long> applicationIds);
+
     /** Prefer list — cancel rebuild must not blow up if stale duplicate steps exist. */
     List<LeaveApproval> findByApplicationIdAndStepOrderOrderByIdAsc(Long applicationId, int stepOrder);
 

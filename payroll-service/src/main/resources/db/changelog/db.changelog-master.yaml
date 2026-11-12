@@ -12,3 +12,5 @@ databaseChangeLog:
       file: db/changelog/changes/003-drop-legacy-payslips.yaml
   - include:
       file: db/changelog/changes/004-operation-hardening.yaml
+  - include:
+      file: db/changelog/changes/005-read-path-indexes.yaml

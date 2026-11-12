@@ -1,0 +1,17 @@
+# Payroll read-path indexes (SRS NFR-07, measured on a 3-year dataset).
+# Read-path indexes only: no column, constraint or data change, so query results are identical.
+# Plain CREATE INDEX inside the changeset transaction (atomic, rolls back cleanly). The database is
+# owned by this service and Liquibase runs before it accepts traffic; at 3-year volume every build
+# takes well under a second. IF NOT EXISTS keeps the changeset safe to re-apply. See docs/DATABASE_INDEXING.md.
+databaseChangeLog:
+  - changeSet:
+      id: payroll-005-idx_payroll_audit_at
+      author: qii-hrms
+      dbms: postgresql
+      comment: "Audit federation newest-first page: sort 5.9 -> 0.07 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_payroll_audit_at ON payroll_audit_log (at DESC)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_payroll_audit_at

@@ -125,7 +125,8 @@ ledger maintenance runs inside the read path) — see §4.
 1. **Leave read path** (`/leave-types`, `/leave-balances`, `/leave/my`): ≈80–145 small queries per request
    because category sync and ledger reconcile run on every GET. Optimising it means restructuring leave
    business code — deliberately not done without HR/Finance sign-off. Capacity is handled by pool sizing
-   and load shedding meanwhile.
+   and load shedding meanwhile. (Read-path indexes for 3-year volumes and the batched leave-list approval
+   load are done — see [DATABASE_INDEXING.md](DATABASE_INDEXING.md).)
 2. Service-to-service identity is still a shared service key + HS256 session JWT; production should add
    workload identity / mTLS (or a service mesh) and asymmetric session keys (audit SEC-03 / SEC-10).
 3. Distributed tracing export (OpenTelemetry) is not wired; correlation ids cover request tracing today.

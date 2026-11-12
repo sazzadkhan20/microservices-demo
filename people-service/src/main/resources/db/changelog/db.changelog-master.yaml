@@ -28,3 +28,5 @@ databaseChangeLog:
       file: db/changelog/changes/011-rbac-hr-tasks-roles-appendix-b.yaml
   - include:
       file: db/changelog/changes/012-oidc-test-gmail-mapping.yaml
+  - include:
+      file: db/changelog/changes/013-read-path-indexes.yaml

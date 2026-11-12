@@ -1,0 +1,50 @@
+# Leave read-path indexes (SRS NFR-07, measured on a 3-year / 50-employee dataset).
+# Read-path indexes only: no column, constraint or data change, so query results are identical.
+# Plain CREATE INDEX inside the changeset transaction (atomic, rolls back cleanly). The database is
+# owned by this service and Liquibase runs before it accepts traffic; at 3-year volume every build
+# takes well under a second. IF NOT EXISTS keeps the changeset safe to re-apply. See docs/DATABASE_INDEXING.md.
+databaseChangeLog:
+  - changeSet:
+      id: leave-002-idx_leave_ledger_employee_created
+      author: qii-hrms
+      dbms: postgresql
+      comment: "findByEmployeeIdOrderByCreatedAtDesc (balance history)"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_leave_ledger_employee_created ON leave_balance_ledger (employee_id, created_at DESC)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_leave_ledger_employee_created
+  - changeSet:
+      id: leave-002-idx_leave_ledger_year
+      author: qii-hrms
+      dbms: postgresql
+      comment: "findByYear (balance report): seq scan 2.2 -> 0.6 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_leave_ledger_year ON leave_balance_ledger (year)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_leave_ledger_year
+  - changeSet:
+      id: leave-002-idx_leave_ledger_operation_key_prefix
+      author: qii-hrms
+      dbms: postgresql
+      comment: "findByOperationKeyStartingWith (cover reversal / finalize): LIKE prefix cannot use the unique index under en_US collation; 1.4 -> 0.07 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_leave_ledger_operation_key_prefix ON leave_balance_ledger (operation_key text_pattern_ops) WHERE operation_key IS NOT NULL
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_leave_ledger_operation_key_prefix
+  - changeSet:
+      id: leave-002-idx_leave_audit_at
+      author: qii-hrms
+      dbms: postgresql
+      comment: "Audit federation newest-first page: sort 6.9 -> 0.07 ms"
+      changes:
+        - sql:
+            sql: CREATE INDEX IF NOT EXISTS idx_leave_audit_at ON leave_audit_log (at DESC)
+      rollback:
+        - sql:
+            sql: DROP INDEX IF EXISTS idx_leave_audit_at

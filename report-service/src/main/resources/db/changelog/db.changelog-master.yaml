@@ -6,3 +6,5 @@ databaseChangeLog:
       file: db/tenant-changelog/report/db.changelog-master.yaml
   - include:
       file: db/changelog/changes/001-single-company.yaml
+  - include:
+      file: db/changelog/changes/002-read-path-indexes.yaml

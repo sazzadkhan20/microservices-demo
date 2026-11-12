@@ -4,7 +4,7 @@
 #
 #   docker build -f docker/java-runtime.Dockerfile --build-arg JAR=people-service/build/libs/people-service-1.0.0-SNAPSHOT.jar \
 #                --build-arg PORTS="8081 9081" -t qii-hrms-people-service .
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:24-jre
 
 ARG JAR
 ARG PORTS="8080"

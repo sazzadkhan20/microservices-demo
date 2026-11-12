@@ -10,7 +10,7 @@
     "test": "node -e \"console.log('qii-hrms smoke ok')\""
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.105.0",
+    "@tanstack/react-query": "^5.107.1",
     "jose": "^5.10.0",
     "next": "16.4.3",
     "react": "19.3.0",

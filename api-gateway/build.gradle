@@ -10,7 +10,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-redis-reactive'
     implementation 'org.springdoc:springdoc-openapi-starter-webflux-ui:2.8.17'
     // Google ID token verification (JWKS) for OIDC session mint
-    implementation 'com.nimbusds:nimbus-jose-jwt:9.37.4'
+    implementation 'com.nimbusds:nimbus-jose-jwt:10.10'
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.7'
     runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.7'
 

@@ -58,6 +58,7 @@ public class OffboardingService {
     private final EmploymentHistoryService employmentHistoryService;
     private final EmployeeRulesService rulesService;
     private final UserAccountService userAccountService;
+    private final ChecklistAssignmentService checklistAssignmentService;
     private final Clock clock;
     /** Must match {@code people.offboarding.handover-zone} so "today" agrees with the 02:00 cron. */
     private final ZoneId handoverZone;
@@ -74,6 +75,7 @@ public class OffboardingService {
             EmploymentHistoryService employmentHistoryService,
             EmployeeRulesService rulesService,
             UserAccountService userAccountService,
+            ChecklistAssignmentService checklistAssignmentService,
             Clock clock,
             @Value("${people.offboarding.handover-zone:Asia/Dhaka}") String handoverZone,
             ObjectProvider<OffboardingService> self) {
@@ -86,6 +88,7 @@ public class OffboardingService {
         this.employmentHistoryService = employmentHistoryService;
         this.rulesService = rulesService;
         this.userAccountService = userAccountService;
+        this.checklistAssignmentService = checklistAssignmentService;
         this.clock = clock;
         this.handoverZone = ZoneId.of(handoverZone);
         this.self = self;
@@ -126,6 +129,9 @@ public class OffboardingService {
                 if (rules.requireExitReason() && (exitReason == null || exitReason.isBlank())) {
                     throw new IllegalArgumentException("exitReason is required for " + newStatus);
                 }
+                // FR-CL-02 — attach offboarding checklist when offboarding starts (owners + due dates from exit date)
+                checklistAssignmentService.assignOffboardingBestEffort(
+                        employee.getId(), exitDate != null ? exitDate : today);
                 assertChecklistOrOverride(employee.getId(), overrideReason, rules);
 
                 if (rules.requireReportReassignment()) {
@@ -451,6 +457,10 @@ public class OffboardingService {
         return rulesService.isInactive(status, rulesService.load());
     }
 
+    /**
+     * After auto-attach: require an assigned OFFBOARDING checklist (OPEN or COMPLETED), or an override.
+     * Completion of items happens after offboarding starts (FR-CL-02/03); override skips the attach requirement.
+     */
     private void assertChecklistOrOverride(Long employeeId, String overrideReason, EmployeeRulesService.Rules rules) {
         if (!rules.requireOffboardingChecklist()) {
             return;
@@ -463,10 +473,13 @@ public class OffboardingService {
             }
             return;
         }
-        if (!offboardingChecklistCompleted(employeeId)) {
-            throw new IllegalStateException(
-                    "Offboarding checklist must be completed (or provide offboardOverrideReason)");
+        if (checklistAssignmentService.hasAssignedChecklist(employeeId, "OFFBOARDING")
+                || offboardingChecklistCompleted(employeeId)) {
+            return;
         }
+        throw new IllegalStateException(
+                "Offboarding checklist could not be attached (no OFFBOARDING template). "
+                        + "Create a template or provide offboardOverrideReason");
     }
 
     @SuppressWarnings("unchecked")

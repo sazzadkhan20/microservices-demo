@@ -71,6 +71,7 @@ platform:
 
 report:
   hrms-base-url: ${HRMS_BASE_URL:http://127.0.0.1:8081}
+  leave-base-url: ${LEAVE_BASE_URL:http://127.0.0.1:8086}
   time-work-base-url: ${TIME_WORK_BASE_URL:http://127.0.0.1:8087}
 
 springdoc:

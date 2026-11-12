@@ -87,6 +87,10 @@ timework:
     missing-notify-job-enabled: ${TIMEWORK_MISSING_WORKLOG_JOB_ENABLED:true}
     missing-notify-cron: ${TIMEWORK_MISSING_WORKLOG_CRON:0 0 * * * *}
     missing-notify-zone: ${TIMEWORK_MISSING_WORKLOG_ZONE:UTC}
+  attendance:
+    reminder-job-enabled: ${TIMEWORK_ATTENDANCE_REMINDER_JOB_ENABLED:true}
+    reminder-cron: ${TIMEWORK_ATTENDANCE_REMINDER_CRON:0 */15 * * * *}
+    reminder-zone: ${TIMEWORK_ATTENDANCE_REMINDER_ZONE:UTC}
 
 management:
   endpoint:

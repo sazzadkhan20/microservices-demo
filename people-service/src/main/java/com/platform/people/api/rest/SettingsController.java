@@ -1,5 +1,7 @@
 package com.platform.people.api.rest;
 
+import com.platform.common.security.AuthContext;
+import com.platform.people.application.AuditService;
 import com.platform.people.domain.TenantSettings;
 import com.platform.people.infrastructure.persistence.TenantSettingsRepository;
 import com.platform.people.security.RequiresPermission;
@@ -17,9 +19,11 @@ import java.util.Map;
 public class SettingsController {
 
     private final TenantSettingsRepository repository;
+    private final AuditService auditService;
 
-    public SettingsController(TenantSettingsRepository repository) {
+    public SettingsController(TenantSettingsRepository repository, AuditService auditService) {
         this.repository = repository;
+        this.auditService = auditService;
     }
 
     @GetMapping
@@ -36,11 +40,14 @@ public class SettingsController {
     @Operation(summary = "Merge tenant settings (config-driven switches)")
     public Map<String, Object> put(@RequestBody Map<String, Object> patch) {
         TenantSettings row = repository.findAll().stream().findFirst().orElseGet(TenantSettings::new);
-        Map<String, Object> merged = new HashMap<>(row.getSettings() == null ? Map.of() : row.getSettings());
+        Map<String, Object> before = new HashMap<>(row.getSettings() == null ? Map.of() : row.getSettings());
+        Map<String, Object> merged = new HashMap<>(before);
         merged.putAll(patch);
         row.setSettings(merged);
         row.setUpdatedAt(Instant.now());
         repository.save(row);
+        auditService.record(AuthContext.getEmployeeId(), "UPDATE", "TenantSettings",
+                row.getId() == null ? "tenant" : String.valueOf(row.getId()), before, merged);
         return merged;
     }
 
@@ -65,10 +72,15 @@ public class SettingsController {
     public Map<String, Object> putNotifications(@RequestBody Map<String, Object> body) {
         TenantSettings row = repository.findAll().stream().findFirst().orElseGet(TenantSettings::new);
         Map<String, Object> merged = new HashMap<>(row.getSettings() == null ? Map.of() : row.getSettings());
+        Object beforeNotif = merged.get("notifications");
         merged.put("notifications", body);
         row.setSettings(merged);
         row.setUpdatedAt(Instant.now());
         repository.save(row);
+        auditService.record(AuthContext.getEmployeeId(), "UPDATE", "NotificationSettings",
+                row.getId() == null ? "tenant" : String.valueOf(row.getId()),
+                beforeNotif == null ? Map.of() : beforeNotif,
+                body);
         return body;
     }
 }

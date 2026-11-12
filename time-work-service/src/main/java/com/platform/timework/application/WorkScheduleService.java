@@ -429,13 +429,20 @@ public class WorkScheduleService {
 
     /**
      * FR-SCH-05 / FR-SCH-06 / FR-HOL-02 — expected hours for one calendar day.
-     * Non-optional location holidays → 0 for every schedule mode (FIXED and HOURLY).
-     * FIXED: end−start on working days; 0 off/holiday/full leave; half on half-day leave.
-     * HOURLY: weeklyHours / 7 on non-holiday days (pro-rata per calendar day).
+     * FIXED: holiday / week-off / full leave → 0; working day uses {@link #dailyContractHours}; half leave → half.
+     * Hourly engagement (schedule mode, workPattern, or payType HOURLY): every calendar day gets
+     * {@link #hourlyCalendarDayHours} — holidays, week-offs, and leave do not zero expected hours.
      */
     @Transactional(readOnly = true)
     public BigDecimal expectedHoursForDay(EmployeeView emp, LocalDate day) {
         if (emp == null || day == null) {
+            return BigDecimal.ZERO;
+        }
+        // Before join / after contract end — no expected hours.
+        if (emp.getStartDate() != null && day.isBefore(emp.getStartDate())) {
+            return BigDecimal.ZERO;
+        }
+        if (emp.getContractEnd() != null && day.isAfter(emp.getContractEnd())) {
             return BigDecimal.ZERO;
         }
         Optional<WorkSchedule> opt = resolveForEmployee(emp);
@@ -443,34 +450,103 @@ public class WorkScheduleService {
             return BigDecimal.ZERO;
         }
         WorkSchedule schedule = opt.get();
-        String mode = normalizeMode(schedule.getMode());
+
+        // Hourly paid / hourly pattern — no holiday, weekly-off, or leave carve-outs.
+        if (isHourlyEngagement(emp, schedule)) {
+            return hourlyCalendarDayHours(schedule);
+        }
 
         LeaveImpact leave = leaveImpact(emp.getId(), day);
         if (leave == LeaveImpact.FULL) {
             return BigDecimal.ZERO;
         }
 
-        // FR-HOL-02 — non-optional holidays never contribute expected hours (payroll-safe).
+        // FR-HOL-02 — non-optional holidays never contribute expected hours for FIXED staff.
         if (isHoliday(emp.getLocationId(), day)) {
             return BigDecimal.ZERO;
         }
 
-        if ("HOURLY".equals(mode)) {
-            BigDecimal weekly = schedule.getWeeklyHours() == null ? BigDecimal.ZERO : schedule.getWeeklyHours();
-            BigDecimal daily = weekly.divide(BigDecimal.valueOf(7), 4, RoundingMode.HALF_UP);
-            return leave == LeaveImpact.HALF
-                    ? daily.divide(BigDecimal.valueOf(2), 4, RoundingMode.HALF_UP)
-                    : daily;
-        }
-
-        // FIXED (and legacy SHIFT/FLEXIBLE)
         if (!isWorkingDay(schedule, day)) {
             return BigDecimal.ZERO;
         }
-        BigDecimal full = fixedDayHours(schedule);
+        BigDecimal full = dailyContractHours(schedule);
         return leave == LeaveImpact.HALF
                 ? full.divide(BigDecimal.valueOf(2), 4, RoundingMode.HALF_UP)
                 : full;
+    }
+
+    /**
+     * True when the person is hourly for attendance/expected math:
+     * schedule mode HOURLY, workPattern HOURLY, or payType HOURLY (custom field).
+     */
+    public boolean isHourlyEngagement(EmployeeView emp, WorkSchedule schedule) {
+        if (schedule != null && "HOURLY".equals(normalizeMode(schedule.getMode()))) {
+            return true;
+        }
+        if (emp == null) {
+            return false;
+        }
+        String pattern = emp.getWorkPattern();
+        if (pattern != null && "HOURLY".equalsIgnoreCase(pattern.trim())) {
+            return true;
+        }
+        Object payType = emp.getCustomFields() == null ? null : emp.getCustomFields().get("payType");
+        return payType != null && "HOURLY".equalsIgnoreCase(String.valueOf(payType).trim());
+    }
+
+    /**
+     * Contracted hours for one working day from the schedule template (before leave/holiday).
+     * <ul>
+     *   <li>HOURLY — {@code weeklyHours / 7}; if weekly hours missing, shift length when times exist.</li>
+     *   <li>FIXED — {@code weeklyHours / workingDaysCount} when weekly hours set; else shift end−start.</li>
+     * </ul>
+     */
+    public BigDecimal dailyContractHours(WorkSchedule schedule) {
+        if (schedule == null) {
+            return BigDecimal.ZERO;
+        }
+        String mode = normalizeMode(schedule.getMode());
+        BigDecimal weekly = schedule.getWeeklyHours();
+        boolean hasWeekly = weekly != null && weekly.signum() > 0;
+
+        if ("HOURLY".equals(mode)) {
+            if (hasWeekly) {
+                return weekly.divide(BigDecimal.valueOf(7), 4, RoundingMode.HALF_UP);
+            }
+            return fixedDayHours(schedule);
+        }
+
+        if (hasWeekly) {
+            List<String> days = parseWorkingDays(schedule);
+            int n = days.isEmpty() ? 5 : days.size();
+            return weekly.divide(BigDecimal.valueOf(Math.max(1, n)), 4, RoundingMode.HALF_UP);
+        }
+        return fixedDayHours(schedule);
+    }
+
+    /**
+     * Per calendar-day expected slice for hourly staff (always {@code weekly/7} when weekly
+     * hours exist). If only a FIXED-style shift is configured, spreads {@code shift × workingDays / 7}.
+     */
+    public BigDecimal hourlyCalendarDayHours(WorkSchedule schedule) {
+        if (schedule == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal weekly = schedule.getWeeklyHours();
+        if (weekly != null && weekly.signum() > 0) {
+            return weekly.divide(BigDecimal.valueOf(7), 4, RoundingMode.HALF_UP);
+        }
+        if ("HOURLY".equals(normalizeMode(schedule.getMode()))) {
+            return fixedDayHours(schedule);
+        }
+        BigDecimal shift = fixedDayHours(schedule);
+        if (shift.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        List<String> days = parseWorkingDays(schedule);
+        int n = days.isEmpty() ? 5 : days.size();
+        return shift.multiply(BigDecimal.valueOf(Math.max(1, n)))
+                .divide(BigDecimal.valueOf(7), 4, RoundingMode.HALF_UP);
     }
 
     /**

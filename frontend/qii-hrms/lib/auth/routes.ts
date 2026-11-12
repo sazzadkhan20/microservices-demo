@@ -71,14 +71,14 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/team/attendance",
     title: "Team attendance",
     nav: { group: "Team", label: "Team attendance" },
-    // Managers/HR (not OWN-only employees who also hold attendance:view)
+    // Managers/HR (not OWN-only employees who also hold attendance:view) — company-scoped.
     rule: anyOf(["leave", "approve"], ["attendance", "correct"], ["employees", "view"]),
   },
   {
     path: "/team/work-logs",
     title: "Team work logs",
     nav: { group: "Team", label: "Team work logs" },
-    // Managers/admins in scope — not OWN-only employees (FR-WL-07).
+    // Managers/admins in scope — not OWN-only employees (FR-WL-07). Company-scoped.
     rule: anyOf(["worklogs", "view"], ["leave", "approve"], ["attendance", "correct"], ["employees", "view"]),
   },
   {
@@ -91,13 +91,14 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/leave/calendar",
     title: "Leave calendar",
     nav: { group: "Team", label: "Leave calendar" },
-    rule: anyOf(["leave", "view"]),
+    // Team/company calendar — not personal leave:view OWN alone.
+    rule: anyOf(["leave", "approve"], ["employees", "view"], ["leave", "manage"]),
   },
   {
     path: "/directory",
     title: "Directory",
     nav: { group: "Team", label: "Directory" },
-    rule: anyOf(["employees", "view"], ["org", "view"]),
+    rule: anyOf(["employees", "view"], ["org", "view"], ["directory", "view"]),
   },
 
   // ---- HR ----
@@ -117,6 +118,11 @@ export const ROUTES: readonly RouteDef[] = [
   { path: "/employees/new", title: "Add employee", rule: anyOf(["employees", "create"]) },
   { path: "/employees/[id]", title: "Employee", rule: anyOf(["employees", "view"]) },
   {
+    path: "/employees/[id]/attendance",
+    title: "Employee attendance",
+    rule: anyOf(["attendance", "view"]),
+  },
+  {
     path: "/checklists",
     title: "Checklists",
     nav: { group: "HR", label: "Checklists" },
@@ -126,7 +132,7 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/reports",
     title: "Reports",
     nav: { group: "HR", label: "Reports" },
-    rule: anyOf(["reports", "export"]),
+    rule: anyOf(["reports", "view"], ["reports", "export"]),
   },
 
   // ---- Settings ----
@@ -179,10 +185,10 @@ export const ROUTES: readonly RouteDef[] = [
     nav: { group: "Settings", label: "Audit log" },
     rule: anyOf(["audit", "view"], ["settings", "manage"]),
   },
+  // Business rules page kept at /settings/rules but omitted from nav for now.
   {
     path: "/settings/rules",
     title: "Business rules",
-    nav: { group: "Settings", label: "Business rules" },
     rule: anyOf(["settings", "manage"]),
   },
 ];
@@ -225,7 +231,12 @@ function isCompanyRoute(route: RouteDef): boolean {
   // /payroll is personal (own payslips) for everyone; payroll:run tabs are gated on the page.
   // Do not require TEAM/ALL scope — OWN payroll:view / salary:view must reach My pay.
   if (route.path === "/payroll") return false;
+  if (route.path === "/tasks") return false; // OWN tasks must remain reachable
   if (route.nav?.group === "HR") return true;
+  if (route.nav?.group === "Team") {
+    // Approvals stay reachable with OWN-scoped leave:approve edge cases; calendar/team lists need TEAM+.
+    return route.path !== "/approvals";
+  }
   return (
     route.path.startsWith("/employees") ||
     route.path === "/checklists" ||
@@ -233,7 +244,11 @@ function isCompanyRoute(route: RouteDef): boolean {
   );
 }
 
-/** TEAM or ALL on at least one permission that grants the route. Empty scope map keeps the old behaviour. */
+/**
+ * TEAM or ALL on at least one permission that grants the route.
+ * Fail closed when scopes are present but none are TEAM/ALL; empty scopes
+ * still allow (legacy sessions) so we do not lock out during rollout.
+ */
 function companyScopeAllows(
   perms: PermissionSet | readonly string[] | null | undefined,
   scopes: ScopeMap,

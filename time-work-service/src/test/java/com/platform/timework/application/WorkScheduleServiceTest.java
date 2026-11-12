@@ -151,10 +151,12 @@ class WorkScheduleServiceTest {
         assertEquals(0, service.expectedHoursForDay(e, LocalDate.of(2026, 11, 2)).compareTo(BigDecimal.ZERO));
         assertTrue(service.isHoliday(10L, LocalDate.of(2026, 11, 2)));
 
+        // Hourly engagement still accrues expected hours on holidays (no HO carve-out).
         WorkSchedule hourly = sch("LOCATION", 10L, "HOURLY", "[]", null, null);
         hourly.setWeeklyHours(new BigDecimal("35"));
         when(repository.findByScopeTypeAndScopeId("LOCATION", 10L)).thenReturn(Optional.of(hourly));
-        assertEquals(0, service.expectedHoursForDay(e, LocalDate.of(2026, 11, 2)).compareTo(BigDecimal.ZERO));
+        assertEquals(0, service.expectedHoursForDay(e, LocalDate.of(2026, 11, 2))
+                .compareTo(new BigDecimal("5.0000")));
     }
 
     @Test

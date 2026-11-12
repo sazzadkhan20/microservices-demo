@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { AssignEmployeeRolesModal } from "@/components/employees/AssignEmployeeRolesModal";
@@ -17,7 +17,7 @@ import { FormField } from "@/components/ui/FormField";
 import { Modal } from "@/components/ui/Modal";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { DataTable } from "@/components/ui/DataTable";
-import { EmptyState, ErrorNote, Loading, NoAccess } from "@/components/ui/QueryState";
+import { EmptyState, ErrorNote, Loading } from "@/components/ui/QueryState";
 import { AttCode, StatusPill } from "@/components/ui/StatusPill";
 import { Tabs } from "@/components/ui/Tabs";
 import { useToast } from "@/components/ui/Toast";
@@ -83,6 +83,7 @@ function KV({ label, children }: { label: string; children: ReactNode }) {
 export default function EmployeeDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
+  const router = useRouter();
   const { me, can } = useAuth();
   const [tab, setTab] = useState("profile");
   const [rolesOpen, setRolesOpen] = useState(false);
@@ -90,16 +91,23 @@ export default function EmployeeDetailPage() {
   const emp = useQuery({
     queryKey: ["employee", id],
     queryFn: ({ signal }) => apiFetch(api.hrms(`employees/${id}`), { schema: employeeSchema, signal }),
+    retry: false,
   });
+
+  // Out-of-scope / no permission → leave quietly (no Forbidden card).
+  useEffect(() => {
+    const err = emp.error as { status?: number; message?: string } | null;
+    if (!err) return;
+    const status = err.status;
+    const msg = String(err.message ?? "");
+    if (status === 403 || /forbidden/i.test(msg)) {
+      router.replace("/directory");
+    }
+  }, [emp.error, router]);
 
   if (emp.isLoading) return <Loading />;
   if (emp.error) {
-    return (
-      <div className="stack">
-        <PageHeader title="Employee" actions={<Link href="/employees" className="btn">← All employees</Link>} />
-        <ErrorNote error={emp.error} />
-      </div>
-    );
+    return null;
   }
   const e = emp.data!;
   const isSelf = String(e.id) === String(me.employeeId);
@@ -108,8 +116,21 @@ export default function EmployeeDetailPage() {
   const showSalary = isSelf ? can("salary", "view") : can("salary", "edit") || can("payroll", "run");
   const canEditSalary = can("salary", "edit");
   const canAssignRoles = can("roles", "assign") && !isSelf;
-  const tabs = showSalary ? TABS : TABS.filter((t) => t.id !== "salary");
-  const activeTab = tab === "salary" && !showSalary ? "profile" : tab;
+  const showAttendance = can("attendance", "view");
+  const showWorkLog = can("attendance", "view") || can("worklogs", "view");
+  const showLeave = can("leave", "view") || can("leave_balances", "view") || can("leave_requests", "view");
+  const showDocuments = can("documents", "view") || can("employees", "view");
+  const canEditDocuments = can("documents", "create") || can("documents", "delete") || can("employees", "edit");
+  const tabs = TABS.filter((t) => {
+    if (t.id === "salary") return showSalary;
+    if (t.id === "attendance") return showAttendance;
+    if (t.id === "worklog") return showWorkLog;
+    if (t.id === "leave") return showLeave;
+    if (t.id === "documents") return showDocuments;
+    return true;
+  });
+  const tabAllowed = tabs.some((t) => t.id === tab);
+  const activeTab = tabAllowed ? tab : (tabs[0]?.id ?? "profile");
   const photoFileId =
     e.photoFileId ??
     (e as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId;
@@ -164,10 +185,12 @@ export default function EmployeeDetailPage() {
           canEdit={canEditSalary}
         />
       ) : null}
-      {activeTab === "attendance" ? <AttendanceTab empId={id} /> : null}
-      {activeTab === "worklog" ? <WorkLogTab empId={id} /> : null}
-      {activeTab === "leave" ? <LeaveTab empId={id} /> : null}
-      {activeTab === "documents" ? <DocumentsTab empId={id} canEdit={can("employees", "edit")} /> : null}
+      {activeTab === "attendance" && showAttendance ? <AttendanceTab empId={id} /> : null}
+      {activeTab === "worklog" && showWorkLog ? <WorkLogTab empId={id} /> : null}
+      {activeTab === "leave" && showLeave ? <LeaveTab empId={id} /> : null}
+      {activeTab === "documents" && showDocuments ? (
+        <DocumentsTab empId={id} canEdit={canEditDocuments} />
+      ) : null}
       {activeTab === "notes" ? <NotesTab emp={e} /> : null}
       {activeTab === "history" ? <HistoryTab empId={id} /> : null}
     </div>
@@ -721,9 +744,40 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
                 const canDownload = isScanDownloadable(status, d.downloadable as boolean | undefined);
                 const pending = isScanPending(status);
                 const rejected = isScanRejected(status);
+                async function fetchDocument(action: "OPEN" | "DOWNLOAD") {
+                  try {
+                    await logAccess(String(d.fileId), action);
+                    // Guide §8: authorize then issue short-lived URL (blocked while quarantined).
+                    const issued = await apiFetch<{ url: string }>(
+                      api.files(`${d.fileId}/download-url`),
+                      { method: "POST" },
+                    );
+                    const path = issued.url.startsWith("/")
+                      ? issued.url
+                      : api.files(`${d.fileId}/content`);
+                    await downloadFile(path, undefined, String(d.name ?? "document"));
+                  } catch (er) {
+                    toast.error(er as Error);
+                  }
+                }
+
                 return (
                   <tr key={String(d.fileId)}>
-                    <td>{str(d.name)}</td>
+                    <td>
+                      {canDownload && !pending && !rejected ? (
+                        <button
+                          type="button"
+                          className="btn link"
+                          style={{ padding: 0, border: 0, background: "none", textAlign: "left" }}
+                          title="Open document (audited)"
+                          onClick={() => void fetchDocument("OPEN")}
+                        >
+                          {str(d.name)}
+                        </button>
+                      ) : (
+                        str(d.name)
+                      )}
+                    </td>
                     <td>
                       <span className="pill">{str(d.documentType ?? d.type)}</span>
                     </td>
@@ -746,28 +800,26 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
                               ? "Download locked until malware scan releases the file"
                               : rejected
                                 ? "File rejected by content scan"
-                                : undefined
+                                : "Open document (audited as OPEN)"
                           }
-                          onClick={() =>
-                            void (async () => {
-                              try {
-                                await logAccess(String(d.fileId), "DOWNLOAD");
-                                // Guide §8: authorize then issue short-lived URL (blocked while quarantined).
-                                const issued = await apiFetch<{ url: string }>(
-                                  api.files(`${d.fileId}/download-url`),
-                                  { method: "POST" },
-                                );
-                                const path = issued.url.startsWith("/")
-                                  ? issued.url
-                                  : api.files(`${d.fileId}/content`);
-                                await downloadFile(path, undefined, String(d.name ?? "document"));
-                              } catch (er) {
-                                toast.error(er as Error);
-                              }
-                            })()
-                          }
+                          onClick={() => void fetchDocument("OPEN")}
                         >
-                          {pending ? "Scanning…" : "Download"}
+                          {pending ? "Scanning…" : "Open"}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn sm"
+                          disabled={!canDownload || pending || rejected}
+                          title={
+                            pending
+                              ? "Download locked until malware scan releases the file"
+                              : rejected
+                                ? "File rejected by content scan"
+                                : "Download document (audited as DOWNLOAD)"
+                          }
+                          onClick={() => void fetchDocument("DOWNLOAD")}
+                        >
+                          Download
                         </button>
                         {canEdit ? (
                           <button
@@ -889,6 +941,10 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
 }
 
 function LeaveTab({ empId }: { empId: string }) {
+  const { can } = useAuth();
+  if (!can("leave", "view") && !can("leave_balances", "view") && !can("leave_requests", "view")) {
+    return null;
+  }
   const balances = useQuery({
     queryKey: ["employee-balances-current", empId],
     queryFn: ({ signal }) =>
@@ -978,7 +1034,7 @@ function LeaveTab({ empId }: { empId: string }) {
 
 function AttendanceTab({ empId }: { empId: string }) {
   const { can } = useAuth();
-  if (!can("attendance", "view")) return <NoAccess what="attendance" />;
+  if (!can("attendance", "view")) return null;
   return (
     <div className="card" style={{ padding: 0 }}>
       <DataTable<AttendanceRow>
@@ -1018,7 +1074,7 @@ function WorkLogTab({ empId }: { empId: string }) {
     },
     enabled: canSee,
   });
-  if (!canSee) return <NoAccess what="work logs" />;
+  if (!canSee) return null;
   const rows = logs.data ?? [];
   return (
     <div className="card stack">

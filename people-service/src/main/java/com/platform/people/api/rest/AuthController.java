@@ -1,5 +1,6 @@
 package com.platform.people.api.rest;
 
+import com.platform.common.security.PublicEndpoint;
 import com.platform.people.application.AuthFacadeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -12,6 +13,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/auth")
+@PublicEndpoint(reason = "Session bootstrap / account picker — gated by gateway JWT for /me")
 @Tag(name = "Auth", description = "Account picker + session identity")
 public class AuthController {
 

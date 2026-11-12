@@ -1,0 +1,59 @@
+# Appendix B alignment:
+# - HR may view all tasks (ALL) but must not create/edit tasks (no tasks:create/edit).
+# - HR must not manage Roles & permissions (strip roles:view/edit/assign).
+# SUPERADMIN remains wildcard; ADMIN keeps roles admin keys except create/delete/manage as before.
+databaseChangeLog:
+  - changeSet:
+      id: 011-hr-tasks-view-all
+      author: qii
+      comment: HR tasks:view scope OWN → ALL so HR can see company tasks (read-only).
+      changes:
+        - sql:
+            sql: |
+              UPDATE app_role_permission rp
+              SET data_scope = 'ALL'
+              FROM app_role r, app_permission p
+              WHERE rp.role_id = r.id
+                AND rp.permission_id = p.id
+                AND upper(r.code) = 'HR'
+                AND lower(p.feature) = 'tasks'
+                AND lower(p.action) = 'view';
+      rollback:
+        - sql:
+            sql: |
+              UPDATE app_role_permission rp
+              SET data_scope = 'OWN'
+              FROM app_role r, app_permission p
+              WHERE rp.role_id = r.id
+                AND rp.permission_id = p.id
+                AND upper(r.code) = 'HR'
+                AND lower(p.feature) = 'tasks'
+                AND lower(p.action) = 'view';
+
+  - changeSet:
+      id: 011-hr-strip-roles-matrix
+      author: qii
+      comment: Remove roles:* from HR (Appendix B — Roles and permissions are Admin/Super Admin only).
+      changes:
+        - sql:
+            sql: |
+              DELETE FROM app_role_permission rp
+              USING app_role r, app_permission p
+              WHERE rp.role_id = r.id
+                AND rp.permission_id = p.id
+                AND upper(r.code) = 'HR'
+                AND lower(p.feature) = 'roles';
+      rollback:
+        - sql:
+            sql: |
+              INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+              SELECT r.id, p.id, 'ALL'
+              FROM app_role r
+              CROSS JOIN app_permission p
+              WHERE upper(r.code) = 'HR'
+                AND lower(p.feature) = 'roles'
+                AND lower(p.action) IN ('view', 'edit', 'assign')
+                AND NOT EXISTS (
+                  SELECT 1 FROM app_role_permission x
+                  WHERE x.role_id = r.id AND x.permission_id = p.id
+                );

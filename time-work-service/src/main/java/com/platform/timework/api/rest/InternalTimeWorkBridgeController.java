@@ -1,6 +1,7 @@
 package com.platform.timework.api.rest;
 
 import com.platform.common.security.InternalCalls;
+import com.platform.common.security.PublicEndpoint;
 import com.platform.timework.application.WorkScheduleService;
 import com.platform.timework.client.people.EmployeeView;
 import com.platform.timework.client.people.PeopleEmployeeGateway;
@@ -41,6 +42,7 @@ import java.util.Set;
  */
 @RestController
 @RequestMapping("/api/internal")
+@PublicEndpoint(reason = "S2S bridge; gated by X-Internal-Key on each handler")
 public class InternalTimeWorkBridgeController {
 
     private final WorkScheduleService workScheduleService;

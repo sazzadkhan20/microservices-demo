@@ -9,15 +9,15 @@ import com.platform.messaging.outbox.OutboxWriter;
 import com.platform.report.api.dto.AttendanceReportRequest;
 import com.platform.report.application.AttendanceReportService;
 import com.platform.report.application.AuditService;
+import com.platform.report.application.CsvSupport;
+import com.platform.report.application.ReportCatalogService;
 import com.platform.report.domain.ReportExport;
 import com.platform.report.infrastructure.HrmsGatewayClient;
 import com.platform.report.infrastructure.persistence.ReportExportRepository;
 import com.platform.report.security.RequiresPermission;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +37,7 @@ import java.util.Map;
 public class ReportController {
 
     private final AttendanceReportService attendanceService;
+    private final ReportCatalogService catalogService;
     private final ReportExportRepository exportRepository;
     private final HrmsGatewayClient hrms;
     private final ObjectProvider<OutboxWriter> outboxWriter;
@@ -43,21 +45,20 @@ public class ReportController {
 
     public ReportController(
             AttendanceReportService attendanceService,
+            ReportCatalogService catalogService,
             ReportExportRepository exportRepository,
             HrmsGatewayClient hrms,
             ObjectProvider<OutboxWriter> outboxWriter,
             AuditService auditService) {
         this.attendanceService = attendanceService;
+        this.catalogService = catalogService;
         this.exportRepository = exportRepository;
         this.hrms = hrms;
         this.outboxWriter = outboxWriter;
         this.auditService = auditService;
     }
 
-    /**
-     * Generates a monthly attendance report and returns it as a CSV download.
-     * Pass {@code async=true} to enqueue a background job (202 + export id).
-     */
+    /** Preview + CSV for monthly attendance (FR-RP-01). FE gates download with reports:export. */
     @PostMapping("/attendance/monthly")
     @RequiresPermission(feature = "reports", action = "view")
     public ResponseEntity<?> attendanceMonthly(
@@ -87,6 +88,10 @@ public class ReportController {
             payload.put("year", req.year());
             payload.put("month", req.month());
             payload.put("employeeId", req.employeeId());
+            payload.put("locationId", req.locationId());
+            payload.put("departmentId", req.departmentId());
+            payload.put("teamId", req.teamId());
+            payload.put("actorEmployeeId", AuthContext.getEmployeeId());
             PlatformEvent event = PlatformEvent.of(
                     EventTypes.REPORT_EXPORT_COMMAND,
                     String.valueOf(job.getId()),
@@ -104,34 +109,87 @@ public class ReportController {
 
         String csv = attendanceService.generateMonthlyCsv(req);
         byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-
-        ReportExport archived = new ReportExport();
-        archived.setReportType("ATTENDANCE_MONTHLY");
-        archived.setPeriodLabel(period);
-        archived.setEmployeeId(req.employeeId());
-        archived.setFileName(filename);
-        archived.setContentType("text/csv");
-        archived.setSizeBytes(bytes.length);
-        archived.setRequestedBy(AuthContext.getEmployeeId());
-        archived.setStatus("READY");
-        archived.setCompletedAt(Instant.now());
-        archived.setCreatedAt(Instant.now());
-        exportRepository.save(archived);
-        auditService.record(AuthContext.getEmployeeId(), "CREATE", "ReportExport",
-                String.valueOf(archived.getId()), null,
-                Map.of("reportType", archived.getReportType(), "period", period, "sizeBytes", bytes.length));
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentDispositionFormData("attachment", filename);
-        headers.setContentLength(bytes.length);
-
-        return ResponseEntity.ok()
-                .headers(headers)
-                .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
-                .body(bytes);
+        archive("ATTENDANCE_MONTHLY", period, req.employeeId(), filename, bytes.length);
+        return CsvSupport.download(csv, filename);
     }
 
-    /** Lists recent report exports from the reports database. */
+    @GetMapping("/late-absence.csv")
+    @RequiresPermission(feature = "reports", action = "export")
+    public ResponseEntity<byte[]> lateAbsence(
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(required = false) Long locationId,
+            @RequestParam(required = false) Long departmentId,
+            @RequestParam(required = false) Long teamId,
+            @RequestParam(required = false) Long employeeId) {
+        LocalDate fromDate = parseOr(from, LocalDate.now().withDayOfMonth(1));
+        LocalDate toDate = parseOr(to, LocalDate.now());
+        requireRange(fromDate, toDate);
+        String csv = catalogService.lateAbsenceSummaryCsv(fromDate, toDate, locationId, departmentId, teamId, employeeId);
+        byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        archive("LATE_ABSENCE", fromDate + "_" + toDate, employeeId, "late-absence.csv", bytes.length);
+        return CsvSupport.download(csv, "late-absence.csv");
+    }
+
+    @GetMapping("/leave-balances.csv")
+    @RequiresPermission(feature = "reports", action = "export")
+    public ResponseEntity<byte[]> leaveBalances(
+            @RequestParam(required = false) String year,
+            @RequestParam(required = false) Long locationId,
+            @RequestParam(required = false) Long departmentId,
+            @RequestParam(required = false) Long teamId,
+            @RequestParam(required = false) Long employeeId) {
+        int y = year != null && !year.isBlank() ? Integer.parseInt(year.trim()) : LocalDate.now().getYear();
+        String csv = catalogService.leaveBalancesCsv(y, locationId, departmentId, teamId, employeeId);
+        String filename = "leave-balances-" + y + ".csv";
+        byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        archive("LEAVE_BALANCES", String.valueOf(y), employeeId, filename, bytes.length);
+        return CsvSupport.download(csv, filename);
+    }
+
+    @GetMapping("/leave-requests.csv")
+    @RequiresPermission(feature = "reports", action = "export")
+    public ResponseEntity<byte[]> leaveRequests(
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to,
+            @RequestParam(required = false) Long locationId,
+            @RequestParam(required = false) Long departmentId,
+            @RequestParam(required = false) Long teamId,
+            @RequestParam(required = false) Long employeeId) {
+        LocalDate fromDate = parseOr(from, LocalDate.now().withDayOfMonth(1));
+        LocalDate toDate = parseOr(to, LocalDate.now());
+        requireRange(fromDate, toDate);
+        String csv = catalogService.leaveRequestsCsv(fromDate, toDate, locationId, departmentId, teamId, employeeId);
+        byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        archive("LEAVE_REQUESTS", fromDate + "_" + toDate, employeeId, "leave-requests.csv", bytes.length);
+        return CsvSupport.download(csv, "leave-requests.csv");
+    }
+
+    @GetMapping("/headcount.csv")
+    @RequiresPermission(feature = "reports", action = "export")
+    public ResponseEntity<byte[]> headcount(
+            @RequestParam(required = false) Long locationId,
+            @RequestParam(required = false) Long departmentId,
+            @RequestParam(required = false) Long teamId) {
+        String csv = catalogService.headcountCsv(locationId, departmentId, teamId);
+        byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        archive("HEADCOUNT", "last-6-months", null, "headcount.csv", bytes.length);
+        return CsvSupport.download(csv, "headcount.csv");
+    }
+
+    @GetMapping("/employees.csv")
+    @RequiresPermission(feature = "reports", action = "export")
+    public ResponseEntity<byte[]> employees(
+            @RequestParam(required = false) Long locationId,
+            @RequestParam(required = false) Long departmentId,
+            @RequestParam(required = false) Long teamId,
+            @RequestParam(required = false) Long employeeId) {
+        String csv = catalogService.employeeMasterCsv(locationId, departmentId, teamId, employeeId);
+        byte[] bytes = csv.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        archive("EMPLOYEE_MASTER", null, employeeId, "employees.csv", bytes.length);
+        return CsvSupport.download(csv, "employees.csv");
+    }
+
     @GetMapping("/exports")
     @RequiresPermission(feature = "reports", action = "view")
     public ResponseEntity<List<Map<String, Object>>> listExports() {
@@ -155,5 +213,39 @@ public class ReportController {
                 })
                 .toList();
         return ResponseEntity.ok(rows);
+    }
+
+    private void archive(String type, String period, Long employeeId, String filename, int size) {
+        ReportExport archived = new ReportExport();
+        archived.setReportType(type);
+        archived.setPeriodLabel(period);
+        archived.setEmployeeId(employeeId);
+        archived.setFileName(filename);
+        archived.setContentType("text/csv");
+        archived.setSizeBytes(size);
+        archived.setRequestedBy(AuthContext.getEmployeeId());
+        archived.setStatus("READY");
+        archived.setCompletedAt(Instant.now());
+        archived.setCreatedAt(Instant.now());
+        exportRepository.save(archived);
+        auditService.record(AuthContext.getEmployeeId(), "CREATE", "ReportExport",
+                String.valueOf(archived.getId()), null,
+                Map.of("reportType", type, "period", period == null ? "" : period, "sizeBytes", size));
+    }
+
+    private static LocalDate parseOr(String raw, LocalDate fallback) {
+        if (raw == null || raw.isBlank()) {
+            return fallback;
+        }
+        return LocalDate.parse(raw.trim());
+    }
+
+    private static void requireRange(LocalDate from, LocalDate to) {
+        if (to.isBefore(from)) {
+            throw new IllegalArgumentException("to must be on/after from");
+        }
+        if (from.plusDays(366).isBefore(to)) {
+            throw new IllegalArgumentException("Range must be 366 days or less");
+        }
     }
 }

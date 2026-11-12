@@ -5,14 +5,20 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 /**
- * Request body for a monthly attendance report.
+ * Monthly attendance register (FR-RP-01).
  *
- * @param year       4-digit year (e.g. 2026)
- * @param month      1–12
- * @param employeeId optional filter; omit to include all employees
+ * @param year         4-digit year
+ * @param month        1–12
+ * @param employeeId   optional person filter
+ * @param locationId   optional location filter
+ * @param departmentId optional department filter
+ * @param teamId       optional team filter
  */
 public record AttendanceReportRequest(
         @NotNull @Min(2000) @Max(2100) Integer year,
         @NotNull @Min(1) @Max(12) Integer month,
-        Long employeeId
+        Long employeeId,
+        Long locationId,
+        Long departmentId,
+        Long teamId
 ) {}

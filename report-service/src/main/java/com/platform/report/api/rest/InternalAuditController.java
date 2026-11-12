@@ -1,5 +1,6 @@
 package com.platform.report.api.rest;
 
+import com.platform.common.security.PublicEndpoint;
 import com.platform.report.domain.AuditLog;
 import com.platform.report.infrastructure.persistence.AuditLogRepository;
 import org.springframework.data.domain.PageRequest;
@@ -16,6 +17,7 @@ import java.util.Map;
 /** S2S audit export for People federation (own {@code report_audit_log} only). */
 @RestController
 @RequestMapping("/api/internal/audit")
+@PublicEndpoint(reason = "S2S audit export; gated by InternalApiInterceptor (X-Internal-Key)")
 public class InternalAuditController {
 
     private final AuditLogRepository repository;

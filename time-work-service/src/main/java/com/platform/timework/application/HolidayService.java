@@ -1,12 +1,16 @@
 package com.platform.timework.application;
 
 import com.platform.common.security.AuthContext;
+import com.platform.timework.client.people.EmployeeView;
+import com.platform.timework.client.people.PeopleEmployeeGateway;
 import com.platform.timework.domain.Holiday;
 import com.platform.timework.infrastructure.persistence.HolidayRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,22 +22,42 @@ import java.util.Objects;
  * FR-HOL — one holiday calendar per location.
  * Types: PUBLIC | COMPANY. {@code optionalFlag} is orthogonal (optional days are still worked/expected).
  * Non-optional holidays zero expected hours, are excluded from leave working-day counts, and are never Absent.
+ *
+ * <p>Past / ongoing guardrails (location-local "today"):
+ * <ul>
+ *   <li>Started or past holidays cannot be deleted.</li>
+ *   <li>Fully past holidays cannot change dates.</li>
+ *   <li>Ongoing holidays keep their start; end may be shortened only to today or later
+ *       (future days removed), never before today.</li>
+ *   <li>Shortening an ongoing holiday notifies active employees at that location only.</li>
+ * </ul>
  */
 @Service
 public class HolidayService {
 
     private final HolidayRepository holidayRepository;
     private final AuditService auditService;
+    private final PeopleEmployeeGateway people;
+    private final TimeWorkNotificationHook notificationHook;
+    private final Clock clock;
 
-    public HolidayService(HolidayRepository holidayRepository, AuditService auditService) {
+    public HolidayService(
+            HolidayRepository holidayRepository,
+            AuditService auditService,
+            PeopleEmployeeGateway people,
+            TimeWorkNotificationHook notificationHook,
+            Clock clock) {
         this.holidayRepository = holidayRepository;
         this.auditService = auditService;
+        this.people = people;
+        this.notificationHook = notificationHook;
+        this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
     @Transactional
     public Holiday create(Map<String, Object> body) {
         Holiday h = new Holiday();
-        applyBody(h, body, true);
+        applyBody(h, body, true, null);
         Holiday saved = holidayRepository.save(h);
         auditService.record(AuthContext.getEmployeeId(), "CREATE", "Holiday",
                 String.valueOf(saved.getId()), null, snapshot(saved));
@@ -45,10 +69,33 @@ public class HolidayService {
         Holiday h = holidayRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Holiday not found: " + id));
         Map<String, Object> before = snapshot(h);
-        applyBody(h, body, false);
+        LocalDate oldStart = h.getStartDate();
+        LocalDate oldEnd = h.getEndDate();
+        Long oldLocationId = h.getLocationId();
+        LocalDate today = todayFor(oldLocationId);
+        boolean wasOngoing = isOngoing(oldStart, oldEnd, today);
+
+        applyBody(h, body, false, today);
+
+        LocalDate newStart = h.getStartDate();
+        LocalDate newEnd = h.getEndDate();
+        boolean shortened = oldEnd != null && newEnd != null && newEnd.isBefore(oldEnd);
+
         Holiday saved = holidayRepository.save(h);
         auditService.record(AuthContext.getEmployeeId(), "UPDATE", "Holiday",
                 String.valueOf(saved.getId()), before, snapshot(saved));
+
+        // Notify only when an ongoing holiday loses future days — location-scoped.
+        if (wasOngoing && shortened && Objects.equals(oldLocationId, saved.getLocationId())
+                && Objects.equals(oldStart, newStart)) {
+            notificationHook.notifyHolidayShortened(
+                    saved.getLocationId(),
+                    peopleAtLocation(saved.getLocationId()),
+                    saved.getId(),
+                    saved.getName(),
+                    oldEnd,
+                    newEnd);
+        }
         return saved;
     }
 
@@ -56,6 +103,12 @@ public class HolidayService {
     public void delete(Long id) {
         Holiday h = holidayRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Holiday not found: " + id));
+        LocalDate today = todayFor(h.getLocationId());
+        if (!canDelete(h.getStartDate(), today)) {
+            throw new IllegalArgumentException(
+                    "Cannot delete a holiday that has already started or passed (location date "
+                            + today + ")");
+        }
         Map<String, Object> before = snapshot(h);
         holidayRepository.delete(h);
         auditService.record(AuthContext.getEmployeeId(), "DELETE", "Holiday",
@@ -112,7 +165,14 @@ public class HolidayService {
         return out;
     }
 
-    private void applyBody(Holiday h, Map<String, Object> body, boolean creating) {
+    /**
+     * @param today when non-null (updates), enforce past/ongoing date rules against this location-local day
+     */
+    private void applyBody(Holiday h, Map<String, Object> body, boolean creating, LocalDate today) {
+        LocalDate priorStart = h.getStartDate();
+        LocalDate priorEnd = h.getEndDate();
+        Long priorLocationId = h.getLocationId();
+
         Object loc = body.get("locationId");
         if (creating) {
             if (loc == null || String.valueOf(loc).isBlank()) {
@@ -120,7 +180,13 @@ public class HolidayService {
             }
             h.setLocationId(Long.valueOf(String.valueOf(loc)));
         } else if (loc != null && !String.valueOf(loc).isBlank()) {
-            h.setLocationId(Long.valueOf(String.valueOf(loc)));
+            Long nextLoc = Long.valueOf(String.valueOf(loc));
+            if (today != null && priorStart != null && !priorStart.isAfter(today)
+                    && !Objects.equals(priorLocationId, nextLoc)) {
+                throw new IllegalArgumentException(
+                        "Cannot move a started or past holiday to another location");
+            }
+            h.setLocationId(nextLoc);
         }
         if (h.getLocationId() == null || h.getLocationId() <= 0) {
             throw new IllegalArgumentException("locationId is required");
@@ -136,26 +202,35 @@ public class HolidayService {
         }
 
         Object startObj = body.get("startDate") != null ? body.get("startDate") : body.get("date");
-        if (creating || (startObj != null && !String.valueOf(startObj).isBlank())) {
+        Object endObj = body.get("endDate");
+
+        LocalDate nextStart = h.getStartDate();
+        LocalDate nextEnd = h.getEndDate();
+        boolean touchStart = creating || (startObj != null && !String.valueOf(startObj).isBlank());
+        if (touchStart) {
             if (startObj == null || String.valueOf(startObj).isBlank()) {
                 throw new IllegalArgumentException("startDate is required");
             }
-            h.setStartDate(LocalDate.parse(String.valueOf(startObj)));
+            nextStart = LocalDate.parse(String.valueOf(startObj));
         }
-
-        Object endObj = body.get("endDate");
         if (endObj != null && !String.valueOf(endObj).isBlank()) {
-            h.setEndDate(LocalDate.parse(String.valueOf(endObj)));
-        } else if (creating || startObj != null) {
+            nextEnd = LocalDate.parse(String.valueOf(endObj));
+        } else if (creating || touchStart) {
             // Single-day holiday when end omitted.
-            h.setEndDate(h.getStartDate());
+            nextEnd = nextStart;
         }
-        if (h.getStartDate() == null || h.getEndDate() == null) {
+        if (nextStart == null || nextEnd == null) {
             throw new IllegalArgumentException("startDate and endDate are required");
         }
-        if (h.getEndDate().isBefore(h.getStartDate())) {
+        if (nextEnd.isBefore(nextStart)) {
             throw new IllegalArgumentException("endDate must not be before startDate");
         }
+
+        if (!creating && today != null && priorStart != null && priorEnd != null) {
+            enforceDateEditRules(priorStart, priorEnd, nextStart, nextEnd, today);
+        }
+        h.setStartDate(nextStart);
+        h.setEndDate(nextEnd);
 
         Object type = body.get("holidayType") != null ? body.get("holidayType") : body.get("type");
         boolean legacyOptional = isLegacyOptionalType(type == null ? h.getHolidayType() : String.valueOf(type));
@@ -169,6 +244,87 @@ public class HolidayService {
             h.setOptionalFlag(asBoolean(body.get("optionalFlag")));
         } else if (creating && legacyOptional) {
             h.setOptionalFlag(true);
+        }
+    }
+
+    /**
+     * Past: dates locked. Ongoing: start locked; end may shrink only to today or later.
+     * Future: free date edits.
+     */
+    static void enforceDateEditRules(
+            LocalDate priorStart,
+            LocalDate priorEnd,
+            LocalDate newStart,
+            LocalDate newEnd,
+            LocalDate today) {
+        if (priorEnd.isBefore(today)) {
+            if (!Objects.equals(priorStart, newStart) || !Objects.equals(priorEnd, newEnd)) {
+                throw new IllegalArgumentException(
+                        "Cannot change dates of a holiday that has already ended");
+            }
+            return;
+        }
+        if (!priorStart.isAfter(today) && !priorEnd.isBefore(today)) {
+            // Ongoing
+            if (!Objects.equals(priorStart, newStart)) {
+                throw new IllegalArgumentException(
+                        "Cannot change the start date of an ongoing holiday");
+            }
+            if (newEnd.isBefore(today)) {
+                throw new IllegalArgumentException(
+                        "Ongoing holiday can be shortened only to today or a later date (not before "
+                                + today + ")");
+            }
+            return;
+        }
+        // Future — no extra date constraints
+    }
+
+    static boolean canDelete(LocalDate startDate, LocalDate today) {
+        return startDate != null && today != null && startDate.isAfter(today);
+    }
+
+    static boolean isOngoing(LocalDate start, LocalDate end, LocalDate today) {
+        return start != null && end != null && today != null
+                && !start.isAfter(today) && !end.isBefore(today);
+    }
+
+    LocalDate todayFor(Long locationId) {
+        return LocalDate.now(clock.withZone(zoneForLocation(locationId)));
+    }
+
+    private ZoneId zoneForLocation(Long locationId) {
+        if (locationId == null) {
+            return ZoneId.of("UTC");
+        }
+        try {
+            for (EmployeeView e : people.findAll()) {
+                if (e == null || !e.isActive() || !locationId.equals(e.getLocationId())) {
+                    continue;
+                }
+                String tz = e.getLocationTimeZone();
+                if (tz != null && !tz.isBlank()) {
+                    return ZoneId.of(tz.trim());
+                }
+            }
+        } catch (Exception ignored) {
+            // fall through
+        }
+        return ZoneId.of("UTC");
+    }
+
+    private List<EmployeeView> peopleAtLocation(Long locationId) {
+        if (locationId == null) {
+            return List.of();
+        }
+        try {
+            return people.findAll().stream()
+                    .filter(Objects::nonNull)
+                    .filter(EmployeeView::isActive)
+                    .filter(e -> locationId.equals(e.getLocationId()))
+                    .toList();
+        } catch (Exception e) {
+            return List.of();
         }
     }
 

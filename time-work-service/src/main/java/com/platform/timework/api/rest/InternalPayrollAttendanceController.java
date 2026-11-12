@@ -1,6 +1,7 @@
 package com.platform.timework.api.rest;
 
 import com.platform.common.security.InternalCalls;
+import com.platform.common.security.PublicEndpoint;
 import com.platform.timework.application.WorkScheduleService;
 import com.platform.timework.client.LeaveClient;
 import com.platform.timework.client.people.EmployeeView;
@@ -47,6 +48,7 @@ import java.util.stream.Collectors;
  */
 @RestController
 @RequestMapping("/api/internal/payroll")
+@PublicEndpoint(reason = "S2S payroll attendance facts; gated by InternalApiInterceptor (X-Internal-Key)")
 @Hidden
 public class InternalPayrollAttendanceController {
 
@@ -151,10 +153,13 @@ public class InternalPayrollAttendanceController {
                         missing = d.isBefore(today.minusDays(1)) || (d.equals(today.minusDays(1)) && !yesterdayStillOpen);
                         status = missing ? "M" : (hourly ? "W" : "P");
                     }
+                } else if (hourly) {
+                    // Hourly: no holiday / week-off / leave labels; unpaid leave does not apply.
+                    status = "NS";
                 } else if ("FULL".equals(leavePortion)) {
                     status = "OL";
                 } else if (!working) {
-                    status = holiday ? "HO" : (hourly ? "NS" : "WO");
+                    status = holiday ? "HO" : "WO";
                 } else if ("HALF".equals(leavePortion)) {
                     status = "OL";
                     absence = past ? HALF : BigDecimal.ZERO; // Decision D1

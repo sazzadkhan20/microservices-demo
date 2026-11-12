@@ -53,6 +53,30 @@ const holidaySchema = z
     }
   });
 
+/** Location-local calendar day as YYYY-MM-DD (en-CA). */
+function todayInTimeZone(timeZone?: string | null): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone?.trim() || "UTC",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+type HolidayPhase = "future" | "ongoing" | "past";
+
+function holidayPhase(start: string, end: string, today: string): HolidayPhase {
+  const s = start || "";
+  const e = end || start || "";
+  if (s && s > today) return "future";
+  if (e && e < today) return "past";
+  return "ongoing";
+}
+
 export default function HolidaysPage() {
   const { can } = useAuth();
   const qc = useQueryClient();
@@ -186,6 +210,31 @@ export default function HolidaysPage() {
       for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
       return setErrors(next);
     }
+    const nextErrors: Record<string, string> = {};
+    if (editing && editing !== "new") {
+      const locTz =
+        (locations.data ?? []).find((l) => String(l.id) === parsed.data.locationId)?.timeZone ?? null;
+      const today = todayInTimeZone(locTz);
+      const origStart = isoDate(editing.startDate);
+      const origEnd = isoDate(editing.endDate) || origStart;
+      const phase = holidayPhase(origStart, origEnd, today);
+      const end = parsed.data.endDate || parsed.data.startDate;
+      if (phase === "past") {
+        if (parsed.data.startDate !== origStart || end !== origEnd) {
+          nextErrors.endDate = "Past holidays cannot change dates";
+        }
+      } else if (phase === "ongoing") {
+        if (parsed.data.startDate !== origStart) {
+          nextErrors.startDate = "Start date of an ongoing holiday cannot change";
+        }
+        if (end < today) {
+          nextErrors.endDate = `Ongoing holiday can only be shortened to today (${today}) or later`;
+        }
+      }
+    }
+    if (Object.keys(nextErrors).length) {
+      return setErrors(nextErrors);
+    }
     setErrors({});
     setErr("");
     save.mutate({
@@ -200,6 +249,24 @@ export default function HolidaysPage() {
 
   const years = [thisYear - 1, thisYear, thisYear + 1, thisYear + 2].map(String);
   const activeLocName = locationId ? locName.get(locationId) : null;
+
+  const editLocTz =
+    editing && editing !== "new"
+      ? (locations.data ?? []).find((l) => String(l.id) === form.locationId)?.timeZone
+      : (locations.data ?? []).find((l) => String(l.id) === form.locationId)?.timeZone;
+  const editToday = todayInTimeZone(editLocTz);
+  const editPhase =
+    editing && editing !== "new"
+      ? holidayPhase(isoDate(editing.startDate), isoDate(editing.endDate) || isoDate(editing.startDate), editToday)
+      : null;
+  const canDeleteEditing =
+    !!editing &&
+    editing !== "new" &&
+    can("holidays", "delete") &&
+    editPhase === "future";
+  const datesLocked = editPhase === "past";
+  const startLocked = editPhase === "ongoing" || editPhase === "past";
+  const endMin = editPhase === "ongoing" ? editToday : form.startDate || undefined;
 
   return (
     <div className="stack">
@@ -319,7 +386,11 @@ export default function HolidaysPage() {
               <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </FormField>
             <FormField label="Location" required error={errors.locationId}>
-              <select value={form.locationId} onChange={(e) => setForm({ ...form, locationId: e.target.value })}>
+              <select
+                value={form.locationId}
+                disabled={startLocked}
+                onChange={(e) => setForm({ ...form, locationId: e.target.value })}
+              >
                 <option value="">Select…</option>
                 {(locations.data ?? []).map((l) => (
                   <option key={l.id} value={l.id}>
@@ -340,10 +411,16 @@ export default function HolidaysPage() {
                 ))}
               </select>
             </FormField>
-            <FormField label="From" required error={errors.startDate}>
+            <FormField
+              label="From"
+              required
+              error={errors.startDate}
+              hint={startLocked ? (editPhase === "past" ? "Past holiday — dates locked" : "Ongoing — start is locked") : undefined}
+            >
               <input
                 type="date"
                 value={form.startDate}
+                disabled={startLocked}
                 onChange={(e) =>
                   setForm((f) => ({
                     ...f,
@@ -353,11 +430,22 @@ export default function HolidaysPage() {
                 }
               />
             </FormField>
-            <FormField label="To" error={errors.endDate} hint="Same as From for a single day">
+            <FormField
+              label="To"
+              error={errors.endDate}
+              hint={
+                editPhase === "ongoing"
+                  ? `Ongoing — end must be ${editToday} or later (cannot remove today or past days)`
+                  : datesLocked
+                    ? "Past holiday — dates locked"
+                    : "Same as From for a single day"
+              }
+            >
               <input
                 type="date"
-                min={form.startDate}
+                min={endMin || form.startDate || undefined}
                 value={form.endDate}
+                disabled={datesLocked}
                 onChange={(e) => setForm({ ...form, endDate: e.target.value })}
               />
             </FormField>
@@ -372,9 +460,15 @@ export default function HolidaysPage() {
               </label>
             </div>
           </div>
+          {editPhase === "ongoing" ? (
+            <p className="small muted" style={{ margin: 0 }}>
+              Shortening an ongoing holiday notifies employees at this location only. Delete is not allowed
+              once the holiday has started.
+            </p>
+          ) : null}
           {err ? <div className="notice bad">{err}</div> : null}
           <div className="modal-foot">
-            {editing && editing !== "new" && can("holidays", "delete") ? (
+            {canDeleteEditing ? (
               <button
                 type="button"
                 className="btn danger"

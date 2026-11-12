@@ -1347,7 +1347,7 @@ export function EmployeeForm({ mode, employee, sections = "all", onSaved, onCanc
                 <FormField
                   label="Checklist override reason"
                   error={errors.offboardOverrideReason}
-                  hint="Required if the offboarding checklist is not completed."
+                  hint="Only if no OFFBOARDING template exists — otherwise a checklist attaches automatically when offboarding starts."
                   full
                 >
                   <input

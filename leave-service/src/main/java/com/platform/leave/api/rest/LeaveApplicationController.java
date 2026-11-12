@@ -22,8 +22,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/leave-applications")
@@ -40,21 +43,68 @@ public class LeaveApplicationController {
     @RequiresPermission(feature = "leave", action = "view")
     @Operation(summary = "List leave applications (paginated / searchable / filterable)",
             description = "Rows are limited by the caller's leave:view data scope: OWN = own, "
-                    + "TEAM = self + direct reports, ALL = everyone.")
+                    + "TEAM = self + direct reports, ALL = everyone. "
+                    + "filter.from + filter.to (or from/to) narrow to applications overlapping that date range. "
+                    + "q matches leave type, reason, status, or employee id.")
     public PageResponse<LeaveApplicationResponse> list(@RequestParam Map<String, String> params) {
         PageQuery query = PageQuery.fromParams(params);
+        Map<String, String> filters = new LinkedHashMap<>(query.filters());
+        LocalDate rangeFrom = parseDate(firstNonBlank(filters.remove("from"), filters.remove("overlapsFrom")));
+        LocalDate rangeTo = parseDate(firstNonBlank(filters.remove("to"), filters.remove("overlapsTo")));
+
+        List<LeaveApplicationResponse> rows = leaveApplicationService.listForCaller();
+        if (rangeFrom != null && rangeTo != null) {
+            final LocalDate from = rangeFrom;
+            final LocalDate to = rangeTo;
+            rows = rows.stream().filter(a -> overlaps(a.startDate(), a.endDate(), from, to)).toList();
+        }
+
+        PageQuery cleaned = new PageQuery(query.page(), query.size(), query.sort(), query.q(), filters);
         return DynamicListSupport.page(
-                leaveApplicationService.listForCaller(),
-                query,
-                a -> DynamicListSupport.containsIgnoreCase(a.leaveTypeCode(), query.q())
-                        || DynamicListSupport.containsIgnoreCase(a.reason(), query.q())
-                        || DynamicListSupport.containsIgnoreCase(a.status(), query.q()),
+                rows,
+                cleaned,
+                a -> DynamicListSupport.containsIgnoreCase(a.leaveTypeCode(), cleaned.q())
+                        || DynamicListSupport.containsIgnoreCase(a.reason(), cleaned.q())
+                        || DynamicListSupport.containsIgnoreCase(a.status(), cleaned.q())
+                        || DynamicListSupport.containsIgnoreCase(
+                                a.employeeId() == null ? null : String.valueOf(a.employeeId()), cleaned.q()),
                 a -> Map.of(
                         "status", a.status() == null ? "" : a.status(),
                         "leaveTypeCode", a.leaveTypeCode() == null ? "" : a.leaveTypeCode(),
-                        "employeeId", a.employeeId() == null ? "" : String.valueOf(a.employeeId())
+                        "employeeId", a.employeeId() == null ? "" : String.valueOf(a.employeeId()),
+                        "startDate", a.startDate() == null ? "" : a.startDate().toString(),
+                        "endDate", a.endDate() == null ? "" : a.endDate().toString()
                 )
         );
+    }
+
+    private static boolean overlaps(LocalDate start, LocalDate end, LocalDate from, LocalDate to) {
+        if (start == null || from == null || to == null) {
+            return false;
+        }
+        LocalDate finish = end != null ? end : start;
+        return !start.isAfter(to) && !finish.isBefore(from);
+    }
+
+    private static LocalDate parseDate(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(raw.trim());
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
+    private static String firstNonBlank(String a, String b) {
+        if (a != null && !a.isBlank()) {
+            return a;
+        }
+        if (b != null && !b.isBlank()) {
+            return b;
+        }
+        return null;
     }
 
     @GetMapping("/{id}")

@@ -1,5 +1,6 @@
 package com.platform.people.api.rest;
 
+import com.platform.common.security.PublicEndpoint;
 import com.platform.people.domain.Employee;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
 import io.swagger.v3.oas.annotations.Hidden;
@@ -28,6 +29,7 @@ import java.util.stream.Collectors;
  */
 @RestController
 @RequestMapping("/api/internal/payroll")
+@PublicEndpoint(reason = "S2S payroll employment facts; gated by InternalApiInterceptor (X-Internal-Key)")
 @Hidden
 public class InternalPayrollEmployeesController {
 

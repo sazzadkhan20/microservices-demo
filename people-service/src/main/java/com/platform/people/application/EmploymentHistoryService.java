@@ -13,18 +13,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** FR-EMP-07 — records old/new/editor/date for employment field changes. */
+/** FR-EMP-07 — records old/new/editor/date for employment field changes (history + audit log). */
 @Service
 public class EmploymentHistoryService {
 
     private final EmploymentFieldHistoryRepository repository;
     private final EmployeeRulesService rulesService;
+    private final AuditService auditService;
 
     public EmploymentHistoryService(
             EmploymentFieldHistoryRepository repository,
-            EmployeeRulesService rulesService) {
+            EmployeeRulesService rulesService,
+            AuditService auditService) {
         this.repository = repository;
         this.rulesService = rulesService;
+        this.auditService = auditService;
     }
 
     @Transactional
@@ -42,14 +45,23 @@ public class EmploymentHistoryService {
         if (!track) {
             return;
         }
+        Long actor = AuthContext.getEmployeeId();
         EmploymentFieldHistory row = new EmploymentFieldHistory();
         row.setEmployeeId(employeeId);
         row.setFieldName(fieldName);
         row.setOldValue(o);
         row.setNewValue(n);
-        row.setChangedBy(AuthContext.getEmployeeId());
+        row.setChangedBy(actor);
         row.setChangedAt(Instant.now());
         repository.save(row);
+        // Dual-write so federated audit page shows employment edits (FR-AU-01).
+        auditService.record(
+                actor,
+                "UPDATE",
+                "Employee",
+                String.valueOf(employeeId),
+                Map.of("field", fieldName, "value", o == null ? "" : o),
+                Map.of("field", fieldName, "value", n == null ? "" : n));
     }
 
     @Transactional

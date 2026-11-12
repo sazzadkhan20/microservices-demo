@@ -2,6 +2,7 @@ package com.platform.people.security;
 
 import com.platform.common.security.AuthContext;
 import com.platform.common.security.InternalCalls;
+import com.platform.common.security.PublicEndpoint;
 import com.platform.people.application.RbacService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -11,6 +12,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
+/**
+ * Deny-by-default RBAC (guide §4 / SEC-14): handlers must declare {@link RequiresPermission}
+ * or {@link PublicEndpoint}. Unmapped endpoints return 403.
+ */
 @Component
 public class RbacInterceptor implements HandlerInterceptor {
 
@@ -35,6 +40,16 @@ public class RbacInterceptor implements HandlerInterceptor {
             need = hm.getBeanType().getAnnotation(RequiresPermission.class);
         }
         if (need == null) {
+            PublicEndpoint pub = hm.getMethodAnnotation(PublicEndpoint.class);
+            if (pub == null) {
+                pub = hm.getBeanType().getAnnotation(PublicEndpoint.class);
+            }
+            if (pub == null) {
+                response.setStatus(HttpStatus.FORBIDDEN.value());
+                response.setContentType("application/json");
+                response.getWriter().write("{\"error\":\"Forbidden: endpoint is not permission-mapped\"}");
+                return false;
+            }
             return true;
         }
         if (need.allowInternal()

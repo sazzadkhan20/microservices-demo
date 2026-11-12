@@ -1,0 +1,20 @@
+# FR-CL-03 — employees must see and tick their own checklist items (OWN scope).
+# Managers already have TEAM view/edit; HR/Admin keep ALL.
+databaseChangeLog:
+  - changeSet:
+      id: people-010-employee-checklist-own
+      author: qii-hrms
+      changes:
+        - sql:
+            sql: |
+              INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+              SELECT r.id, p.id, 'OWN'
+              FROM app_role r
+              CROSS JOIN app_permission p
+              WHERE UPPER(r.code) = 'EMPLOYEE'
+                AND p.feature = 'checklists'
+                AND p.action IN ('view', 'edit')
+                AND NOT EXISTS (
+                  SELECT 1 FROM app_role_permission rp
+                  WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                );

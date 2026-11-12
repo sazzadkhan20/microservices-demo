@@ -1,6 +1,7 @@
 package com.platform.people.api.rest;
 
 import com.platform.common.security.InternalCalls;
+import com.platform.people.application.AuditService;
 import com.platform.people.application.UserAccountService;
 import com.platform.people.domain.Employee;
 import com.platform.people.domain.UserAccount;
@@ -24,7 +25,7 @@ import java.util.Map;
 /**
  * Service-to-service auth checks (gateway login token mint). Not exposed through the gateway
  * ({@code /internal/**} is blocked there); callers hit People directly with service + internal keys.
- * Login audit is written to {@code users} (OIDC {@code google_sub} reserved for later).
+ * Login writes {@code users.last_login_*} and a {@code SIGN_IN} row in {@code people_audit_log}.
  */
 @RestController
 @RequestMapping("/api/internal")
@@ -33,14 +34,17 @@ public class InternalAuthController {
 
     private final EmployeeRepository employeeRepository;
     private final UserAccountService userAccountService;
+    private final AuditService auditService;
     private final String internalKey;
 
     public InternalAuthController(
             EmployeeRepository employeeRepository,
             UserAccountService userAccountService,
+            AuditService auditService,
             @Value("${platform.security.internal-key}") String internalKey) {
         this.employeeRepository = employeeRepository;
         this.userAccountService = userAccountService;
+        this.auditService = auditService;
         this.internalKey = internalKey;
     }
 
@@ -83,6 +87,22 @@ public class InternalAuthController {
                 : request.getHeader("User-Agent");
         String location = body != null ? body.location() : null;
         UserAccount account = userAccountService.recordLogin(emp, ip, location, ua);
+        Map<String, Object> after = new LinkedHashMap<>();
+        after.put("employeeId", emp.getId());
+        after.put("email", emp.getEmail());
+        after.put("fullName", emp.getFullName());
+        after.put("ip", ip);
+        if (location != null && !location.isBlank()) {
+            after.put("location", location);
+        }
+        if (ua != null && !ua.isBlank()) {
+            after.put("userAgent", ua.length() > 240 ? ua.substring(0, 240) : ua);
+        }
+        if (account.getLastLoginAt() != null) {
+            after.put("lastLoginAt", account.getLastLoginAt().toString());
+        }
+        auditService.record(emp.getId(), "SIGN_IN", "UserAccount",
+                String.valueOf(account.getId()), null, after, ip);
         return authBody(emp, account);
     }
 

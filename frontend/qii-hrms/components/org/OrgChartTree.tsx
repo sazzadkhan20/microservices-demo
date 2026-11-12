@@ -20,7 +20,10 @@ export type OrgChartNode = {
 
 type Props = {
   roots: OrgChartNode[];
+  /** Legacy: open every node. Prefer {@link canOpenId}. */
   canOpen?: boolean;
+  /** Per-person gate — hide links outside employees:view scope (no Forbidden flash). */
+  canOpenId?: (id: string | number) => boolean;
   emptyMessage?: string;
 };
 
@@ -76,7 +79,16 @@ function filterTree(nodes: OrgChartNode[], q: string): OrgChartNode[] {
  * Org chart drawn from reporting lines (manager → reports).
  * Nested tree with expand/collapse, search, and person cards.
  */
-export function OrgChartTree({ roots, canOpen = true, emptyMessage = "No employees to draw." }: Props) {
+export function OrgChartTree({
+  roots,
+  canOpen = true,
+  canOpenId,
+  emptyMessage = "No employees to draw.",
+}: Props) {
+  const linkAllowed = (id: string | number) => {
+    if (canOpenId) return canOpenId(id);
+    return canOpen;
+  };
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
@@ -146,7 +158,7 @@ export function OrgChartTree({ roots, canOpen = true, emptyMessage = "No employe
 
           <div className="org-body">
             <span className="org-title-row">
-              {canOpen ? (
+              {linkAllowed(n.id) ? (
                 <Link href={`/employees/${n.id}`} className="org-name">
                   {name}
                 </Link>

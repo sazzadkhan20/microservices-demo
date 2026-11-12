@@ -1,6 +1,7 @@
 package com.platform.report.security;
 
 import com.platform.common.security.AuthContext;
+import com.platform.common.security.PublicEndpoint;
 import com.platform.report.infrastructure.HrmsGatewayClient;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -11,6 +12,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.io.IOException;
 
+/** Deny-by-default: handlers need {@link RequiresPermission} or {@link PublicEndpoint}. */
 @Component
 public class RbacInterceptor implements HandlerInterceptor {
 
@@ -31,6 +33,13 @@ public class RbacInterceptor implements HandlerInterceptor {
             need = hm.getBeanType().getAnnotation(RequiresPermission.class);
         }
         if (need == null) {
+            PublicEndpoint pub = hm.getMethodAnnotation(PublicEndpoint.class);
+            if (pub == null) {
+                pub = hm.getBeanType().getAnnotation(PublicEndpoint.class);
+            }
+            if (pub == null) {
+                return deny(response, HttpStatus.FORBIDDEN, "Forbidden: endpoint is not permission-mapped");
+            }
             return true;
         }
         Long employeeId = AuthContext.getEmployeeId();

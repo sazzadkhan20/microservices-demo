@@ -2,6 +2,8 @@ package com.platform.people.api.rest;
 
 import com.platform.people.application.OffboardingHandoverJob;
 import com.platform.people.application.OffboardingService;
+import com.platform.people.application.PeopleLifecycleNotifyJob;
+import com.platform.people.application.PeopleLifecycleNotifyService;
 import com.platform.people.application.ReportingLineDueJob;
 import com.platform.people.application.ReportingLineDueService;
 import com.platform.people.security.RequiresPermission;
@@ -31,16 +33,22 @@ public class InternalJobsController {
     private final OffboardingService offboardingService;
     private final ObjectProvider<ReportingLineDueJob> reportingLineDueJob;
     private final ReportingLineDueService reportingLineDueService;
+    private final ObjectProvider<PeopleLifecycleNotifyJob> lifecycleNotifyJob;
+    private final PeopleLifecycleNotifyService lifecycleNotifyService;
 
     public InternalJobsController(
             ObjectProvider<OffboardingHandoverJob> handoverJob,
             OffboardingService offboardingService,
             ObjectProvider<ReportingLineDueJob> reportingLineDueJob,
-            ReportingLineDueService reportingLineDueService) {
+            ReportingLineDueService reportingLineDueService,
+            ObjectProvider<PeopleLifecycleNotifyJob> lifecycleNotifyJob,
+            PeopleLifecycleNotifyService lifecycleNotifyService) {
         this.handoverJob = handoverJob;
         this.offboardingService = offboardingService;
         this.reportingLineDueJob = reportingLineDueJob;
         this.reportingLineDueService = reportingLineDueService;
+        this.lifecycleNotifyJob = lifecycleNotifyJob;
+        this.lifecycleNotifyService = lifecycleNotifyService;
     }
 
     @PostMapping("/offboarding-handover")
@@ -86,6 +94,17 @@ public class InternalJobsController {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("reportingLineDue", runReportingLineDue());
         out.put("offboardingHandover", runOffboardingHandover());
+        return out;
+    }
+
+    @PostMapping("/lifecycle-notify")
+    @RequiresPermission(feature = "employees", action = "edit", allowInternal = true)
+    public Map<String, Object> runLifecycleNotify() {
+        PeopleLifecycleNotifyJob job = lifecycleNotifyJob.getIfAvailable();
+        Map<String, Object> result = job != null ? job.runNow() : lifecycleNotifyService.runAll();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("job", "lifecycle-notify");
+        out.putAll(result);
         return out;
     }
 }

@@ -127,7 +127,10 @@ public class EmployeeDocumentController {
         String action = body != null && body.get("action") != null
                 ? String.valueOf(body.get("action")).trim().toUpperCase()
                 : "DOWNLOAD";
-        if (!"OPEN".equals(action) && !"DOWNLOAD".equals(action) && !"VIEW".equals(action)) {
+        if ("VIEW".equals(action)) {
+            action = "OPEN";
+        }
+        if (!"OPEN".equals(action) && !"DOWNLOAD".equals(action)) {
             action = "DOWNLOAD";
         }
         Long actor = AuthContext.getEmployeeId();

@@ -237,6 +237,39 @@ class ApprovalAuthorityServiceTest {
         assertEquals(ApprovalAuthorityService.Authority.STEP, d.authority());
     }
 
+    @Test
+    @DisplayName("RBAC role-pool step with null expectedApprover notifies all active holders")
+    void recipientIds_rolePool_includesHrHolders() {
+        EmployeeView hr1 = emp(20L, null, 200L, "HR");
+        EmployeeView hr2 = emp(21L, null, 200L, "HR");
+        EmployeeView other = emp(30L, null, null, null);
+        when(employeeRepository.findAll()).thenReturn(List.of(applicant, manager, hr1, hr2, other));
+        when(employeeRepository.findById(20L)).thenReturn(Optional.of(hr1));
+        when(employeeRepository.findById(21L)).thenReturn(Optional.of(hr2));
+        when(employeeRepository.findById(30L)).thenReturn(Optional.of(other));
+        when(rbacService.roleCodesFor(20L)).thenReturn(List.of("HR"));
+        when(rbacService.roleCodesFor(21L)).thenReturn(List.of("HR"));
+        when(rbacService.roleCodesFor(30L)).thenReturn(List.of("EMPLOYEE"));
+        when(rbacService.roleCodesFor(1L)).thenReturn(List.of("EMPLOYEE"));
+        when(rbacService.roleCodesFor(10L)).thenReturn(List.of("MANAGER"));
+
+        LeaveApproval step = step(2, "HR");
+        step.setResolver(ApprovalAuthorityService.RESOLVER_RBAC_ROLE);
+        step.setExpectedApproverId(null);
+
+        List<Long> ids = service.recipientIdsForStep(step, app);
+        assertEquals(List.of(20L, 21L), ids);
+    }
+
+    @Test
+    @DisplayName("Person-bound step notifies only expectedApproverId")
+    void recipientIds_personBound_usesExpected() {
+        when(employeeRepository.findById(10L)).thenReturn(Optional.of(manager));
+        LeaveApproval step = step(1, "MANAGER");
+        step.setExpectedApproverId(10L);
+        assertEquals(List.of(10L), service.recipientIdsForStep(step, app));
+    }
+
     private static LeaveApproval step(int order, String role) {
         LeaveApproval s = new LeaveApproval();
         s.setStepOrder(order);

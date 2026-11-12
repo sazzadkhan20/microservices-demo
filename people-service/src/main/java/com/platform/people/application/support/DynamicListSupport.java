@@ -86,8 +86,17 @@ public final class DynamicListSupport {
 
     private static boolean matchesFilter(String fieldValue, String rawFilter) {
         if (rawFilter == null) return true;
-        String fv = fieldValue.toLowerCase(Locale.ROOT);
         String f = rawFilter.trim();
+        // OR of alternatives: APPROVE|REJECT|STEP_APPROVE (each part supports * wildcards)
+        if (f.contains("|")) {
+            for (String part : f.split("\\|")) {
+                if (matchesFilter(fieldValue, part.trim())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        String fv = fieldValue.toLowerCase(Locale.ROOT);
         if (f.startsWith("*") && f.endsWith("*") && f.length() > 1) {
             return fv.contains(f.substring(1, f.length() - 1).toLowerCase(Locale.ROOT));
         }

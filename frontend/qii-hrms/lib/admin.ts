@@ -117,15 +117,17 @@ export function saveBlob({ blob, filename }: BlobResult) {
 
 /** Minimal RFC-4180 CSV parser (quoted fields, escaped quotes, CRLF). */
 export function parseCsv(text: string): string[][] {
+  // Strip UTF-8 BOM if present (Excel-friendly CSV downloads).
+  const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   const rows: string[][] = [];
   let row: string[] = [];
   let cell = "";
   let quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
     if (quoted) {
       if (c === '"') {
-        if (text[i + 1] === '"') {
+        if (src[i + 1] === '"') {
           cell += '"';
           i++;
         } else quoted = false;
@@ -135,7 +137,7 @@ export function parseCsv(text: string): string[][] {
       row.push(cell);
       cell = "";
     } else if (c === "\n" || c === "\r") {
-      if (c === "\r" && text[i + 1] === "\n") i++;
+      if (c === "\r" && src[i + 1] === "\n") i++;
       row.push(cell);
       cell = "";
       if (row.some((x) => x !== "")) rows.push(row);

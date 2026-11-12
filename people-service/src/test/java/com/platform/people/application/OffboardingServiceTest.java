@@ -56,6 +56,7 @@ class OffboardingServiceTest {
     @Mock EmploymentHistoryService employmentHistoryService;
     @Mock EmployeeRulesService rulesService;
     @Mock UserAccountService userAccountService;
+    @Mock ChecklistAssignmentService checklistAssignmentService;
 
     private OffboardingService service;
     private Clock clock;
@@ -76,9 +77,12 @@ class OffboardingServiceTest {
                 employmentHistoryService,
                 rulesService,
                 userAccountService,
+                checklistAssignmentService,
                 clock,
                 "UTC",
                 null);
+        // Override path skips attach requirement; attach is still attempted (best-effort)
+        when(checklistAssignmentService.hasAssignedChecklist(anyLong(), eq("OFFBOARDING"))).thenReturn(true);
         rules = new EmployeeRulesService.Rules(
                 "qiicreative.com.au",
                 List.of("qiicreative.com.au"),

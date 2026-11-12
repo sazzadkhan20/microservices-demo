@@ -29,14 +29,17 @@ public class ChecklistAssignmentService {
     private final TenantSettingsRepository settingsRepository;
     private final EmployeeRepository employeeRepository;
     private final AuditService auditService;
+    private final ChecklistOwnerResolver ownerResolver;
 
     public ChecklistAssignmentService(
             TenantSettingsRepository settingsRepository,
             EmployeeRepository employeeRepository,
-            AuditService auditService) {
+            AuditService auditService,
+            ChecklistOwnerResolver ownerResolver) {
         this.settingsRepository = settingsRepository;
         this.employeeRepository = employeeRepository;
         this.auditService = auditService;
+        this.ownerResolver = ownerResolver;
     }
 
     @Transactional
@@ -63,13 +66,17 @@ public class ChecklistAssignmentService {
             it.remove("completedAt");
             String ownerType = src.get("ownerType") != null
                     ? String.valueOf(src.get("ownerType")).toUpperCase(Locale.ROOT) : null;
-            Long ownerEmployeeId = resolveOwner(ownerType, actor, employee);
+            Long namedId = asLong(src.get("ownerEmployeeId"));
+            // NAMED keeps template ownerEmployeeId; HR/MANAGER/EMPLOYEE resolve from org, not assigner.
+            Long ownerEmployeeId = ownerResolver.resolve(ownerType, namedId, employee);
             if (ownerEmployeeId != null) {
                 it.put("ownerEmployeeId", ownerEmployeeId);
+            } else {
+                it.remove("ownerEmployeeId");
             }
-            if (src.get("dueOffsetDays") instanceof Number n) {
-                it.put("dueDate", base.plusDays(n.longValue()).toString());
-            }
+            int offset = parseDueOffsetDays(src.get("dueOffsetDays"));
+            it.put("dueOffsetDays", offset);
+            it.put("dueDate", base.plusDays(offset).toString());
             assignedItems.add(it);
         }
 
@@ -78,6 +85,7 @@ public class ChecklistAssignmentService {
                 String.valueOf(template.get("name")), resolvedType, "OPEN", assignedItems);
         assigned.put("employeeId", employeeId);
         assigned.put("baseDate", base.toString());
+        assigned.put("templateId", template.get("id"));
         all.add(assigned);
         persist(row, all);
 
@@ -96,16 +104,111 @@ public class ChecklistAssignmentService {
         }
     }
 
-    private Long resolveOwner(String ownerType, Long actor, Employee employee) {
-        if (ownerType == null) {
+    /**
+     * FR-CL-02 — attach offboarding checklist when offboarding starts (idempotent if already assigned).
+     * Never fails the status change if no template exists.
+     */
+    @Transactional
+    public void assignOffboardingBestEffort(Long employeeId, LocalDate exitDate) {
+        if (hasAssignedChecklist(employeeId, "OFFBOARDING")) {
+            return;
+        }
+        try {
+            assign(employeeId, "OFFBOARDING", exitDate);
+        } catch (IllegalArgumentException ignored) {
+            // no template yet — HR can assign later
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public boolean hasAssignedChecklist(Long employeeId, String type) {
+        if (employeeId == null || type == null) {
+            return false;
+        }
+        String want = type.trim().toUpperCase(Locale.ROOT);
+        TenantSettings row = settingsRepository.findAll().stream().findFirst().orElse(null);
+        for (Map<String, Object> c : loadChecklists(row)) {
+            if (c.get("employeeId") == null) {
+                continue;
+            }
+            if (!want.equalsIgnoreCase(String.valueOf(c.get("type")))) {
+                continue;
+            }
+            if (String.valueOf(employeeId).equals(String.valueOf(c.get("employeeId")))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Fix assigned HR items that were wrongly owned by Admin/SuperAdmin (assigner).
+     * Idempotent — returns number of items repaired.
+     */
+    @Transactional
+    public int repairMisassignedHrOwners() {
+        TenantSettings row = settingsRow();
+        List<Map<String, Object>> all = loadChecklists(row);
+        Long primaryHr = ownerResolver.primaryHrEmployeeId();
+        if (primaryHr == null) {
+            return 0;
+        }
+        int fixed = 0;
+        boolean changed = false;
+        for (Map<String, Object> c : all) {
+            if (c.get("employeeId") == null) {
+                continue;
+            }
+            List<Map<String, Object>> items = itemsOf(c);
+            boolean itemChanged = false;
+            for (Map<String, Object> item : items) {
+                String ownerType = item.get("ownerType") == null
+                        ? "" : String.valueOf(item.get("ownerType")).trim().toUpperCase(Locale.ROOT);
+                if (!"HR".equals(ownerType)) {
+                    continue;
+                }
+                Long ownerId = asLong(item.get("ownerEmployeeId"));
+                if (ownerResolver.needsHrOwnerRepair(ownerId)) {
+                    item.put("ownerEmployeeId", primaryHr);
+                    fixed++;
+                    itemChanged = true;
+                }
+            }
+            if (itemChanged) {
+                c.put("items", items);
+                changed = true;
+            }
+        }
+        if (changed) {
+            persist(row, all);
+        }
+        return fixed;
+    }
+
+    static int parseDueOffsetDays(Object raw) {
+        if (raw instanceof Number n) {
+            return n.intValue();
+        }
+        if (raw != null && !String.valueOf(raw).isBlank()) {
+            try {
+                return Integer.parseInt(String.valueOf(raw).trim());
+            } catch (NumberFormatException e) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    private static Long asLong(Object v) {
+        if (v == null) return null;
+        if (v instanceof Number n) return n.longValue();
+        String s = String.valueOf(v).trim();
+        if (s.isEmpty() || "null".equalsIgnoreCase(s)) return null;
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
             return null;
         }
-        return switch (ownerType) {
-            case "HR" -> actor;
-            case "MANAGER" -> employee.getManagerId();
-            case "EMPLOYEE" -> employee.getId();
-            default -> null;
-        };
     }
 
     private TenantSettings settingsRow() {

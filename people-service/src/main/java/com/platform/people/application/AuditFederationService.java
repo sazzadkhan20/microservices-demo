@@ -1,6 +1,7 @@
 package com.platform.people.application;
 
 import com.platform.common.constants.PlatformHeaders;
+import com.platform.common.security.InternalCalls;
 import com.platform.people.api.dto.AggregatedAuditRow;
 import com.platform.people.domain.AuditLog;
 import com.platform.people.infrastructure.persistence.AuditLogRepository;
@@ -26,17 +27,20 @@ import java.util.Map;
 public class AuditFederationService {
 
     private static final Logger log = LoggerFactory.getLogger(AuditFederationService.class);
-    private static final int PER_SERVICE_LIMIT = 500;
+    /** Cap per owning service — keep high enough that older role/doc rows stay visible. */
+    private static final int PER_SERVICE_LIMIT = 2000;
 
     private final AuditLogRepository peopleRepository;
     private final RestClient.Builder restClientBuilder;
     private final String serviceKey;
+    private final String internalKey;
     private final List<RemoteAuditSource> remotes;
 
     public AuditFederationService(
             AuditLogRepository peopleRepository,
             RestClient.Builder restClientBuilder,
             @Value("${platform.security.service-key}") String serviceKey,
+            @Value("${platform.security.internal-key}") String internalKey,
             @Value("${platform.leave-base-url:http://127.0.0.1:8086}") String leaveBaseUrl,
             @Value("${platform.time-work-base-url:http://127.0.0.1:8087}") String timeWorkBaseUrl,
             @Value("${platform.payroll-base-url:http://127.0.0.1:8082}") String payrollBaseUrl,
@@ -46,6 +50,7 @@ public class AuditFederationService {
         this.peopleRepository = peopleRepository;
         this.restClientBuilder = restClientBuilder;
         this.serviceKey = serviceKey;
+        this.internalKey = internalKey;
         this.remotes = List.of(
                 new RemoteAuditSource("leave", leaveBaseUrl),
                 new RemoteAuditSource("time-work", timeWorkBaseUrl),
@@ -75,6 +80,7 @@ public class AuditFederationService {
             RestClient client = restClientBuilder
                     .baseUrl(remote.baseUrl().replaceAll("/$", ""))
                     .defaultHeader(PlatformHeaders.SERVICE_KEY, serviceKey)
+                    .defaultHeader(InternalCalls.HEADER, internalKey)
                     .build();
             List<Map<String, Object>> body = client.get()
                     .uri(uri -> uri.path("/api/internal/audit")

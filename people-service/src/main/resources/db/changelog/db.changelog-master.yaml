@@ -22,3 +22,7 @@ databaseChangeLog:
       file: db/changelog/changes/008-own-payslip-view-manager-hr.yaml
   - include:
       file: db/changelog/changes/009-employee-payroll-view-own.yaml
+  - include:
+      file: db/changelog/changes/010-employee-checklist-own.yaml
+  - include:
+      file: db/changelog/changes/011-rbac-hr-tasks-roles-appendix-b.yaml

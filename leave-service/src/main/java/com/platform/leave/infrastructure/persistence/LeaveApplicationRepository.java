@@ -85,4 +85,14 @@ public interface LeaveApplicationRepository extends JpaRepository<LeaveApplicati
                and a.updatedAt < :cutoff
             """)
     List<LeaveApplication> findPendingApprovalOlderThan(@Param("cutoff") java.time.Instant cutoff);
+
+    @Query("""
+            select a from LeaveApplication a
+             where a.status in ('PENDING_APPROVAL', 'PENDING_RELIEF', 'SUBMITTED')
+               and a.balanceDeducted = false
+               and a.startDate >= :yearStart
+               and a.startDate < :yearEnd
+            """)
+    List<LeaveApplication> findPendingForYear(@Param("yearStart") LocalDate yearStart,
+                                              @Param("yearEnd") LocalDate yearEnd);
 }

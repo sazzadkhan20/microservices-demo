@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/approvals")
@@ -34,6 +35,13 @@ public class ApprovalsController {
                     + "HR does not see items still waiting on the reporting manager.")
     public List<LeaveApplicationResponse> pending() {
         return leaveApplicationService.pendingForCaller();
+    }
+
+    @GetMapping("/dashboard-stats")
+    @RequiresPermission(feature = "leave", action = "view")
+    @Operation(summary = "Dashboard — pending leave in report scope + count waiting 2+ working days")
+    public Map<String, Object> dashboardStats() {
+        return leaveApplicationService.pendingDashboardStats();
     }
 
     @PostMapping("/{id}/{action}")

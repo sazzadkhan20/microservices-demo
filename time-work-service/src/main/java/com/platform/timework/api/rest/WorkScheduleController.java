@@ -3,6 +3,7 @@ package com.platform.timework.api.rest;
 import com.platform.common.api.PageQuery;
 import com.platform.common.api.PageResponse;
 import com.platform.common.security.AuthContext;
+import com.platform.timework.application.DataScopeService;
 import com.platform.timework.application.WorkScheduleService;
 import com.platform.timework.application.support.DynamicListSupport;
 import com.platform.timework.client.people.EmployeeView;
@@ -37,10 +38,15 @@ public class WorkScheduleController {
 
     private final WorkScheduleService workScheduleService;
     private final PeopleEmployeeGateway employeeRepository;
+    private final DataScopeService dataScopeService;
 
-    public WorkScheduleController(WorkScheduleService workScheduleService, PeopleEmployeeGateway employeeRepository) {
+    public WorkScheduleController(
+            WorkScheduleService workScheduleService,
+            PeopleEmployeeGateway employeeRepository,
+            DataScopeService dataScopeService) {
         this.workScheduleService = workScheduleService;
         this.employeeRepository = employeeRepository;
+        this.dataScopeService = dataScopeService;
     }
 
     @GetMapping
@@ -112,9 +118,15 @@ public class WorkScheduleController {
     }
 
     @GetMapping("/resolve/{employeeId}")
-    @RequiresPermission(feature = "attendance_settings", action = "view")
-    @Operation(summary = "Resolved schedule for an employee (EMPLOYEE > TEAM > LOCATION)")
+    @RequiresPermission(feature = "attendance", action = "view")
+    @Operation(summary = "Resolved schedule for an employee in attendance scope (self / team / all)")
     public Map<String, Object> resolve(@PathVariable Long employeeId) {
+        Long actor = AuthContext.requireEmployeeId();
+        // Managers/HR with attendance:view TEAM|ALL; employees OWN (self). Settings edit still gates mutations.
+        if (!dataScopeService.canAccess(actor, employeeId, "attendance", "view")
+                && !dataScopeService.canAccess(actor, employeeId, "attendance_settings", "view")) {
+            throw new SecurityException("Forbidden: attendance:view does not cover employee " + employeeId);
+        }
         return workScheduleService.resolveView(employeeId);
     }
 

@@ -9,6 +9,8 @@ import java.util.Optional;
 public interface LeaveBalanceLedgerRepository extends JpaRepository<LeaveBalanceLedger, Long> {
     List<LeaveBalanceLedger> findByEmployeeIdOrderByCreatedAtDesc(Long employeeId);
 
+    List<LeaveBalanceLedger> findByYear(int year);
+
     Optional<LeaveBalanceLedger> findByOperationKey(String operationKey);
 
     List<LeaveBalanceLedger> findByOperationKeyStartingWithOrderByIdAsc(String prefix);

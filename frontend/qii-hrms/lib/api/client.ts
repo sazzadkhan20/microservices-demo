@@ -146,7 +146,11 @@ export async function apiFetch<T = unknown, S extends z.ZodType | undefined = un
   const data = await parseBody(res);
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith("/api/auth/")) redirectToLogin();
-    throw new ApiError(res.status, messageFrom(data, res.statusText || "Request failed"), data);
+    const fallback =
+      res.status === 403
+        ? "You do not have permission for this action"
+        : res.statusText || "Request failed";
+    throw new ApiError(res.status, messageFrom(data, fallback), data);
   }
   if (schema) {
     const parsed = (schema as z.ZodType).safeParse(data);
@@ -190,6 +194,9 @@ export async function downloadFile(path: string, query?: QueryParams, fallbackNa
       msg = messageFrom(await res.json(), msg);
     } catch {}
     if (res.status === 401) redirectToLogin();
+    if (res.status === 403) {
+      throw new ApiError(403, msg || "You do not have permission to download this file");
+    }
     throw new ApiError(res.status, msg || "Download failed");
   }
   const cd = res.headers.get("content-disposition") ?? "";

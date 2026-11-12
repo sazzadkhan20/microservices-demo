@@ -53,6 +53,7 @@ public class AttendanceService {
     private final AuditService auditService;
     private final PeopleAuthzClient rbacService;
     private final DataScopeService dataScopeService;
+    private final TimeWorkNotificationHook notificationHook;
     private final Clock clock;
 
     public AttendanceService(
@@ -67,6 +68,7 @@ public class AttendanceService {
             AuditService auditService,
             PeopleAuthzClient rbacService,
             DataScopeService dataScopeService,
+            TimeWorkNotificationHook notificationHook,
             Clock clock) {
         this.repository = repository;
         this.correctionRepository = correctionRepository;
@@ -79,6 +81,7 @@ public class AttendanceService {
         this.auditService = auditService;
         this.rbacService = rbacService;
         this.dataScopeService = dataScopeService;
+        this.notificationHook = notificationHook;
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
@@ -982,6 +985,7 @@ public class AttendanceService {
                         "workDate", rec.getWorkDate().toString(),
                         "checkoutCutoff", window.cutoffAt().toString()
                 ));
+        notificationHook.notifyMissingCheckout(rec.getEmployeeId(), rec.getWorkDate().toString());
         return true;
     }
 

@@ -93,7 +93,7 @@ spring:
         - id: hrms-time-work
           uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
           predicates:
-            - Path=/hrms/api/attendance/**,/hrms/api/work-schedules/**,/hrms/api/holidays/**,/hrms/api/tasks/**,/hrms/api/work-logs/**
+            - Path=/hrms/api/attendance/**,/hrms/api/work-schedules/**,/hrms/api/holidays/**,/hrms/api/tasks/**,/hrms/api/work-logs/**,/hrms/api/dashboard/work-hours,/hrms/api/dashboard/work-hours/**,/hrms/api/dashboard/attendance-today,/hrms/api/dashboard/attendance-today/**,/hrms/api/dashboard/employee/**
           filters:
             - RewritePath=/hrms/(?<segment>.*), /${segment}
 

@@ -75,9 +75,12 @@ public class ReportExportListener {
         try {
             int year = Integer.parseInt(String.valueOf(payload.get("year")));
             int month = Integer.parseInt(String.valueOf(payload.get("month")));
-            Long employeeId = payload.get("employeeId") == null ? null
-                    : Long.parseLong(String.valueOf(payload.get("employeeId")));
-            AttendanceReportRequest req = new AttendanceReportRequest(year, month, employeeId);
+            Long employeeId = asLong(payload.get("employeeId"));
+            Long locationId = asLong(payload.get("locationId"));
+            Long departmentId = asLong(payload.get("departmentId"));
+            Long teamId = asLong(payload.get("teamId"));
+            AttendanceReportRequest req = new AttendanceReportRequest(
+                    year, month, employeeId, locationId, departmentId, teamId);
             String csv = attendanceService.generateMonthlyCsv(req);
             byte[] bytes = csv.getBytes(StandardCharsets.UTF_8);
             job.setSizeBytes(bytes.length);
@@ -96,5 +99,19 @@ public class ReportExportListener {
             exportRepository.save(job);
             throw e;
         }
+    }
+
+    private static Long asLong(Object v) {
+        if (v == null || "null".equals(String.valueOf(v))) {
+            return null;
+        }
+        if (v instanceof Number n) {
+            return n.longValue();
+        }
+        String s = String.valueOf(v).trim();
+        if (s.isEmpty()) {
+            return null;
+        }
+        return Long.parseLong(s);
     }
 }

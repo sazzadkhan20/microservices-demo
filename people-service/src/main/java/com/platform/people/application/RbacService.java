@@ -70,6 +70,12 @@ public class RbacService {
             Map.entry("notifications:view", List.of("notifications:view", "emails:view")),
             // Settings / leave_setup / holidays / attendance_settings stay on their own feature keys.
             Map.entry("settings:manage", List.of("settings:manage")),
+            // Catalog has no settings:view — manage satisfies read of settings bags.
+            Map.entry("settings:view", List.of("settings:view", "settings:manage")),
+            // Audit log is read-only; settings:manage also grants access (admin console).
+            Map.entry("audit:view", List.of("audit:view", "settings:manage")),
+            Map.entry("worklogs:view", List.of("worklogs:view", "attendance:view")),
+            Map.entry("worklogs:edit", List.of("worklogs:edit", "attendance:checkin", "attendance_settings:edit")),
             // Org structure (departments / teams / locations) — prototype hierarchy.edit only.
             // Do NOT alias holidays or schedules into org:manage (that let HR/Manager mutate org).
             Map.entry("org:view", List.of("org:view", "hierarchy:view")),
@@ -504,5 +510,49 @@ public class RbacService {
                     "Not allowed: role " + role.getCode() + " requires at least "
                             + role.getMinHolders() + " holder(s)");
         }
+    }
+
+    /**
+     * Appendix B — Admin & Super Admin hold every catalog permission at ALL.
+     * SUPERADMIN is covered at runtime by {@code grants_wildcard} (*:*).
+     * ADMIN receives any missing matrix-visible permission rows (new catalog keys).
+     * Role-admin keys ({@code roles:create|delete|manage}) stay SUPERADMIN-only.
+     *
+     * @return number of ADMIN grants inserted
+     */
+    @Transactional
+    public int ensurePrivilegedRolesHaveCatalogPermissions() {
+        AppRole admin = roleRepository.findByCode("ADMIN").orElse(null);
+        if (admin == null) {
+            return 0;
+        }
+        Set<String> reserved = Set.of("roles:create", "roles:delete", "roles:manage");
+        List<AppPermission> catalog = permissionRepository.findAll().stream()
+                .filter(AppPermission::isMatrixVisible)
+                .filter(p -> p.getFeature() != null && p.getAction() != null)
+                .filter(p -> !reserved.contains(p.key().toLowerCase(Locale.ROOT)))
+                .toList();
+        if (catalog.isEmpty()) {
+            return 0;
+        }
+        List<AppRolePermission> existing = rolePermissionRepository.findByRoleIdIn(List.of(admin.getId()));
+        Set<Long> held = existing.stream().map(AppRolePermission::getPermissionId).collect(Collectors.toSet());
+        int added = 0;
+        for (AppPermission p : catalog) {
+            if (held.contains(p.getId())) {
+                continue;
+            }
+            AppRolePermission link = new AppRolePermission();
+            link.setRoleId(admin.getId());
+            link.setPermissionId(p.getId());
+            link.setDataScope("ALL");
+            rolePermissionRepository.save(link);
+            held.add(p.getId());
+            added++;
+        }
+        if (added > 0) {
+            syncLegacyApiGrants(admin.getId());
+        }
+        return added;
     }
 }

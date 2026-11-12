@@ -69,6 +69,14 @@ function synonyms(action: string): string[] {
 const FE_ALIASES: Record<string, readonly string[]> = {
   "payroll:view": ["payroll:view", "salary:view", "salary:edit"],
   "salary:view": ["salary:view", "salary:edit"],
+  // settings:view is not in the catalog; manage covers read of settings bags.
+  "settings:view": ["settings:view", "settings:manage"],
+  "worklogs:view": ["worklogs:view", "attendance:view"],
+  "worklogs:edit": ["worklogs:edit", "attendance:checkin", "attendance_settings:edit"],
+  "directory:view": ["directory:view", "employees:view"],
+  "documents:view": ["documents:view", "employees:view"],
+  "documents:create": ["documents:create", "employees:edit"],
+  "documents:delete": ["documents:delete", "employees:edit"],
 };
 
 export function hasPermission(
@@ -100,4 +108,32 @@ export const anyOf = (...reqs: PermissionRequirement[]): AccessRule => ({ any: r
 export function satisfies(perms: PermissionSet | readonly string[] | null | undefined, rule: AccessRule): boolean {
   if ("always" in rule) return true;
   return rule.any.some(([feature, action]) => hasPermission(perms, feature, action));
+}
+
+/** Scope map from /me (`employees:view` → OWN|TEAM|ALL). */
+export type ScopeMap = Record<string, string> | null | undefined;
+
+/**
+ * Whether the actor may open `/employees/{id}` without a 403.
+ * OWN → self only; ALL/YES → anyone; TEAM → allow link (server still enforces subtree).
+ */
+export function canOpenEmployeeRecord(
+  actorEmployeeId: string | number | null | undefined,
+  targetEmployeeId: string | number | null | undefined,
+  perms: PermissionSet | readonly string[] | null | undefined,
+  scopes?: ScopeMap,
+): boolean {
+  if (targetEmployeeId == null || targetEmployeeId === "") return false;
+  if (!hasPermission(perms, "employees", "view")) return false;
+  const set = perms instanceof Set ? perms : toPermissionSet(perms);
+  if (set.has("*:*")) return true;
+  const scope = String(scopes?.["employees:view"] ?? scopes?.["employees:read"] ?? "")
+    .trim()
+    .toUpperCase();
+  if (scope === "ALL" || scope === "YES") return true;
+  if (scope === "OWN" || !scope) {
+    return String(actorEmployeeId) === String(targetEmployeeId);
+  }
+  // TEAM — link allowed; detail API enforces reporting subtree.
+  return true;
 }

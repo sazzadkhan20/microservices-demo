@@ -141,6 +141,50 @@ public class ApprovalAuthorityService {
         return requesterHoldsStepRole(employeeId, role, roleCodes);
     }
 
+    /**
+     * Recipients for a pending approval step notification.
+     * Person-bound steps → expectedApproverId; RBAC/designation pools → all active holders
+     * (excluding the requester). Used for submit, mid-chain advance, cancel-request, and idle.
+     */
+    @Transactional(readOnly = true)
+    public List<Long> recipientIdsForStep(LeaveApproval step, LeaveApplication app) {
+        if (step == null || app == null) {
+            return List.of();
+        }
+        if (step.getExpectedApproverId() != null) {
+            Long id = step.getExpectedApproverId();
+            if (id.equals(app.getEmployeeId())) {
+                return List.of();
+            }
+            EmployeeView exp = employeeRepository.findById(id).orElse(null);
+            if (exp == null || !exp.isActive()) {
+                return List.of();
+            }
+            return List.of(id);
+        }
+        StepRule rule = resolveStepRule(step);
+        String resolver = rule.resolver() == null ? "" : rule.resolver().toUpperCase(Locale.ROOT);
+        boolean rolePool = RESOLVER_RBAC_ROLE.equals(resolver)
+                || RESOLVER_DESIGNATION_OR_RBAC.equals(resolver);
+        if (!rolePool) {
+            return List.of();
+        }
+        Long requesterId = app.getEmployeeId();
+        List<Long> out = new ArrayList<>();
+        for (EmployeeView emp : employeeRepository.findAll()) {
+            if (emp == null || emp.getId() == null || !emp.isActive()) {
+                continue;
+            }
+            if (emp.getId().equals(requesterId)) {
+                continue;
+            }
+            if (matchesResolver(emp, app, rule)) {
+                out.add(emp.getId());
+            }
+        }
+        return out;
+    }
+
     private boolean matchesResolver(EmployeeView actor, LeaveApplication app, StepRule rule) {
         String resolver = rule.resolver() == null ? RESOLVER_DESIGNATION_OR_RBAC : rule.resolver().toUpperCase(Locale.ROOT);
         return switch (resolver) {

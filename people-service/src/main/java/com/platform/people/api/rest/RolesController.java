@@ -87,6 +87,8 @@ public class RolesController {
     @RequiresPermission(feature = "roles", action = "view")
     @Operation(summary = "Full Roles matrix catalog (prototype feature rows + scoped flag)")
     public Map<String, Object> catalog() {
+        // Appendix B — new catalog keys auto-grant to ADMIN (SUPERADMIN via grants_wildcard).
+        rbacService.ensurePrivilegedRolesHaveCatalogPermissions();
         List<AppPermission> visible = permissionRepository.findAll().stream()
                 .filter(AppPermission::isMatrixVisible)
                 .sorted(java.util.Comparator

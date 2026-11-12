@@ -8,33 +8,29 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalTime;
-import java.time.ZoneId;
 import java.time.YearMonth;
-import java.time.format.DateTimeFormatter;
-import java.time.format.DateTimeParseException;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
- * Monthly attendance CSV sourced from HRMS attendance history (not synthetic placeholders).
+ * FR-RP-01 — monthly attendance register: one row per person, one column per day + status totals.
  */
 @Service
 public class AttendanceReportService {
 
-    private static final String CSV_HEADER = "employeeId,date,status,checkIn,checkOut\n";
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ISO_LOCAL_DATE;
-    private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
-    /** Default when attendance row has no timeZone (Qii Creative, Asia/Dhaka). */
-    private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Dhaka");
+    private static final String[] TOTAL_KEYS = {"P", "L", "HD", "A", "M", "OL", "WO", "HO", "NS", "NE", "W", "NC"};
 
     private final HrmsGatewayClient hrms;
+    private final ReportScope scope;
+    private final AuditService auditService;
 
-    public AttendanceReportService(HrmsGatewayClient hrms) {
+    public AttendanceReportService(HrmsGatewayClient hrms, ReportScope scope, AuditService auditService) {
         this.hrms = hrms;
+        this.scope = scope;
+        this.auditService = auditService;
     }
 
     public boolean canListAllExports(Long actorId) {
@@ -48,147 +44,96 @@ public class AttendanceReportService {
         if (actor == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing employee identity");
         }
-        Long target = req.employeeId() == null ? actor : req.employeeId();
-        // Without reports:export / org-wide rights, only own report (permission interceptor already
-        // required reports:view; export of others needs reports:export or being self).
-        if (!target.equals(actor) && !hrms.hasPermission(actor, "reports", "export")
-                && !hrms.hasPermission(actor, "payroll", "run")
-                && !hrms.hasPermission(actor, "employees", "edit")) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN,
-                    "Forbidden: reports:export required for other employees");
-        }
 
         YearMonth ym = YearMonth.of(req.year(), req.month());
         LocalDate from = ym.atDay(1);
         LocalDate to = ym.atEndOfMonth();
+        int daysInMonth = ym.lengthOfMonth();
 
-        List<JsonNode> rows = hrms.attendanceForEmployee(actor, target, from, to);
-        Map<LocalDate, JsonNode> byDate = new HashMap<>();
-        for (JsonNode row : rows) {
-            LocalDate d = parseDate(row);
-            if (d != null && !d.isBefore(from) && !d.isAfter(to)) {
-                byDate.put(d, row);
-            }
+        List<JsonNode> people = scope.employees(
+                actor, req.employeeId(), req.locationId(), req.departmentId(), req.teamId());
+        if (people.isEmpty()) {
+            // OWN scope with no match still returns header-only file
+            return header(daysInMonth).toString();
         }
 
-        StringBuilder sb = new StringBuilder(CSV_HEADER);
-        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
-            JsonNode row = byDate.get(d);
-            String status;
-            String checkIn = "";
-            String checkOut = "";
-            if (row != null) {
-                status = text(row, "status", text(row, "statusCode", "RECORDED"));
-                ZoneId zone = zoneOf(row);
-                // Prefer HRMS local wall-clock fields (already in company TZ); else Instant → zone.
-                checkIn = localTimeOf(row, zone, "checkInLocal", "checkIn", "checkInAt");
-                checkOut = localTimeOf(row, zone, "checkOutLocal", "checkOut", "checkOutAt");
-            } else {
-                status = "NO_RECORD";
-            }
-            sb.append(target).append(',')
-                    .append(d.format(DATE_FMT)).append(',')
-                    .append(csv(status)).append(',')
-                    .append(csv(checkIn)).append(',')
-                    .append(csv(checkOut)).append('\n');
-        }
-        return sb.toString();
-    }
-
-    private static LocalDate parseDate(JsonNode row) {
-        if (row == null) return null;
-        JsonNode n = row.get("workDate");
-        if (n == null) n = row.get("date");
-        if (n == null) return null;
-        if (n.isArray() && n.size() >= 3) {
-            return LocalDate.of(n.get(0).asInt(), n.get(1).asInt(), n.get(2).asInt());
-        }
-        String s = n.asText(null);
-        if (s == null || s.isBlank()) return null;
-        if (s.length() >= 10) s = s.substring(0, 10);
-        return LocalDate.parse(s);
-    }
-
-    /**
-     * Format punch time in the employee's timezone.
-     * Bug fixed: Instant.toString() is UTC ({@code 04:05Z}); slicing HH:mm showed UTC and looked
-     * like ±6h vs Asia/Dhaka local time on the attendance UI.
-     */
-    private static String localTimeOf(JsonNode row, ZoneId zone, String localField, String... instantFields) {
-        String local = text(row, localField, "");
-        if (local != null && !local.isBlank()) {
-            return normalizeClock(local);
-        }
-        for (String field : instantFields) {
-            String v = text(row, field, "");
-            if (v == null || v.isBlank()) {
+        StringBuilder csv = header(daysInMonth);
+        for (JsonNode emp : people) {
+            Long id = ReportScope.asLong(emp.get("id"));
+            if (id == null) {
                 continue;
             }
-            Instant instant = parseInstant(v);
-            if (instant != null) {
-                return LocalTime.ofInstant(instant, zone).format(TIME_FMT);
+            JsonNode book = hrms.employeeAttendanceDayBook(actor, id, from, to);
+            Map<Integer, String> byDay = new LinkedHashMap<>();
+            Map<String, Integer> totals = new LinkedHashMap<>();
+            for (String k : TOTAL_KEYS) {
+                totals.put(k, 0);
             }
-            // Already a bare clock (HH:mm / HH:mm:ss) with no offset — keep as-is.
-            if (!v.contains("T") && v.length() >= 4 && v.charAt(0) >= '0' && v.charAt(0) <= '9') {
-                return normalizeClock(v);
+            if (book != null && book.has("days") && book.get("days").isArray()) {
+                book.get("days").forEach(d -> {
+                    LocalDate date = parseDate(d.get("date"));
+                    if (date == null || date.getYear() != ym.getYear() || date.getMonthValue() != ym.getMonthValue()) {
+                        return;
+                    }
+                    String code = text(d, "statusCode");
+                    if (code.isBlank()) {
+                        code = "NS";
+                    }
+                    code = code.trim().toUpperCase(Locale.ROOT);
+                    byDay.put(date.getDayOfMonth(), code);
+                    totals.merge(code, 1, Integer::sum);
+                });
             }
+            csv.append(id).append(',')
+                    .append(CsvSupport.cell(ReportScope.text(emp, "employeeCode"))).append(',')
+                    .append(CsvSupport.cell(ReportScope.text(emp, "fullName")));
+            for (int day = 1; day <= daysInMonth; day++) {
+                String code = byDay.getOrDefault(day, "");
+                csv.append(',').append(CsvSupport.cell(code));
+            }
+            for (String k : TOTAL_KEYS) {
+                csv.append(',').append(totals.getOrDefault(k, 0));
+            }
+            csv.append('\n');
         }
-        return "";
+
+        auditService.record(actor, "EXPORT", "AttendanceMonthly", null, null,
+                Map.of("period", ym.toString(), "rows", people.size()));
+        return csv.toString();
     }
 
-    private static Instant parseInstant(String v) {
-        try {
-            if (v.contains("T") || v.endsWith("Z") || v.contains("+")) {
-                return Instant.parse(v);
-            }
-            // epoch seconds (with optional fraction) as used by some Jackson Instant codecs
-            if (v.matches("^\\d+(\\.\\d+)?$")) {
-                double n = Double.parseDouble(v);
-                long seconds = (long) n;
-                return Instant.ofEpochSecond(seconds, (long) ((n - seconds) * 1_000_000_000L));
-            }
-        } catch (DateTimeParseException | NumberFormatException ignored) {
+    private static StringBuilder header(int daysInMonth) {
+        StringBuilder csv = new StringBuilder();
+        csv.append("employeeId,employeeCode,fullName");
+        for (int d = 1; d <= daysInMonth; d++) {
+            csv.append(',').append('D').append(d);
+        }
+        for (String k : TOTAL_KEYS) {
+            csv.append(',').append(k);
+        }
+        csv.append('\n');
+        return csv;
+    }
+
+    private static LocalDate parseDate(JsonNode n) {
+        if (n == null || n.isNull()) {
             return null;
         }
-        return null;
+        String s = n.asText("");
+        if (s.length() >= 10) {
+            s = s.substring(0, 10);
+        }
+        try {
+            return LocalDate.parse(s);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
-    private static String normalizeClock(String v) {
-        String s = v.trim();
-        // HH:mm:ss.sss → HH:mm
-        if (s.length() >= 5 && s.charAt(2) == ':') {
-            return s.substring(0, 5);
+    private static String text(JsonNode n, String field) {
+        if (n == null || !n.has(field) || n.get(field).isNull()) {
+            return "";
         }
-        return s;
-    }
-
-    private static ZoneId zoneOf(JsonNode row) {
-        String tz = text(row, "timeZone", text(row, "timezone", ""));
-        if (tz != null && !tz.isBlank()) {
-            try {
-                return ZoneId.of(tz.trim());
-            } catch (Exception ignored) {
-                // fall through
-            }
-        }
-        return DEFAULT_ZONE;
-    }
-
-    private static String text(JsonNode row, String field, String fallback) {
-        if (row == null || !row.has(field) || row.get(field).isNull()) return fallback;
-        JsonNode n = row.get(field);
-        if (n.isNumber()) {
-            return n.asText();
-        }
-        return n.asText(fallback);
-    }
-
-    private static String csv(String v) {
-        if (v == null) return "";
-        String s = v.replace("\"", "\"\"");
-        if (s.contains(",") || s.contains("\"") || s.contains("\n")) {
-            return "\"" + s + "\"";
-        }
-        return s;
+        return n.get(field).asText("");
     }
 }

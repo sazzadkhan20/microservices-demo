@@ -1,17 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { EmployeePhoto } from "@/components/employees/EmployeePhoto";
 import { OrgChartTree, type OrgChartNode } from "@/components/org/OrgChartTree";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { EmptyState, ErrorNote, Loading, NoAccess } from "@/components/ui/QueryState";
+import { EmptyState, ErrorNote, Loading } from "@/components/ui/QueryState";
 import { StatusPill } from "@/components/ui/StatusPill";
 import { Tabs } from "@/components/ui/Tabs";
 import { api, apiFetch, apiFetchPage } from "@/lib/api/client";
-import { str } from "@/lib/format";
+import { useLocations, useTeams } from "@/lib/api/lookups";
+import { canOpenEmployeeRecord } from "@/lib/auth/permissions";
+import { fmtNumber, str } from "@/lib/format";
 import { useDebounced } from "@/lib/hooks";
 import { employeeSchema, type Employee } from "@/lib/schemas/employee";
 
@@ -20,28 +23,65 @@ const TABS = [
   { id: "chart", label: "Org chart" },
 ];
 
-const INACTIVE = new Set(["inactive", "resigned", "terminated"]);
+const PAGE_SIZES = [12, 24, 48];
 
 const text = (v: unknown) => (typeof v === "string" ? v : "");
 
 export default function DirectoryPage() {
-  const { can } = useAuth();
+  const { can, me, canAccessRoute } = useAuth();
+  const router = useRouter();
   const [tab, setTab] = useState("list");
   const [q, setQ] = useState("");
-  const [team, setTeam] = useState("");
-  const [loc, setLoc] = useState("");
+  const [teamId, setTeamId] = useState("");
+  const [locationId, setLocationId] = useState("");
   const [showInactive, setShowInactive] = useState(false);
-  const dq = useDebounced(q, 200);
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(24);
+  const dq = useDebounced(q, 300);
 
-  const allowed = can("employees", "view") || can("org", "view");
-  const canOpen = can("employees", "view");
+  const allowed = can("employees", "view") || can("org", "view") || can("directory", "view");
+  const openEmployee = (id: string | number) =>
+    canOpenEmployeeRecord(me.employeeId, id, me.permissions, me.scopes);
+
+  useEffect(() => {
+    if (!allowed && !canAccessRoute("/directory")) {
+      router.replace("/");
+    }
+  }, [allowed, canAccessRoute, router]);
+
+  const teams = useTeams(allowed && tab === "list");
+  const locations = useLocations(allowed && tab === "list");
+
+  // Reset to page 1 when filters change (derive without an effect).
+  const filterSig = `${dq}|${teamId}|${locationId}|${showInactive}|${size}`;
+  const [lastSig, setLastSig] = useState(filterSig);
+  if (lastSig !== filterSig) {
+    setLastSig(filterSig);
+    if (page !== 1) setPage(1);
+  }
 
   const staff = useQuery({
-    queryKey: ["directory-page"],
+    queryKey: ["directory-page", page, size, dq, teamId, locationId, showInactive],
     queryFn: ({ signal }) =>
-      apiFetchPage(api.hrms("employees"), employeeSchema, { page: 1, size: 500, sort: "fullName,asc" }, { signal }),
+      apiFetchPage(
+        api.hrms("employees"),
+        employeeSchema,
+        {
+          page,
+          size,
+          sort: "fullName,asc",
+          q: dq.trim() || undefined,
+          filters: {
+            ...(teamId ? { teamId } : {}),
+            ...(locationId ? { locationId } : {}),
+            ...(!showInactive ? { active: "true" } : {}),
+          },
+        },
+        { signal },
+      ),
     enabled: allowed && tab === "list",
-    staleTime: 60_000,
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
 
   const chart = useQuery({
@@ -55,39 +95,24 @@ export default function DirectoryPage() {
     staleTime: 30_000,
   });
 
-  const people = useMemo(
-    () => (staff.data?.content ?? []).filter((e) => showInactive || !INACTIVE.has(String(e.status).toLowerCase())),
-    [staff.data, showInactive],
-  );
+  const people = staff.data?.content ?? [];
+  const totalElements = Number(staff.data?.totalElements ?? 0);
+  const totalPages = Math.max(1, Number(staff.data?.totalPages ?? 1) || 1);
+  const pageFrom = totalElements === 0 ? 0 : (page - 1) * size + 1;
+  const pageTo = Math.min(page * size, totalElements);
 
-  const teams = useMemo(
-    () => [...new Set(people.map((e) => text(e.teamName)).filter(Boolean))].sort(),
-    [people],
+  const teamOptions = useMemo(
+    () => [...(teams.data ?? [])].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""))),
+    [teams.data],
   );
-  const locations = useMemo(
-    () => [...new Set(people.map((e) => text(e.locationName)).filter(Boolean))].sort(),
-    [people],
+  const locationOptions = useMemo(
+    () =>
+      [...(locations.data ?? [])].sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""))),
+    [locations.data],
   );
-
-  const shown = useMemo(() => {
-    const needle = dq.trim().toLowerCase();
-    return people.filter((e) => {
-      if (team && text(e.teamName) !== team) return false;
-      if (loc && text(e.locationName) !== loc) return false;
-      if (!needle) return true;
-      return [e.fullName, e.preferredName, e.jobTitle, e.email, e.employeeCode, text(e.teamName), text(e.departmentName)]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(needle));
-    });
-  }, [people, dq, team, loc]);
 
   if (!allowed) {
-    return (
-      <div className="stack">
-        <PageHeader title="Directory" />
-        <NoAccess what="the directory" />
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -101,32 +126,54 @@ export default function DirectoryPage() {
       {tab === "list" ? (
         <>
           <ErrorNote error={staff.error} />
-          {staff.isLoading ? <Loading /> : null}
           <div className="filters">
             <label className="field wide">
               <span>Search</span>
               <input
                 type="search"
-                placeholder="Search name, title, team or email"
+                placeholder="Search name, code or email"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
+                aria-label="Search directory"
               />
             </label>
             <label className="field">
               <span>Team</span>
-              <select value={team} onChange={(e) => setTeam(e.target.value)}>
+              <select value={teamId} onChange={(e) => setTeamId(e.target.value)} aria-label="Filter by team">
                 <option value="">All teams</option>
-                {teams.map((t) => (
-                  <option key={t}>{t}</option>
+                {teamOptions.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
                 ))}
               </select>
             </label>
             <label className="field">
               <span>Location</span>
-              <select value={loc} onChange={(e) => setLoc(e.target.value)}>
+              <select
+                value={locationId}
+                onChange={(e) => setLocationId(e.target.value)}
+                aria-label="Filter by location"
+              >
                 <option value="">All locations</option>
-                {locations.map((l) => (
-                  <option key={l}>{l}</option>
+                {locationOptions.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Per page</span>
+              <select
+                value={size}
+                onChange={(e) => setSize(Number(e.target.value))}
+                aria-label="Page size"
+              >
+                {PAGE_SIZES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
                 ))}
               </select>
             </label>
@@ -135,20 +182,79 @@ export default function DirectoryPage() {
               Show former staff
             </label>
           </div>
-          <p className="muted small">
-            {shown.length} of {people.length} people
-          </p>
-          {!staff.isLoading && shown.length === 0 ? (
+
+          {staff.isLoading && !staff.data ? <Loading /> : null}
+
+          <div className="row between" style={{ flexWrap: "wrap", gap: 8 }}>
+            <p className="muted small" style={{ margin: 0 }}>
+              {staff.isFetching && staff.data ? "Updating… · " : null}
+              {totalElements === 0
+                ? "No people"
+                : `Showing ${fmtNumber(pageFrom, 0)}–${fmtNumber(pageTo, 0)} of ${fmtNumber(totalElements, 0)}`}
+              {dq.trim() ? ` · “${dq.trim()}”` : ""}
+            </p>
+            <div className="row" style={{ gap: 6 }}>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page <= 1 || staff.isFetching}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <span className="mono small" style={{ alignSelf: "center", minWidth: 72, textAlign: "center" }}>
+                {page} / {totalPages}
+              </span>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page >= totalPages || staff.isFetching}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+
+          {!staff.isLoading && people.length === 0 ? (
             <div className="card">
               <EmptyState>No one matches your search.</EmptyState>
             </div>
           ) : (
-            <div className="grid g3">
-              {shown.map((e) => (
-                <PersonCard key={e.id} e={e} href={canOpen ? `/employees/${e.id}` : undefined} />
+            <div className="grid g3" style={{ opacity: staff.isFetching ? 0.75 : 1, transition: "opacity .15s" }}>
+              {people.map((e) => (
+                <PersonCard
+                  key={e.id}
+                  e={e}
+                  href={openEmployee(e.id) ? `/employees/${e.id}` : undefined}
+                />
               ))}
             </div>
           )}
+
+          {totalElements > size ? (
+            <div className="row" style={{ justifyContent: "center", gap: 6 }}>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page <= 1 || staff.isFetching}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                Previous
+              </button>
+              <span className="mono small" style={{ alignSelf: "center" }}>
+                Page {page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page >= totalPages || staff.isFetching}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
         </>
       ) : (
         <>
@@ -161,7 +267,7 @@ export default function DirectoryPage() {
           {!chart.isLoading ? (
             <OrgChartTree
               roots={Array.isArray(chart.data) ? chart.data : []}
-              canOpen={canOpen}
+              canOpenId={openEmployee}
               emptyMessage="No reporting lines to draw yet. Assign managers on employee records."
             />
           ) : null}

@@ -81,6 +81,73 @@ public class LeaveBalanceService {
         this.entityManager = entityManager;
     }
 
+    /**
+     * Scoped leave-balance snapshot for reports (FR-RP-03). Read-only: no reconcile/heal writes.
+     */
+    @Transactional(readOnly = true)
+    public List<LeaveBalanceResponse> listScopedForReport(Integer year) {
+        Long actor = AuthContext.requireEmployeeId();
+        DataScopeService.Visibility vis = dataScopeService.visibility(actor, "leave", "view");
+        int y = year == null ? LocalDate.now().getYear() : year;
+        LocalDate yearStart = LocalDate.of(y, 1, 1);
+        LocalDate yearEnd = LocalDate.of(y + 1, 1, 1);
+
+        List<LeaveBalance> balances = balanceRepository.findByYear(y).stream()
+                .filter(b -> b.getEmployeeId() != null && vis.allows(b.getEmployeeId()))
+                .toList();
+        if (balances.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, String> typeNames = new LinkedHashMap<>();
+        for (LeaveType t : leaveTypeRepository.findAll()) {
+            if (t.getCode() != null) {
+                typeNames.put(t.getCode().trim().toUpperCase(Locale.ROOT),
+                        t.getName() == null ? t.getCode() : t.getName());
+            }
+        }
+
+        Map<Long, List<LeaveBalanceLedger>> ledgersByEmp = new LinkedHashMap<>();
+        for (LeaveBalanceLedger l : ledgerRepository.findByYear(y)) {
+            if (l.getEmployeeId() == null) {
+                continue;
+            }
+            ledgersByEmp.computeIfAbsent(l.getEmployeeId(), k -> new ArrayList<>()).add(l);
+        }
+
+        Map<String, BigDecimal> pendingByKey = new LinkedHashMap<>();
+        for (LeaveApplication a : leaveApplicationRepository.findPendingForYear(yearStart, yearEnd)) {
+            if (a.getEmployeeId() == null || a.getLeaveTypeCode() == null) {
+                continue;
+            }
+            if (!vis.allows(a.getEmployeeId())) {
+                continue;
+            }
+            String key = a.getEmployeeId() + "|" + a.getLeaveTypeCode().trim().toUpperCase(Locale.ROOT);
+            BigDecimal days = a.getWorkingDaysCounted() == null ? BigDecimal.ZERO : a.getWorkingDaysCounted();
+            pendingByKey.merge(key, LeaveDays.of(days), BigDecimal::add);
+        }
+
+        List<LeaveBalanceResponse> out = new ArrayList<>(balances.size());
+        for (LeaveBalance b : balances) {
+            String code = b.getLeaveTypeCode() == null ? "" : b.getLeaveTypeCode().trim().toUpperCase(Locale.ROOT);
+            List<LeaveBalanceLedger> ledgers = ledgersByEmp.getOrDefault(b.getEmployeeId(), List.of());
+            LeaveLedgerMath.Parts parts = LeaveLedgerMath.classify(ledgers, code, y);
+            BigDecimal pending = LeaveDays.of(pendingByKey.getOrDefault(b.getEmployeeId() + "|" + code, BigDecimal.ZERO));
+            String name = typeNames.getOrDefault(code, code);
+            out.add(LeaveBalanceResponse.bare(b, name, parts.quota(), parts.carried(), parts.adjustments(), parts.taken(), pending));
+        }
+        out.sort((a, b) -> {
+            int c = Long.compare(a.employeeId() == null ? 0L : a.employeeId(),
+                    b.employeeId() == null ? 0L : b.employeeId());
+            if (c != 0) {
+                return c;
+            }
+            return String.valueOf(a.leaveTypeCode()).compareToIgnoreCase(String.valueOf(b.leaveTypeCode()));
+        });
+        return out;
+    }
+
     @Transactional
     public List<LeaveBalanceResponse> listForEmployee(Long employeeId, Integer year) {
         return listForEmployee(employeeId, year, false);

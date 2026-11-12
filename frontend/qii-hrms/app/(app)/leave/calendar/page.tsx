@@ -1,7 +1,7 @@
 "use client";
 
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { useAuth } from "@/components/auth/AuthProvider";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -12,11 +12,36 @@ import { useDirectory, useHolidaysForYear } from "@/lib/api/directory";
 import { useLocations, useTeams } from "@/lib/api/lookups";
 import { MONTH_NAMES, datesBetween, dowOf, monthCells, ymd, DOW_LABEL, DOW } from "@/lib/admin";
 import { fmtLeaveDays, fmtNumber, fmtRange, isoDate, todayIso } from "@/lib/format";
+import { useDebounced } from "@/lib/hooks";
 import { leaveAppRowSchema, leavePolicySchema, type LeaveAppRow } from "@/lib/schemas/admin";
 
 /** Still blocks the calendar until cancel is fully approved (or denied back to APPROVED). */
 const LIVE = new Set(["APPROVED", "PENDING_APPROVAL", "PENDING", "PENDING_RELIEF", "PENDING_CANCEL"]);
+const PAGE_SIZES = [10, 25, 50];
 const firstName = (n: string) => n.split(" ")[0];
+
+async function fetchMonthLeave(from: string, to: string, signal?: AbortSignal): Promise<LeaveAppRow[]> {
+  const first = await apiFetchPage(
+    api.hrms("leave-applications"),
+    leaveAppRowSchema,
+    { page: 1, size: 100, sort: "startDate,asc", filters: { from, to } },
+    { signal },
+  );
+  const pages = Math.max(1, Number(first.totalPages ?? 1) || 1);
+  if (pages <= 1) return first.content ?? [];
+
+  const rest = await Promise.all(
+    Array.from({ length: pages - 1 }, (_, i) =>
+      apiFetchPage(
+        api.hrms("leave-applications"),
+        leaveAppRowSchema,
+        { page: i + 2, size: 100, sort: "startDate,asc", filters: { from, to } },
+        { signal },
+      ),
+    ),
+  );
+  return [...(first.content ?? []), ...rest.flatMap((p) => p.content ?? [])];
+}
 
 export default function LeaveCalendarPage() {
   const { can } = useAuth();
@@ -26,6 +51,11 @@ export default function LeaveCalendarPage() {
   const [team, setTeam] = useState("");
   const [location, setLocation] = useState("");
   const [includePending, setIncludePending] = useState(true);
+  const [q, setQ] = useState("");
+  const [leaveType, setLeaveType] = useState("");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(10);
+  const dq = useDebounced(q, 300);
 
   const dir = useDirectory(can("employees", "view"));
   const teams = useTeams();
@@ -36,17 +66,20 @@ export default function LeaveCalendarPage() {
     queryFn: ({ signal }) => apiFetch(api.hrms("leave-policy"), { schema: leavePolicySchema, signal }),
     staleTime: 5 * 60_000,
   });
-  const apps = useQuery({
-    queryKey: ["leave-calendar-apps"],
-    queryFn: ({ signal }) => apiFetchPage(api.hrms("leave-applications"), leaveAppRowSchema, { page: 1, size: 500 }, { signal }),
-  });
 
   const from = ymd(year, month, 1);
   const to = ymd(year, month, new Date(year, month, 0).getDate());
   const workingDays = policy.data?.workingDays;
 
+  const apps = useQuery({
+    queryKey: ["leave-calendar-apps", from, to],
+    queryFn: ({ signal }) => fetchMonthLeave(from, to, signal),
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
+
   const visible = useMemo(() => {
-    return (apps.data?.content ?? [])
+    return (apps.data ?? [])
       .filter((a) => {
         const st = String(a.status ?? "").toUpperCase();
         return includePending ? LIVE.has(st) : st === "APPROVED";
@@ -85,6 +118,43 @@ export default function LeaveCalendarPage() {
     return m;
   }, [holidays.data, location, from, to]);
 
+  const nameFor = (a: LeaveAppRow) => dir.nameOf(a.employeeId);
+
+  const leaveTypeOptions = useMemo(() => {
+    const codes = new Set<string>();
+    for (const a of visible) {
+      const code = String(a.leaveTypeCode ?? "").trim();
+      if (code) codes.add(code);
+    }
+    return [...codes].sort((a, b) => a.localeCompare(b));
+  }, [visible]);
+
+  const tableRows = useMemo(() => {
+    const needle = dq.trim().toLowerCase();
+    return [...visible]
+      .filter((a) => {
+        if (leaveType && String(a.leaveTypeCode ?? "") !== leaveType) return false;
+        if (!needle) return true;
+        const hay = `${nameFor(a)} ${a.leaveTypeCode ?? ""} ${a.status ?? ""} ${a.reason ?? ""}`.toLowerCase();
+        return hay.includes(needle);
+      })
+      .sort((a, b) => (isoDate(a.startDate) < isoDate(b.startDate) ? -1 : 1));
+  }, [visible, dq, leaveType, dir.byId]);
+
+  const filterSig = `${from}|${to}|${team}|${includePending}|${dq}|${leaveType}|${size}`;
+  const [lastSig, setLastSig] = useState(filterSig);
+  if (lastSig !== filterSig) {
+    setLastSig(filterSig);
+    if (page !== 1) setPage(1);
+  }
+
+  const totalElements = tableRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalElements / size) || 1);
+  const safePage = Math.min(page, totalPages);
+  const pageFrom = totalElements === 0 ? 0 : (safePage - 1) * size + 1;
+  const pageTo = Math.min(safePage * size, totalElements);
+  const pagedRows = tableRows.slice((safePage - 1) * size, safePage * size);
+
   function shift(by: number) {
     const d = new Date(year, month - 1 + by, 1);
     setYear(d.getFullYear());
@@ -92,8 +162,6 @@ export default function LeaveCalendarPage() {
   }
 
   const cells = monthCells(year, month);
-  const nameFor = (a: LeaveAppRow) => dir.nameOf(a.employeeId);
-  const sorted = [...visible].sort((a, b) => (isoDate(a.startDate) < isoDate(b.startDate) ? -1 : 1));
 
   return (
     <div className="stack">
@@ -160,7 +228,7 @@ export default function LeaveCalendarPage() {
 
       <ErrorNote error={apps.error} />
 
-      {!apps.isLoading && !apps.error && (apps.data?.content ?? []).length === 0 ? (
+      {!apps.isLoading && !apps.error && (apps.data ?? []).length === 0 ? (
         <EmptyState title="No leave recorded yet">Approved and pending leave requests will show here once people apply.</EmptyState>
       ) : null}
 
@@ -172,7 +240,7 @@ export default function LeaveCalendarPage() {
             </div>
           ))}
         </div>
-        <div className="cal">
+        <div className="cal" style={{ opacity: apps.isFetching ? 0.75 : 1, transition: "opacity .15s" }}>
           {cells.map((iso, i) => {
             if (!iso) return <div key={i} className="d off" style={{ opacity: 0.4 }} />;
             const leave = byDay.get(iso) ?? [];
@@ -252,8 +320,75 @@ export default function LeaveCalendarPage() {
 
       <section className="card stack">
         <h2 style={{ marginBottom: 0 }}>
-          Leave in {MONTH_NAMES[month - 1]} <span className="muted small">({sorted.length})</span>
+          Leave in {MONTH_NAMES[month - 1]}{" "}
+          <span className="muted small">({fmtNumber(totalElements, 0)})</span>
         </h2>
+
+        <div className="filters">
+          <label className="field wide">
+            <span>Search</span>
+            <input
+              type="search"
+              placeholder="Search employee, category or status"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              aria-label="Search leave table"
+            />
+          </label>
+          <label className="field">
+            <span>Category</span>
+            <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)} aria-label="Filter by leave category">
+              <option value="">All categories</option>
+              {leaveTypeOptions.map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>Per page</span>
+            <select value={size} onChange={(e) => setSize(Number(e.target.value))} aria-label="Table page size">
+              {PAGE_SIZES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="row between" style={{ flexWrap: "wrap", gap: 8 }}>
+          <p className="muted small" style={{ margin: 0 }}>
+            {apps.isFetching && apps.data ? "Updating… · " : null}
+            {totalElements === 0
+              ? "No matching leave"
+              : `Showing ${fmtNumber(pageFrom, 0)}–${fmtNumber(pageTo, 0)} of ${fmtNumber(totalElements, 0)}`}
+            {dq.trim() ? ` · “${dq.trim()}”` : ""}
+          </p>
+          <div className="row" style={{ gap: 6 }}>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Previous
+            </button>
+            <span className="mono small" style={{ alignSelf: "center", minWidth: 72, textAlign: "center" }}>
+              {safePage} / {totalPages}
+            </span>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next
+            </button>
+          </div>
+        </div>
+
         <div className="tbl-wrap">
           <table>
             <thead>
@@ -266,14 +401,14 @@ export default function LeaveCalendarPage() {
               </tr>
             </thead>
             <tbody>
-              {sorted.length === 0 ? (
+              {pagedRows.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="empty">
-                    {apps.isLoading ? "Loading…" : "Nobody is on leave this month"}
+                    {apps.isLoading ? "Loading…" : "Nobody matches these filters for this month"}
                   </td>
                 </tr>
               ) : (
-                sorted.map((a) => (
+                pagedRows.map((a) => (
                   <tr key={String(a.id)}>
                     <td>{nameFor(a)}</td>
                     <td>{a.leaveTypeCode}</td>
@@ -288,6 +423,30 @@ export default function LeaveCalendarPage() {
             </tbody>
           </table>
         </div>
+
+        {totalElements > size ? (
+          <div className="row" style={{ justifyContent: "center", gap: 6 }}>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Previous
+            </button>
+            <span className="mono small" style={{ alignSelf: "center" }}>
+              Page {safePage} of {totalPages}
+            </span>
+            <button
+              type="button"
+              className="btn sm"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next
+            </button>
+          </div>
+        ) : null}
       </section>
     </div>
   );

@@ -92,10 +92,11 @@ class AttendanceShiftScenarioTest {
             }
             @Override public Instant instant() { return instant.get(); }
         };
+        TimeWorkNotificationHook notificationHook = org.mockito.Mockito.mock(TimeWorkNotificationHook.class);
         service = new AttendanceService(
                 repository, correctionRepository, employeeRepository, workScheduleService,
                 workLogRepository, workLogService, leaveClient, tenantSettingsRepository,
-                auditService, rbacService, dataScopeService, clock);
+                auditService, rbacService, dataScopeService, notificationHook, clock);
 
         emp = new EmployeeView();
         ReflectionTestUtils.setField(emp, "id", EMP);

@@ -29,6 +29,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -177,6 +178,59 @@ public class LeaveApplicationService {
                 })
                 .filter(Objects::nonNull)
                 .toList();
+    }
+
+    /**
+     * Dashboard card: pending leave in leave:view report scope, plus how many have waited
+     * 2+ working days (Mon–Fri idle cadence, same as FR-LV-16 reminders).
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> pendingDashboardStats() {
+        Long actorId = AuthContext.requireEmployeeId();
+        DataScopeService.Visibility visible = dataScopeService.visibility(actorId, "leave", "view");
+        ZoneId zone = ZoneId.systemDefault();
+        LocalDate today = LocalDate.now(zone);
+        int idleWorkingDays = 2;
+        int pending = 0;
+        int waitingTwoPlus = 0;
+        for (LeaveApplication a : applicationRepository.findAllByOrderByCreatedAtDesc()) {
+            if (!isAwaitingApprovalDecision(a.getStatus())) {
+                continue;
+            }
+            if (!visible.allows(a.getEmployeeId())) {
+                continue;
+            }
+            pending++;
+            Instant updated = a.getUpdatedAt() == null ? a.getCreatedAt() : a.getUpdatedAt();
+            if (updated == null) {
+                continue;
+            }
+            LocalDate since = LocalDate.ofInstant(updated, zone);
+            if (workingDaysBetween(since, today) >= idleWorkingDays) {
+                waitingTwoPlus++;
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("pending", pending);
+        out.put("waitingTwoPlusWorkingDays", waitingTwoPlus);
+        out.put("idleWorkingDays", idleWorkingDays);
+        out.put("scope", visible.scope());
+        return out;
+    }
+
+    /** Inclusive of start exclusive of end — Mon–Fri only (holiday-agnostic idle cadence). */
+    static int workingDaysBetween(LocalDate start, LocalDate end) {
+        if (start == null || end == null || !end.isAfter(start)) {
+            return 0;
+        }
+        int count = 0;
+        for (LocalDate d = start.plusDays(1); !d.isAfter(end); d = d.plusDays(1)) {
+            java.time.DayOfWeek dow = d.getDayOfWeek();
+            if (dow != java.time.DayOfWeek.SATURDAY && dow != java.time.DayOfWeek.SUNDAY) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** Applications of one employee (leave:view scope enforced → 403 when out of scope). */
@@ -399,10 +453,11 @@ public class LeaveApplicationService {
                 clashRecipients.add(employee.getTeamLeadEmployeeId());
             }
             for (LeaveApproval step : createdSteps) {
-                if (step.getExpectedApproverId() != null) {
-                    clashRecipients.add(step.getExpectedApproverId());
-                    break; // first step only
+                if (step.getStepOrder() != 1) {
+                    continue;
                 }
+                clashRecipients.addAll(approvalAuthorityService.recipientIdsForStep(step, saved));
+                break; // first step only
             }
             clashRecipients.remove(employee.getId());
             for (Long recipientId : clashRecipients) {
@@ -788,10 +843,22 @@ public class LeaveApplicationService {
         boolean more = all.stream().anyMatch(a -> a.getStepOrder() > app.getCurrentStep()
                 && LeaveApproval.STATUS_PENDING.equals(a.getStatus()));
         if (more) {
+            int advancedFrom = Math.max(1, app.getCurrentStep());
             app.setCurrentStep(app.getCurrentStep() + 1);
             app.setUpdatedAt(now);
             // Keep status (PENDING_APPROVAL or PENDING_CANCEL) as-is
             applicationRepository.save(app);
+            auditService.record(
+                    approver.getId(),
+                    isCancelChain ? "CANCEL_STEP_APPROVE" : "STEP_APPROVE",
+                    "LeaveApplication",
+                    String.valueOf(applicationId),
+                    Map.of("status", app.getStatus(), "step", advancedFrom),
+                    Map.of(
+                            "status", app.getStatus(),
+                            "step", app.getCurrentStep(),
+                            "onBehalf", decision.onBehalf(),
+                            "actorName", approver.getFullName() == null ? "" : approver.getFullName()));
             // Notify next step's expected approver (apply + cancel chains).
             EmployeeView applicant = employeeRepository.findById(app.getEmployeeId()).orElse(null);
             notifyCurrentStepApprovers(
@@ -799,13 +866,15 @@ public class LeaveApplicationService {
                     approvalRepository.findByApplicationIdOrderByStepOrderAsc(applicationId),
                     applicant == null ? null : applicant.getFullName(),
                     isCancelChain);
-            notificationHook.notifyLeaveDecision(
-                    app.getEmployeeId(),
-                    applicationId,
+            notifyLeaveOutcome(
+                    app,
+                    advancedFrom,
                     app.getStatus(),
-                    isCancelChain ? "Leave cancellation still pending approval" : "Leave still pending approval");
+                    isCancelChain ? "Leave cancellation still pending approval" : "Leave still pending approval",
+                    true);
             return get(applicationId);
         }
+        int finalStep = Math.max(1, app.getCurrentStep());
         if (isCancelChain) {
             // FR-LV-18: final approval of cancel chain → restore balance and set CANCELLED
             app.setStatus(LeaveApplication.STATUS_CANCELLED);
@@ -821,13 +890,29 @@ public class LeaveApplicationService {
             app.setStatus(LeaveApplication.STATUS_APPROVED);
             deductIfNeeded(app);
         }
+        String beforeStatus = isCancelChain ? LeaveApplication.STATUS_PENDING_CANCEL : LeaveApplication.STATUS_PENDING_APPROVAL;
         app.setUpdatedAt(now);
         applicationRepository.save(app);
-        notificationHook.notifyLeaveDecision(
-                app.getEmployeeId(),
-                applicationId,
+        auditService.record(
+                approver.getId(),
+                isCancelChain ? "CANCEL_APPROVE" : "APPROVE",
+                "LeaveApplication",
+                String.valueOf(applicationId),
+                Map.of(
+                        "status", beforeStatus,
+                        "step", finalStep,
+                        "onBehalf", decision.onBehalf()),
+                Map.of(
+                        "status", app.getStatus(),
+                        "step", finalStep,
+                        "actorName", approver.getFullName() == null ? "" : approver.getFullName(),
+                        "comment", step.getCommentText() == null ? "" : step.getCommentText()));
+        notifyLeaveOutcome(
+                app,
+                finalStep,
                 app.getStatus(),
-                isCancelChain ? "Leave cancellation approved" : "Leave " + app.getStatus());
+                isCancelChain ? "Leave cancellation approved" : "Leave " + app.getStatus(),
+                false);
         return get(applicationId);
     }
 
@@ -845,6 +930,7 @@ public class LeaveApplicationService {
             throw new IllegalStateException("Already final: " + app.getStatus());
         }
         boolean isCancelChain = LeaveApplication.STATUS_PENDING_CANCEL.equals(app.getStatus());
+        String beforeStatus = app.getStatus();
         ensureApprovalStepsIfMissing(app);
         LeaveApproval step = currentApprovalStep(applicationId, Math.max(1, app.getCurrentStep()));
 
@@ -879,24 +965,44 @@ public class LeaveApplicationService {
             step.setDecidedAt(now);
             approvalRepository.save(step);
         }
+        int rejectStep = step != null ? Math.max(1, step.getStepOrder()) : Math.max(1, app.getCurrentStep());
         if (isCancelChain) {
             // Deny cancellation → leave remains APPROVED; balance stays deducted.
             app.setStatus(LeaveApplication.STATUS_APPROVED);
             app.setRejectReason(null);
             app.setCurrentStep(0);
-            notificationHook.notifyLeaveDecision(
-                    app.getEmployeeId(),
-                    applicationId,
+            notifyLeaveOutcome(
+                    app,
+                    rejectStep,
                     LeaveApplication.STATUS_APPROVED,
-                    "Leave cancellation denied — leave remains approved");
+                    "Leave cancellation denied — leave remains approved",
+                    false);
         } else {
             app.setStatus(LeaveApplication.STATUS_REJECTED);
             app.setRejectReason(request == null ? null : request.comment());
-            notificationHook.notifyLeaveDecision(
-                    app.getEmployeeId(), applicationId, LeaveApplication.STATUS_REJECTED, "Leave rejected");
+            notifyLeaveOutcome(
+                    app,
+                    rejectStep,
+                    LeaveApplication.STATUS_REJECTED,
+                    "Leave rejected",
+                    false);
         }
         app.setUpdatedAt(now);
         applicationRepository.save(app);
+        auditService.record(
+                approver.getId(),
+                isCancelChain ? "CANCEL_REJECT" : "REJECT",
+                "LeaveApplication",
+                String.valueOf(applicationId),
+                Map.of(
+                        "status", beforeStatus,
+                        "step", rejectStep,
+                        "onBehalf", onBehalf),
+                Map.of(
+                        "status", app.getStatus(),
+                        "step", rejectStep,
+                        "actorName", approver.getFullName() == null ? "" : approver.getFullName(),
+                        "comment", request == null || request.comment() == null ? "" : request.comment().trim()));
         return get(applicationId);
     }
 
@@ -1014,7 +1120,8 @@ public class LeaveApplicationService {
 
     /**
      * Notify the expected actor(s) for the application's current pending step.
-     * Used for apply submit, cancel request, and mid-chain advancement — same chain engine for all packs.
+     * Person-bound ({@code expectedApproverId}) and RBAC role pools (null expected) both notify.
+     * Used for apply submit, cancel request, and mid-chain advancement.
      */
     private void notifyCurrentStepApprovers(
             LeaveApplication app,
@@ -1027,18 +1134,53 @@ public class LeaveApplicationService {
         int current = Math.max(1, app.getCurrentStep());
         for (LeaveApproval step : steps) {
             if (step.getStepOrder() != current
-                    || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())
-                    || step.getExpectedApproverId() == null) {
+                    || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
                 continue;
             }
-            if (cancelChain) {
-                notificationHook.notifyLeaveCancelRequested(
-                        step.getExpectedApproverId(), app.getId(), applicantName);
-            } else {
-                notificationHook.notifyLeaveSubmitted(
-                        step.getExpectedApproverId(), app.getId(), applicantName);
+            for (Long recipientId : approvalAuthorityService.recipientIdsForStep(step, app)) {
+                if (cancelChain) {
+                    notificationHook.notifyLeaveCancelRequested(recipientId, app.getId(), applicantName);
+                } else {
+                    notificationHook.notifyLeaveSubmitted(recipientId, app.getId(), applicantName);
+                }
             }
         }
+    }
+
+    /**
+     * FR-NT — requester always; manager also when a later approver (step &gt; 1) decides.
+     * Mid-chain uses a step-scoped dedupe so each advancement can notify once.
+     */
+    private void notifyLeaveOutcome(
+            LeaveApplication app,
+            int decidedStepOrder,
+            String status,
+            String title,
+            boolean midChain) {
+        if (app == null) {
+            return;
+        }
+        String dedupeSuffix = midChain ? ("step-" + decidedStepOrder) : "final";
+        notificationHook.notifyLeaveDecision(
+                app.getEmployeeId(), app.getId(), status, title, dedupeSuffix);
+        if (decidedStepOrder <= 1) {
+            return;
+        }
+        EmployeeView applicant = employeeRepository.findById(app.getEmployeeId()).orElse(null);
+        Long managerId = applicant == null ? null : applicant.getManagerId();
+        if (managerId == null || managerId.equals(app.getEmployeeId())) {
+            return;
+        }
+        Long actorId = AuthContext.getEmployeeId();
+        if (actorId != null && actorId.equals(managerId)) {
+            return; // manager already acted — no self-echo
+        }
+        notificationHook.notifyLeaveDecision(
+                managerId,
+                app.getId(),
+                status,
+                title,
+                (midChain ? "mgr-step-" : "mgr-") + decidedStepOrder);
     }
 
     /**

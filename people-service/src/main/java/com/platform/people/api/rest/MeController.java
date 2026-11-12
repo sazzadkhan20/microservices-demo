@@ -1,5 +1,6 @@
 package com.platform.people.api.rest;
 
+import com.platform.common.security.PublicEndpoint;
 import com.platform.people.api.dto.EmployeeResponse;
 import com.platform.people.application.AuthFacadeService;
 import com.platform.people.application.EmployeeService;
@@ -15,6 +16,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/me")
+@PublicEndpoint(reason = "Self profile for authenticated caller; service enforces actor identity")
 @Tag(name = "Me", description = "Current user profile")
 public class MeController {
 

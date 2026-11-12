@@ -20,6 +20,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,6 +28,7 @@ import java.util.stream.Collectors;
 
 /**
  * FR-LV-16 — idle approval reminder after N working days (default 2).
+ * Recipients: current-step approver(s) (person-bound or RBAC pool), then leave:manage admins.
  */
 @Component
 public class LeaveIdleReminderJob {
@@ -42,6 +44,7 @@ public class LeaveIdleReminderJob {
     private final LeaveNotificationHook notificationHook;
     private final TenantConfigLoader configLoader;
     private final PeopleAuthzClient rbacService;
+    private final ApprovalAuthorityService approvalAuthorityService;
 
     public LeaveIdleReminderJob(
             LeaveApplicationRepository applicationRepository,
@@ -49,13 +52,15 @@ public class LeaveIdleReminderJob {
             PeopleEmployeeGateway employeeRepository,
             LeaveNotificationHook notificationHook,
             TenantConfigLoader configLoader,
-            PeopleAuthzClient rbacService) {
+            PeopleAuthzClient rbacService,
+            ApprovalAuthorityService approvalAuthorityService) {
         this.applicationRepository = applicationRepository;
         this.approvalRepository = approvalRepository;
         this.employeeRepository = employeeRepository;
         this.notificationHook = notificationHook;
         this.configLoader = configLoader;
         this.rbacService = rbacService;
+        this.approvalAuthorityService = approvalAuthorityService;
     }
 
     @Scheduled(cron = "0 0 8 * * *")
@@ -65,6 +70,12 @@ public class LeaveIdleReminderJob {
         } catch (Exception e) {
             log.warn("LeaveIdleReminderJob failed: {}", e.getMessage(), e);
         }
+    }
+
+    /** Manual / test entry — same logic as the daily cron. */
+    public int runNow() {
+        remindIdleApprovals();
+        return 0;
     }
 
     @Transactional(readOnly = true)
@@ -117,14 +128,11 @@ public class LeaveIdleReminderJob {
                 if (step == null || !LeaveApproval.STATUS_PENDING.equals(step.getStatus())) {
                     continue;
                 }
-                Long expectedId = step.getExpectedApproverId();
-                if (expectedId != null) {
-                    notificationHook.notifyIdleApproval(expectedId, app.getId());
-                }
-                for (Long adminId : admins) {
-                    if (!adminId.equals(expectedId)) {
-                        notificationHook.notifyIdleApproval(adminId, app.getId());
-                    }
+                Set<Long> recipients = new LinkedHashSet<>(
+                        approvalAuthorityService.recipientIdsForStep(step, app));
+                recipients.addAll(admins);
+                for (Long recipientId : recipients) {
+                    notificationHook.notifyIdleApproval(recipientId, app.getId());
                 }
                 processed++;
             } catch (Exception ex) {

@@ -32,6 +32,13 @@ public class LeaveBalanceController {
         this.leaveBalanceService = leaveBalanceService;
     }
 
+    @GetMapping
+    @RequiresPermission(feature = "leave", action = "view")
+    @Operation(summary = "Scoped leave balances for reports (FR-RP-03) — optional year, default current")
+    public List<LeaveBalanceResponse> listScoped(@RequestParam(required = false) Integer year) {
+        return leaveBalanceService.listScopedForReport(year);
+    }
+
     @GetMapping("/employee/{employeeId}")
     @RequiresPermission(feature = "leave", action = "view")
     @Operation(summary = "List leave balances for an employee with breakdown (optional year / currentOnly)")

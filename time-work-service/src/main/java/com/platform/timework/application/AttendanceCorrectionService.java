@@ -27,6 +27,7 @@ public class AttendanceCorrectionService {
     private final AttendanceService attendanceService;
     private final AuditService auditService;
     private final DataScopeService dataScopeService;
+    private final TimeWorkNotificationHook notificationHook;
 
     public AttendanceCorrectionService(
             AttendanceCorrectionRepository repository,
@@ -34,13 +35,15 @@ public class AttendanceCorrectionService {
             PeopleEmployeeGateway employeeRepository,
             AttendanceService attendanceService,
             AuditService auditService,
-            DataScopeService dataScopeService) {
+            DataScopeService dataScopeService,
+            TimeWorkNotificationHook notificationHook) {
         this.repository = repository;
         this.attendanceRecordRepository = attendanceRecordRepository;
         this.employeeRepository = employeeRepository;
         this.attendanceService = attendanceService;
         this.auditService = auditService;
         this.dataScopeService = dataScopeService;
+        this.notificationHook = notificationHook;
     }
 
     @Transactional
@@ -93,14 +96,20 @@ public class AttendanceCorrectionService {
         AttendanceCorrection saved = repository.save(c);
         auditService.record(actorId, "ATTENDANCE_CORRECTION_REQUEST", "attendance_correction",
                 String.valueOf(saved.getId()), null, toView(saved));
+        if (emp.getManagerId() != null && !emp.getManagerId().equals(actorId)) {
+            notificationHook.notifyCorrectionSubmitted(
+                    emp.getManagerId(), actorId, emp.getFullName(), saved.getId(), workDate.toString());
+        }
         return toView(saved);
     }
 
     @Transactional(readOnly = true)
     public List<Map<String, Object>> list(String status) {
+        Long actorId = AuthContext.requireEmployeeId();
         return repository.findAllByOrderByCreatedAtDesc().stream()
                 .filter(c -> status == null || status.isBlank() || "ALL".equalsIgnoreCase(status)
                         || status.equalsIgnoreCase(c.getStatus()))
+                .filter(c -> dataScopeService.canAccess(actorId, c.getEmployeeId(), "attendance", "correct"))
                 .map(this::toView)
                 .toList();
     }
@@ -126,6 +135,8 @@ public class AttendanceCorrectionService {
         finish(c, AttendanceCorrection.STATUS_APPROVED, reviewerId, note);
         auditService.record(reviewerId, "ATTENDANCE_CORRECTION_APPROVE", "attendance_correction",
                 String.valueOf(c.getId()), before, toView(c));
+        notificationHook.notifyCorrectionDecided(
+                c.getEmployeeId(), c.getId(), AttendanceCorrection.STATUS_APPROVED, c.getWorkDate().toString());
         return toView(c);
     }
 
@@ -141,6 +152,8 @@ public class AttendanceCorrectionService {
         finish(c, AttendanceCorrection.STATUS_REJECTED, reviewerId, note);
         auditService.record(reviewerId, "ATTENDANCE_CORRECTION_REJECT", "attendance_correction",
                 String.valueOf(c.getId()), before, toView(c));
+        notificationHook.notifyCorrectionDecided(
+                c.getEmployeeId(), c.getId(), AttendanceCorrection.STATUS_REJECTED, c.getWorkDate().toString());
         return toView(c);
     }
 

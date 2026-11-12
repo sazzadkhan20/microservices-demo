@@ -32,7 +32,7 @@ jobs:
         run: ./gradlew build --no-daemon --console=plain
       - name: Publish test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-test-reports
           retention-days: 30
@@ -40,7 +40,7 @@ jobs:
             */build/test-results/test/*.xml
             */build/reports/tests/test/**
       - name: Upload service jars (used by the system test)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: service-jars
           retention-days: 3
@@ -71,7 +71,7 @@ jobs:
           npm audit --omit=dev --json > npm-audit.json || true
           npm audit --omit=dev --audit-level=high
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-audit
           retention-days: 30
@@ -102,7 +102,7 @@ jobs:
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: trivy-fs-report
@@ -178,7 +178,7 @@ jobs:
         run: |
           mkdir -p ci-logs
           for s in $(docker compose --profile apps ps --services); do docker compose logs --no-color "$s" > "ci-logs/$s.log" 2>&1 || true; done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: system-test-evidence

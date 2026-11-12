@@ -13,5 +13,8 @@ public interface AttendanceRecordRepository extends JpaRepository<AttendanceReco
     List<AttendanceRecord> findByEmployeeIdAndWorkDateBetween(Long employeeId, LocalDate from, LocalDate to);
     List<AttendanceRecord> findByWorkDate(LocalDate workDate);
 
+    /** Open punches (checked in, not checked out) — used by multi-TZ missing-checkout sweep. */
+    List<AttendanceRecord> findByCheckInAtIsNotNullAndCheckOutAtIsNull();
+
     List<AttendanceRecord> findByEmployeeIdInAndWorkDateBetween(java.util.Collection<Long> employeeIds, LocalDate from, LocalDate to);
 }

@@ -21,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Clock;
 import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
@@ -52,6 +53,7 @@ public class AttendanceService {
     private final AuditService auditService;
     private final PeopleAuthzClient rbacService;
     private final DataScopeService dataScopeService;
+    private final Clock clock;
 
     public AttendanceService(
             AttendanceRecordRepository repository,
@@ -64,7 +66,8 @@ public class AttendanceService {
             TenantSettingsRepository tenantSettingsRepository,
             AuditService auditService,
             PeopleAuthzClient rbacService,
-            DataScopeService dataScopeService) {
+            DataScopeService dataScopeService,
+            Clock clock) {
         this.repository = repository;
         this.correctionRepository = correctionRepository;
         this.employeeRepository = employeeRepository;
@@ -76,6 +79,15 @@ public class AttendanceService {
         this.auditService = auditService;
         this.rbacService = rbacService;
         this.dataScopeService = dataScopeService;
+        this.clock = clock == null ? Clock.systemUTC() : clock;
+    }
+
+    private Instant now() {
+        return Instant.now(clock);
+    }
+
+    private LocalDate localDate(ZoneId zone) {
+        return LocalDate.now(clock.withZone(zone));
     }
 
     @Transactional
@@ -90,20 +102,44 @@ public class AttendanceService {
         EmployeeView emp = employeeRepository.findById(empId)
                 .orElseThrow(() -> new IllegalArgumentException("Employee not found"));
         ZoneId zone = resolveZone(emp, clientTimeZone);
-        LocalDate today = LocalDate.now(zone);
-        AttendanceRecord rec = repository.findByEmployeeIdAndWorkDate(empId, today).orElseGet(() -> {
+        Instant now = now();
+        closePastCutoffOpens(emp, zone, now);
+
+        AttendanceRecord open = findActiveOpenPunch(empId, zone);
+        if (open != null) {
+            throw new IllegalStateException(
+                    "Already checked in for shift " + open.getWorkDate() + " — check out first");
+        }
+
+        int earlyMinutes = earlyCheckInMinutes();
+        ShiftWindow window = resolveCheckInWindow(emp, zone, now);
+        if (window == null) {
+            ShiftWindow upcoming = peekNextWindow(emp, zone, now, earlyMinutes);
+            if (upcoming != null && upcoming.isBeforeCheckInOpen(now, earlyMinutes)) {
+                throw new IllegalStateException(
+                        "Check-in opens "
+                                + LocalTime.ofInstant(upcoming.checkInOpensAt(earlyMinutes), zone)
+                                + " " + zone.getId()
+                                + " (" + earlyMinutes + " min before shift start "
+                                + LocalTime.ofInstant(upcoming.startAt(), zone) + ")");
+            }
+            throw new IllegalStateException(
+                    "Outside shift window — check-in is allowed from "
+                            + earlyMinutes + " min before shift start through check-out cut-off");
+        }
+
+        LocalDate workDate = window.workDate();
+        AttendanceRecord rec = repository.findByEmployeeIdAndWorkDate(empId, workDate).orElseGet(() -> {
             AttendanceRecord r = new AttendanceRecord();
             r.setEmployeeId(empId);
-            r.setWorkDate(today);
-            Instant now = Instant.now();
+            r.setWorkDate(workDate);
             r.setCreatedAt(now);
             r.setUpdatedAt(now);
             return r;
         });
         if (rec.getCheckInAt() != null) {
-            throw new IllegalStateException("Already checked in today");
+            throw new IllegalStateException("Already checked in for shift " + workDate);
         }
-        Instant now = Instant.now();
         rec.setCheckInAt(now);
         rec.setEmployeeCodeSnapshot(emp.getEmployeeCode());
         rec.setTimeZone(zone.getId());
@@ -123,15 +159,23 @@ public class AttendanceService {
             rec.setNote(trim(note, 512));
         }
         rec.setUpdatedAt(now);
-        if (rec.getCreatedAt() == null) rec.setCreatedAt(now);
+        if (rec.getCreatedAt() == null) {
+            rec.setCreatedAt(now);
+        }
         AttendanceRecord saved = repository.save(rec);
-        auditService.record(empId, "ATTENDANCE_CHECK_IN", "attendance_record", String.valueOf(saved.getId()), null, saved.getStatusCode());
-        return toView(saved, emp, zone);
+        auditService.record(empId, "ATTENDANCE_CHECK_IN", "attendance_record",
+                String.valueOf(saved.getId()), null, Map.of(
+                        "status", saved.getStatusCode(),
+                        "workDate", workDate.toString()
+                ));
+        Map<String, Object> view = toView(saved, emp, zone);
+        view.put("attributedDate", workDate.toString());
+        return view;
     }
 
     /**
-     * Check-out with SRS BR-08: before 06:00 local, if yesterday has in and no out (and today not checked in),
-     * attribute check-out to yesterday.
+     * Check-out closes the active open shift (work_date = shift-start date), including overnight
+     * duties whose cut-off falls on the next calendar day.
      */
     @Transactional
     public Map<String, Object> checkOut(HttpServletRequest request,
@@ -145,41 +189,35 @@ public class AttendanceService {
         EmployeeView emp = employeeRepository.findById(empId)
                 .orElseThrow(() -> new IllegalArgumentException("Employee not found"));
         ZoneId zone = resolveZone(emp, clientTimeZone);
-        LocalDate today = LocalDate.now(zone);
-        LocalDate yesterday = today.minusDays(1);
-        int lateNightMinutes = attendanceInt("lateNightCheckoutMinutes", 360);
-        int minuteOfDay = LocalTime.now(zone).getHour() * 60 + LocalTime.now(zone).getMinute();
-
-        AttendanceRecord todayRec = repository.findByEmployeeIdAndWorkDate(empId, today).orElse(null);
-        AttendanceRecord yesterdayRec = repository.findByEmployeeIdAndWorkDate(empId, yesterday).orElse(null);
-
-        // FR-ATT-03 — up to N minutes after midnight attribute out to yesterday.
-        boolean lateNightYesterday = yesterdayRec != null
-                && yesterdayRec.getCheckInAt() != null
-                && yesterdayRec.getCheckOutAt() == null
-                && minuteOfDay < lateNightMinutes
-                && (todayRec == null || todayRec.getCheckInAt() == null);
-
-        LocalDate targetDate = lateNightYesterday ? yesterday : today;
-        AttendanceRecord rec = lateNightYesterday ? yesterdayRec
-                : repository.findByEmployeeIdAndWorkDate(empId, today)
-                .orElseThrow(() -> new IllegalStateException("Check in first"));
-        if (rec.getCheckInAt() == null) {
+        Instant now = now();
+        // Prefer the open punch before auto-Missing so we can return a clear cut-off error.
+        AttendanceRecord rec = findOpenPunch(empId, zone);
+        if (rec == null || rec.getCheckInAt() == null) {
+            closePastCutoffOpens(emp, zone, now);
             throw new IllegalStateException("Check in first");
         }
         if (rec.getCheckOutAt() != null) {
-            throw new IllegalStateException("Already checked out for " + targetDate);
+            throw new IllegalStateException("Already checked out for " + rec.getWorkDate());
         }
+        ShiftWindow window = shiftWindowFor(emp, rec.getWorkDate(), zone);
+        if (window != null && window.isPastCutoff(now)) {
+            applyMissingCheckoutIfPastCutoff(rec, emp, zone);
+            throw new IllegalStateException(
+                    "Check-out cut-off passed for shift " + rec.getWorkDate()
+                            + " — marked Missing; check in for the current shift");
+        }
+
+        LocalDate targetDate = rec.getWorkDate();
+        LocalDate localToday = localDate(zone);
+        boolean priorShiftDay = targetDate.isBefore(localToday);
 
         enforceWorkLogRule(empId, targetDate, rec);
 
-        Instant now = Instant.now();
         rec.setCheckOutAt(now);
         rec.setUpdatedAt(now);
         if (note != null && !note.isBlank()) {
             rec.setNote(trim(note, 512));
         }
-        // FR-ATT-02 — capture checkout context; refused geo never blocks.
         rec.setIpAddress(clientIp(request));
         String ua = request.getHeader("User-Agent");
         rec.setDevice(trim(ua, 128));
@@ -196,7 +234,6 @@ public class AttendanceService {
                 && (rec.getLocationLabel() == null || rec.getLocationLabel().isBlank())) {
             rec.setLocationLabel("Location not shared");
         }
-        // Recompute P/L then HD — clears prior Missing check-out (M) once out is recorded.
         applyStatusFromSchedule(rec, emp, rec.getCheckInAt(), zone);
         applyHalfDayIfNeeded(rec, emp);
         AttendanceRecord saved = repository.save(rec);
@@ -204,9 +241,8 @@ public class AttendanceService {
                 String.valueOf(saved.getId()), null, Map.of(
                         "status", saved.getStatusCode(),
                         "workDate", targetDate.toString(),
-                        "lateNightYesterday", lateNightYesterday
+                        "priorShiftDay", priorShiftDay
                 ));
-        // FR-WL-06 — immediate once-per-day notify when checkout day has no work log (FLAG/OFF).
         try {
             workLogService.notifyIfNoWorkLog(empId, targetDate);
         } catch (Exception ignored) {
@@ -214,7 +250,7 @@ public class AttendanceService {
         }
         Map<String, Object> view = toView(saved, emp, zone);
         view.put("attributedDate", targetDate.toString());
-        view.put("lateNightCheckout", lateNightYesterday);
+        view.put("lateNightCheckout", priorShiftDay);
         return view;
     }
 
@@ -249,7 +285,7 @@ public class AttendanceService {
             AttendanceRecord r = new AttendanceRecord();
             r.setEmployeeId(employeeId);
             r.setWorkDate(workDate);
-            Instant now = Instant.now();
+            Instant now = now();
             r.setCreatedAt(now);
             r.setUpdatedAt(now);
             return r;
@@ -284,7 +320,7 @@ public class AttendanceService {
             rec.setTimeZone(zone.getId());
         }
         rec.setNote(trim(note, 512));
-        rec.setUpdatedAt(Instant.now());
+        rec.setUpdatedAt(now());
         AttendanceRecord saved = repository.save(rec);
         auditService.record(actor, "ATTENDANCE_CORRECT", "attendance_record",
                 String.valueOf(saved.getId()), before, toView(saved, emp, zone));
@@ -294,7 +330,7 @@ public class AttendanceService {
     /** Persist original punches when HR/admin edits another person's day (FR-ATT-07/08). */
     private void archiveHrEditOriginals(Long actor, Long employeeId, LocalDate workDate,
                                         AttendanceRecord before, Instant newIn, Instant newOut, String reason) {
-        Instant now = Instant.now();
+        Instant now = now();
         AttendanceCorrection c = new AttendanceCorrection();
         c.setEmployeeId(employeeId);
         c.setWorkDate(workDate);
@@ -376,6 +412,7 @@ public class AttendanceService {
             } else {
                 row = new LinkedHashMap<>();
                 row.put("date", date.toString());
+                row.put("timeZone", zone.getId());
                 applyNotPresentStatus(row, emp, date);
                 row.put("checkIn", null);
                 row.put("checkOut", null);
@@ -405,12 +442,16 @@ public class AttendanceService {
     /**
      * FR-SCH-02 — mark open check-ins past schedule checkoutCutoff as Missing (M).
      * Idempotent; audited. Callable from jobs or admin tooling.
+     * <p>When {@code date} is null, every open punch is evaluated in the employee's
+     * location zone (multi-TZ safe — no JVM {@code LocalDate.now()}).
      */
     @Transactional
     public Map<String, Object> closeMissingCheckouts(LocalDate date) {
-        LocalDate target = date == null ? LocalDate.now() : date;
         int marked = 0;
-        for (AttendanceRecord rec : repository.findByWorkDate(target)) {
+        List<AttendanceRecord> candidates = date == null
+                ? repository.findByCheckInAtIsNotNullAndCheckOutAtIsNull()
+                : repository.findByWorkDate(date);
+        for (AttendanceRecord rec : candidates) {
             if (rec.getCheckInAt() == null || rec.getCheckOutAt() != null) {
                 continue;
             }
@@ -423,7 +464,13 @@ public class AttendanceService {
                 marked++;
             }
         }
-        return Map.of("date", target.toString(), "markedMissing", marked);
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (date != null) {
+            out.put("date", date.toString());
+        }
+        out.put("scanned", candidates.size());
+        out.put("markedMissing", marked);
+        return out;
     }
 
     @Transactional
@@ -431,50 +478,94 @@ public class AttendanceService {
         Long empId = AuthContext.requireEmployeeId();
         EmployeeView emp = employeeRepository.findById(empId).orElse(null);
         ZoneId zone = resolveZone(emp);
-        LocalDate today = LocalDate.now(zone);
+        Instant now = now();
+        LocalDate today = localDate(zone);
         LocalDate yesterday = today.minusDays(1);
-        int minuteOfDay = LocalTime.now(zone).getHour() * 60 + LocalTime.now(zone).getMinute();
 
-        AttendanceRecord todayRec = repository.findByEmployeeIdAndWorkDate(empId, today).orElse(null);
-        AttendanceRecord yesterdayRec = repository.findByEmployeeIdAndWorkDate(empId, yesterday).orElse(null);
         if (emp != null) {
-            if (yesterdayRec != null) {
-                applyMissingCheckoutIfPastCutoff(yesterdayRec, emp, zone);
-            }
-            if (todayRec != null) {
-                applyMissingCheckoutIfPastCutoff(todayRec, emp, zone);
-            }
+            closePastCutoffOpens(emp, zone, now);
         }
 
-        int lateNightMinutes = attendanceInt("lateNightCheckoutMinutes", 360);
-        boolean lateNightCheckoutAvailable = yesterdayRec != null
-                && yesterdayRec.getCheckInAt() != null
-                && yesterdayRec.getCheckOutAt() == null
-                && minuteOfDay < lateNightMinutes
-                && (todayRec == null || todayRec.getCheckInAt() == null);
+        AttendanceRecord open = findActiveOpenPunch(empId, zone);
+        AttendanceRecord todayRec = repository.findByEmployeeIdAndWorkDate(empId, today).orElse(null);
+        boolean priorShiftCheckout = open != null
+                && open.getWorkDate() != null
+                && open.getWorkDate().isBefore(today);
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("date", today.toString());
         out.put("yesterday", yesterday.toString());
-        out.put("serverTime", Instant.now().toString());
-        out.put("localTime", LocalTime.now(zone).toString());
+        out.put("serverTime", now.toString());
+        out.put("localTime", LocalTime.now(clock.withZone(zone)).toString());
         out.put("timeZone", zone.getId());
-        out.put("lateNightCheckoutAvailable", lateNightCheckoutAvailable);
-        if (lateNightCheckoutAvailable) {
-            out.put("checkoutTargetDate", yesterday.toString());
-            out.put("yesterdayRecord", toView(yesterdayRec, emp, zone));
+        out.put("lateNightCheckoutAvailable", priorShiftCheckout);
+        out.put("earlyCheckInMinutes", earlyCheckInMinutes());
+        if (open != null) {
+            ShiftWindow openWindow = emp == null ? null : shiftWindowFor(emp, open.getWorkDate(), zone);
+            boolean canOut = openWindow == null || openWindow.allowsCheckOut(now);
+            // Past cut-off / Missing must never keep the check-out button alive.
+            if ("M".equalsIgnoreCase(open.getStatusCode()) || (openWindow != null && openWindow.isPastCutoff(now))) {
+                canOut = false;
+            }
+            out.put("checkoutTargetDate", open.getWorkDate().toString());
+            out.put("activeWorkDate", open.getWorkDate().toString());
+            out.put("canCheckOut", canOut);
+            out.put("canCheckIn", false);
+            if (priorShiftCheckout && canOut) {
+                out.put("lateNightCheckoutAvailable", true);
+                out.put("yesterdayRecord", toView(open, emp, zone));
+            } else {
+                out.put("lateNightCheckoutAvailable", false);
+            }
+            // Surface the active open shift (may be yesterday's overnight duty) as the punch UI.
+            out.putAll(toView(open, emp, zone));
+            out.put("date", today.toString());
+            // Re-assert flags after toView (status/checkIn fields must not revive dead buttons).
+            out.put("canCheckOut", canOut);
+            out.put("canCheckIn", false);
         } else {
-            out.put("checkoutTargetDate", today.toString());
-        }
-        if (todayRec != null) {
-            out.putAll(toView(todayRec, emp, zone));
-        } else {
-            applyTodayNotCheckedInStatus(out, emp, today, zone);
-            out.put("checkIn", null);
-            out.put("checkOut", null);
-            out.put("workedMinutes", 0);
-            out.put("workingHours", "0h 0m");
-            out.put("totalHours", 0);
+            ShiftWindow checkInWindow = emp == null ? null : resolveCheckInWindow(emp, zone, now);
+            out.put("canCheckOut", false);
+            out.put("canCheckIn", checkInWindow != null);
+            out.put("lateNightCheckoutAvailable", false);
+            if (checkInWindow != null) {
+                out.put("activeWorkDate", checkInWindow.workDate().toString());
+                out.put("checkoutTargetDate", checkInWindow.workDate().toString());
+                AttendanceRecord target = repository
+                        .findByEmployeeIdAndWorkDate(empId, checkInWindow.workDate()).orElse(null);
+                if (target != null && target.getCheckInAt() != null) {
+                    out.putAll(toView(target, emp, zone));
+                    out.put("date", today.toString());
+                } else {
+                    applyTodayNotCheckedInStatus(out, emp, checkInWindow.workDate(), zone);
+                    out.put("checkIn", null);
+                    out.put("checkOut", null);
+                    out.put("workedMinutes", 0);
+                    out.put("workingHours", "0h 0m");
+                    out.put("totalHours", 0);
+                    out.put("workDate", checkInWindow.workDate().toString());
+                }
+                out.put("canCheckOut", false);
+                out.put("canCheckIn", true);
+            } else if (todayRec != null) {
+                out.put("checkoutTargetDate", today.toString());
+                out.put("activeWorkDate", today.toString());
+                out.putAll(toView(todayRec, emp, zone));
+                // Missing / closed day: no punch buttons even if check-in exists without check-out.
+                out.put("canCheckOut", false);
+                out.put("canCheckIn", false);
+            } else {
+                out.put("checkoutTargetDate", today.toString());
+                out.put("activeWorkDate", today.toString());
+                applyTodayNotCheckedInStatus(out, emp, today, zone);
+                out.put("checkIn", null);
+                out.put("checkOut", null);
+                out.put("workedMinutes", 0);
+                out.put("workingHours", "0h 0m");
+                out.put("totalHours", 0);
+                out.put("canCheckOut", false);
+                out.put("canCheckIn", false);
+            }
         }
         int loggedToday = workLogRepository.findByEmployeeIdAndWorkDate(empId, today).stream()
                 .mapToInt(WorkLog::getMinutes).sum();
@@ -485,7 +576,6 @@ public class AttendanceService {
         out.put("expectedHours", expectedToday == null ? 0 : expectedToday);
         out.put("expectedMinutes", expectedToday == null ? 0
                 : expectedToday.multiply(BigDecimal.valueOf(60)).intValue());
-        // FR-HRS-04 — week + month rollups on the same payload.
         out.put("week", periodHours(empId, emp, weekStart(today), today));
         out.put("month", periodHours(empId, emp, today.withDayOfMonth(1), today));
         return out;
@@ -497,7 +587,7 @@ public class AttendanceService {
         Long empId = AuthContext.requireEmployeeId();
         EmployeeView emp = employeeRepository.findById(empId).orElse(null);
         ZoneId zone = resolveZone(emp);
-        LocalDate today = LocalDate.now(zone);
+        LocalDate today = localDate(zone);
         LocalDate start = from == null ? today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)) : from;
         LocalDate end = to == null ? today : to;
         if (end.isBefore(start)) {
@@ -594,11 +684,11 @@ public class AttendanceService {
             BigDecimal expectedHours = workScheduleService.expectedHoursForDay(emp, workDate);
             baseMinutes = expectedHours != null && expectedHours.signum() > 0
                     ? expectedHours.doubleValue() * 60
-                    : Math.max(1, Duration.between(rec.getCheckInAt(), Instant.now()).toMinutes());
+                    : Math.max(1, Duration.between(rec.getCheckInAt(), now()).toMinutes());
         } else {
             // Default WORKED — % of punch length so far (SRS / prototype).
             baseMinutes = rec.getCheckInAt() == null ? 0
-                    : Math.max(1, Duration.between(rec.getCheckInAt(), Instant.now()).toMinutes());
+                    : Math.max(1, Duration.between(rec.getCheckInAt(), now()).toMinutes());
         }
         double pctDone = baseMinutes <= 0 ? 100 : (logged * 100.0 / baseMinutes);
         if (pctDone + 0.01 < minPercent) {
@@ -612,20 +702,59 @@ public class AttendanceService {
         }
     }
 
+    /**
+     * Day classification for a shift {@code workDate} (overnight-safe — uses shift-start date).
+     * Priority: weekly off &gt; holiday &gt; on leave &gt; normal working day.
+     */
+    enum NonWorkingDayKind {
+        WEEKLY_OFF,
+        HOLIDAY,
+        ON_LEAVE,
+        NONE
+    }
+
+    NonWorkingDayKind classifyNonWorkingDay(EmployeeView emp, LocalDate workDate) {
+        if (emp == null || workDate == null) {
+            return NonWorkingDayKind.NONE;
+        }
+        WorkSchedule schedule = resolveSchedule(emp);
+        // 1) Weekly off wins over holiday / leave
+        if (schedule != null
+                && !"HOURLY".equalsIgnoreCase(schedule.getMode())
+                && !workScheduleService.isWorkingDay(schedule, workDate)) {
+            return NonWorkingDayKind.WEEKLY_OFF;
+        }
+        // 2) Location holiday
+        if (workScheduleService.isHoliday(emp.getLocationId(), workDate)) {
+            return NonWorkingDayKind.HOLIDAY;
+        }
+        // 3) Approved leave (full or half)
+        if (isOnApprovedLeave(emp.getId(), workDate)) {
+            return NonWorkingDayKind.ON_LEAVE;
+        }
+        return NonWorkingDayKind.NONE;
+    }
+
     private void applyStatusFromSchedule(AttendanceRecord rec, EmployeeView emp, Instant checkInAt, ZoneId zone) {
         WorkSchedule schedule = resolveSchedule(emp);
         LocalDate workDate = rec.getWorkDate() != null
                 ? rec.getWorkDate()
                 : LocalDate.ofInstant(checkInAt, zone);
-        // Weekly-off / holiday check-in → Worked (not Late/Present).
-        if (workScheduleService.isHoliday(emp.getLocationId(), workDate)) {
+        // Punch on weekly-off / holiday / leave → Worked (never Present/Late/Half-day).
+        NonWorkingDayKind kind = classifyNonWorkingDay(emp, workDate);
+        if (kind == NonWorkingDayKind.WEEKLY_OFF) {
+            rec.setStatusCode("W");
+            rec.setStatusLabel("Worked (weekly off)");
+            return;
+        }
+        if (kind == NonWorkingDayKind.HOLIDAY) {
             rec.setStatusCode("W");
             rec.setStatusLabel("Worked (holiday)");
             return;
         }
-        if (schedule != null && !workScheduleService.isWorkingDay(schedule, workDate)) {
+        if (kind == NonWorkingDayKind.ON_LEAVE) {
             rec.setStatusCode("W");
-            rec.setStatusLabel("Worked (weekly off)");
+            rec.setStatusLabel("Worked (on leave)");
             return;
         }
         // Hourly Appendix A: Present (worked) — no Late split; Missing via cutoff elsewhere.
@@ -639,23 +768,108 @@ public class AttendanceService {
             rec.setStatusLabel("Present");
             return;
         }
-        try {
-            LocalTime start = LocalTime.parse(schedule.getStartTime());
-            int grace = schedule.getGraceMinutes() == null
-                    ? attendanceInt("defaultGraceMinutes", 15)
-                    : schedule.getGraceMinutes();
-            LocalTime lateAfter = start.plusMinutes(grace);
-            LocalTime actual = LocalTime.ofInstant(checkInAt, zone);
-            if (actual.isAfter(lateAfter)) {
-                rec.setStatusCode("L");
-                rec.setStatusLabel("Late");
-            } else {
-                rec.setStatusCode("P");
-                rec.setStatusLabel("Present");
-            }
-        } catch (Exception e) {
+        ShiftWindow window = shiftWindowFor(emp, workDate, zone);
+        if (window == null) {
+            throw new IllegalStateException(
+                    "Invalid schedule start/end for attendance status on " + workDate);
+        }
+        // Instant compare — overnight check-ins after midnight are Late vs start+grace correctly.
+        if (checkInAt.isAfter(window.lateAfterAt())) {
+            rec.setStatusCode("L");
+            rec.setStatusLabel("Late");
+        } else {
             rec.setStatusCode("P");
             rec.setStatusLabel("Present");
+        }
+    }
+
+    private ShiftWindow shiftWindowFor(EmployeeView emp, LocalDate workDate, ZoneId zone) {
+        return ShiftWindow.forSchedule(
+                workDate,
+                resolveSchedule(emp),
+                zone,
+                attendanceInt("defaultGraceMinutes", 15),
+                attendanceStr("defaultCheckoutCutoff", "23:59"));
+    }
+
+    /**
+     * Prefer the older shift date when multiple windows still contain {@code now}
+     * (should be rare). Check-in from (start − earlyCheckInMinutes) through cut-off.
+     * Scans yesterday / today / tomorrow so midnight shifts open 60 min before start.
+     */
+    private ShiftWindow resolveCheckInWindow(EmployeeView emp, ZoneId zone, Instant now) {
+        int early = earlyCheckInMinutes();
+        LocalDate localDay = localDate(zone);
+        for (LocalDate d : List.of(localDay.minusDays(1), localDay, localDay.plusDays(1))) {
+            ShiftWindow w = shiftWindowFor(emp, d, zone);
+            if (w != null && w.allowsCheckIn(now, early)) {
+                AttendanceRecord existing = repository.findByEmployeeIdAndWorkDate(emp.getId(), d).orElse(null);
+                if (existing != null && existing.getCheckInAt() != null) {
+                    continue; // that shift already punched (incl. Missing)
+                }
+                return w;
+            }
+        }
+        return null;
+    }
+
+    private ShiftWindow peekNextWindow(EmployeeView emp, ZoneId zone, Instant now, int earlyMinutes) {
+        LocalDate localDay = localDate(zone);
+        for (LocalDate d : List.of(localDay, localDay.plusDays(1))) {
+            ShiftWindow w = shiftWindowFor(emp, d, zone);
+            if (w != null && w.isBeforeCheckInOpen(now, earlyMinutes)) {
+                return w;
+            }
+        }
+        return null;
+    }
+
+    /** Minutes before shift start when check-in becomes available (default 60). */
+    private int earlyCheckInMinutes() {
+        int v = attendanceInt("earlyCheckInMinutes", 60);
+        return Math.max(0, Math.min(v, 12 * 60));
+    }
+
+    /** Active open punch = checked in, not out, not Missing, still within cut-off. */
+    private AttendanceRecord findActiveOpenPunch(Long empId, ZoneId zone) {
+        AttendanceRecord rec = findOpenPunch(empId, zone);
+        if (rec == null) {
+            return null;
+        }
+        EmployeeView emp = employeeRepository.findById(empId).orElse(null);
+        ShiftWindow w = emp == null ? null : shiftWindowFor(emp, rec.getWorkDate(), zone);
+        if (w != null && w.isPastCutoff(now())) {
+            return null;
+        }
+        return rec;
+    }
+
+    /** Checked in, not out, not already Missing (may be past cut-off). */
+    private AttendanceRecord findOpenPunch(Long empId, ZoneId zone) {
+        LocalDate localDay = localDate(zone);
+        for (LocalDate d : List.of(localDay.minusDays(1), localDay)) {
+            AttendanceRecord rec = repository.findByEmployeeIdAndWorkDate(empId, d).orElse(null);
+            if (rec == null || rec.getCheckInAt() == null || rec.getCheckOutAt() != null) {
+                continue;
+            }
+            if ("M".equalsIgnoreCase(rec.getStatusCode())) {
+                continue;
+            }
+            return rec;
+        }
+        return null;
+    }
+
+    private void closePastCutoffOpens(EmployeeView emp, ZoneId zone, Instant now) {
+        if (emp == null) {
+            return;
+        }
+        LocalDate localDay = localDate(zone);
+        for (LocalDate d : List.of(localDay.minusDays(1), localDay)) {
+            AttendanceRecord rec = repository.findByEmployeeIdAndWorkDate(emp.getId(), d).orElse(null);
+            if (rec != null) {
+                applyMissingCheckoutIfPastCutoff(rec, emp, zone);
+            }
         }
     }
 
@@ -724,6 +938,14 @@ public class AttendanceService {
 
     private void applyHalfDayIfNeeded(AttendanceRecord rec, EmployeeView emp) {
         if (rec.getCheckInAt() == null || rec.getCheckOutAt() == null) return;
+        // Never overwrite weekly-off / holiday / on-leave worked punches with Half Day.
+        if ("W".equalsIgnoreCase(rec.getStatusCode())) {
+            return;
+        }
+        LocalDate workDate = rec.getWorkDate();
+        if (workDate != null && classifyNonWorkingDay(emp, workDate) != NonWorkingDayKind.NONE) {
+            return;
+        }
         WorkSchedule schedule = resolveSchedule(emp);
         if (schedule == null || schedule.getHalfDayHours() == null) return;
         double hours = Duration.between(rec.getCheckInAt(), rec.getCheckOutAt()).toMinutes() / 60.0;
@@ -745,120 +967,87 @@ public class AttendanceService {
         if ("M".equalsIgnoreCase(rec.getStatusCode())) {
             return false;
         }
-        WorkSchedule schedule = resolveSchedule(emp);
-        String cutoffRaw = schedule != null ? schedule.getCheckoutCutoff() : null;
-        if (cutoffRaw == null || cutoffRaw.isBlank()) {
-            // Hourly / missing schedule cutoff: default end-of-day in location zone (Appendix A M).
-            cutoffRaw = attendanceStr("defaultCheckoutCutoff", "23:59");
-        }
-        LocalTime cutoff;
-        try {
-            cutoff = LocalTime.parse(cutoffRaw.trim());
-        } catch (Exception e) {
-            return false;
-        }
-        Instant cutoffAt = rec.getWorkDate().atTime(cutoff).atZone(zone).toInstant();
-        // Inclusive end-of-minute for HH:mm like 23:59
-        cutoffAt = cutoffAt.plusSeconds(59);
-        if (!Instant.now().isAfter(cutoffAt)) {
+        ShiftWindow window = shiftWindowFor(emp, rec.getWorkDate(), zone);
+        if (window == null || !window.isPastCutoff(now())) {
             return false;
         }
         String before = rec.getStatusCode();
         rec.setStatusCode("M");
         rec.setStatusLabel("Missing check-out");
-        rec.setUpdatedAt(Instant.now());
+        rec.setUpdatedAt(now());
         repository.save(rec);
         auditService.record(AuthContext.getEmployeeId(), "ATTENDANCE_MISSING_CHECKOUT", "attendance_record",
                 String.valueOf(rec.getId()), Map.of("status", before), Map.of(
                         "status", "M",
                         "workDate", rec.getWorkDate().toString(),
-                        "checkoutCutoff", cutoffRaw
+                        "checkoutCutoff", window.cutoffAt().toString()
                 ));
         return true;
     }
 
     /**
      * FR-ATT-05 NC — today, after start + grace, no check-in yet.
-     * Before that window (or on leave/holiday/WO) use the not-present codes.
+     * Not-present priority: weekly off &gt; holiday &gt; on leave &gt; NC.
      */
     private void applyTodayNotCheckedInStatus(Map<String, Object> out, EmployeeView emp, LocalDate today, ZoneId zone) {
-        if (emp != null && isOnApprovedLeave(emp.getId(), today)) {
+        NonWorkingDayKind kind = classifyNonWorkingDay(emp, today);
+        if (kind == NonWorkingDayKind.WEEKLY_OFF) {
+            out.put("statusCode", "WO");
+            out.put("status", "Weekly off");
+            return;
+        }
+        if (kind == NonWorkingDayKind.HOLIDAY) {
+            out.put("statusCode", "HO");
+            out.put("status", "Holiday");
+            return;
+        }
+        if (kind == NonWorkingDayKind.ON_LEAVE) {
             out.put("statusCode", "OL");
             out.put("status", "On leave");
             return;
         }
         WorkSchedule schedule = resolveSchedule(emp);
         if (schedule != null && "HOURLY".equalsIgnoreCase(schedule.getMode())) {
-            if (workScheduleService.isHoliday(emp.getLocationId(), today)) {
-                out.put("statusCode", "HO");
-                out.put("status", "Holiday");
-                return;
-            }
             out.put("statusCode", "NC");
             out.put("status", "Not checked in");
             return;
         }
-        if (emp != null && workScheduleService.isHoliday(emp.getLocationId(), today)) {
-            out.put("statusCode", "HO");
-            out.put("status", "Holiday");
+        ShiftWindow window = shiftWindowFor(emp, today, zone);
+        if (window != null && !now().isAfter(window.lateAfterAt())) {
+            out.put("statusCode", "NC");
+            out.put("status", "Not checked in");
             return;
-        }
-        if (schedule != null && !workScheduleService.isWorkingDay(schedule, today)) {
-            out.put("statusCode", "WO");
-            out.put("status", "Weekly off");
-            return;
-        }
-        LocalTime nowLocal = LocalTime.now(zone);
-        if (schedule != null && schedule.getStartTime() != null && !schedule.getStartTime().isBlank()) {
-            try {
-                LocalTime start = LocalTime.parse(schedule.getStartTime().trim());
-                int grace = schedule.getGraceMinutes() == null
-                        ? attendanceInt("defaultGraceMinutes", 15)
-                        : schedule.getGraceMinutes();
-                LocalTime lateAfter = start.plusMinutes(grace);
-                if (!nowLocal.isAfter(lateAfter)) {
-                    out.put("statusCode", "NC");
-                    out.put("status", "Not checked in");
-                    return;
-                }
-            } catch (Exception ignored) { /* fall through to NC */ }
         }
         out.put("statusCode", "NC");
         out.put("status", "Not checked in");
     }
 
     /**
-     * No attendance row (FR-ATT-05): On leave → OL; holiday → HO; week off → WO;
+     * No attendance row — priority: weekly off &gt; holiday &gt; on leave;
      * hourly → NS (No shift); else Absent.
      */
     private void applyNotPresentStatus(Map<String, Object> row, EmployeeView emp, LocalDate date) {
-        if (emp != null && isOnApprovedLeave(emp.getId(), date)) {
+        NonWorkingDayKind kind = classifyNonWorkingDay(emp, date);
+        if (kind == NonWorkingDayKind.WEEKLY_OFF) {
+            row.put("statusCode", "WO");
+            row.put("status", "Weekly off");
+            return;
+        }
+        if (kind == NonWorkingDayKind.HOLIDAY) {
+            row.put("statusCode", "HO");
+            row.put("status", "Holiday");
+            return;
+        }
+        if (kind == NonWorkingDayKind.ON_LEAVE) {
             row.put("statusCode", "OL");
             row.put("status", "On leave");
             return;
         }
         WorkSchedule schedule = resolveSchedule(emp);
         if (schedule != null && "HOURLY".equalsIgnoreCase(schedule.getMode())) {
-            if (workScheduleService.isHoliday(emp.getLocationId(), date)) {
-                row.put("statusCode", "HO");
-                row.put("status", "Holiday");
-                return;
-            }
             row.put("statusCode", "NS");
             row.put("status", "No shift");
             return;
-        }
-        if (schedule != null) {
-            if (workScheduleService.isHoliday(emp.getLocationId(), date)) {
-                row.put("statusCode", "HO");
-                row.put("status", "Holiday");
-                return;
-            }
-            if (!workScheduleService.isWorkingDay(schedule, date)) {
-                row.put("statusCode", "WO");
-                row.put("status", "Weekly off");
-                return;
-            }
         }
         row.put("statusCode", "A");
         row.put("status", "Absent");
@@ -907,13 +1096,13 @@ public class AttendanceService {
         if (zeroOpen) {
             // Still live-count while checked in today before cutoff (FR-HRS-02).
             ZoneId zone = resolveZone(emp);
-            LocalDate today = LocalDate.now(zone);
+            LocalDate today = localDate(zone);
             if (r.getWorkDate() != null && r.getWorkDate().equals(today)) {
-                return Math.max(0, Duration.between(r.getCheckInAt(), Instant.now()).toMinutes());
+                return Math.max(0, Duration.between(r.getCheckInAt(), now()).toMinutes());
             }
             return 0;
         }
-        return Math.max(0, Duration.between(r.getCheckInAt(), Instant.now()).toMinutes());
+        return Math.max(0, Duration.between(r.getCheckInAt(), now()).toMinutes());
     }
 
     private Map<String, Object> toView(AttendanceRecord r, EmployeeView emp, ZoneId zone) {
@@ -1024,7 +1213,7 @@ public class AttendanceService {
     public LocalDate actorLocalToday() {
         Long actorId = AuthContext.requireEmployeeId();
         EmployeeView emp = employeeRepository.findById(actorId).orElse(null);
-        return LocalDate.now(resolveZone(emp));
+        return localDate(resolveZone(emp));
     }
 
     private static LocalDate parseIsoDate(String raw) {

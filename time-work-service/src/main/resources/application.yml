@@ -80,12 +80,13 @@ platform:
     internal-key: ${PLATFORM_INTERNAL_KEY}
     admin-key: ${PLATFORM_ADMIN_KEY}
 
-# FR-WL-06 daily scan (worked days with no log → employee + manager, once per day).
+# FR-WL-06 — hourly UTC sweep; each employee is evaluated in their location zone
+# (idempotent notify keys prevent duplicate nags within the same local day).
 timework:
   worklog:
     missing-notify-job-enabled: ${TIMEWORK_MISSING_WORKLOG_JOB_ENABLED:true}
-    missing-notify-cron: ${TIMEWORK_MISSING_WORKLOG_CRON:0 30 9 * * *}
-    missing-notify-zone: ${TIMEWORK_MISSING_WORKLOG_ZONE:Asia/Dhaka}
+    missing-notify-cron: ${TIMEWORK_MISSING_WORKLOG_CRON:0 0 * * * *}
+    missing-notify-zone: ${TIMEWORK_MISSING_WORKLOG_ZONE:UTC}
 
 management:
   endpoint:

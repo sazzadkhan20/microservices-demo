@@ -64,6 +64,15 @@ public class PayrollRunController {
         return runs.lines(period, q, exceptionsOnly, page, size);
     }
 
+    @GetMapping("/runs/{period}/operations")
+    @RequiresPermission(feature = "payroll", action = "run")
+    @Operation(summary = "Leave-balance sync operations for the month (zero-based page, newest first)")
+    public Map<String, Object> operations(@PathVariable String period,
+                                          @RequestParam(defaultValue = "0") int page,
+                                          @RequestParam(defaultValue = "20") int size) {
+        return runs.operations(period, page, size);
+    }
+
     @GetMapping("/runs/{period}/lines/{employeeId}")
     @RequiresPermission(feature = "payroll", action = "run")
     @Operation(summary = "One person's payslip in a run, with the calculation breakdown (FR-PAY-15)")
@@ -157,14 +166,14 @@ public class PayrollRunController {
 
     @PostMapping("/operations/{operationId}/resolve")
     @RequiresPermission(feature = "payroll", action = "run")
-    @Operation(summary = "Manually resolve a stuck operation: {outcome: SUCCEEDED|REJECTED, reason} (audited)")
+    @Operation(summary = "Resolve a stuck operation: {reason, outcome?}. Fences the key in Leave and applies the outcome Leave holds (audited)")
     public Map<String, Object> resolve(@PathVariable String operationId, @RequestBody Map<String, Object> body) {
-        return finalize.resolve(operationId, String.valueOf(body.get("outcome")),
+        return finalize.resolve(operationId, body.get("outcome") == null ? null : String.valueOf(body.get("outcome")),
                 body.get("reason") == null ? null : String.valueOf(body.get("reason")), AuthContext.requireEmployeeId());
     }
 
+    /** Guide §6: finalise / reopen always answer 202 + operation + Location to poll (even when already done). */
     private static ResponseEntity<Map<String, Object>> accepted(Map<String, Object> op) {
-        HttpStatus status = "PENDING".equals(op.get("status")) ? HttpStatus.ACCEPTED : HttpStatus.OK;
-        return ResponseEntity.status(status).header(HttpHeaders.LOCATION, String.valueOf(op.get("statusUrl"))).body(op);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).header(HttpHeaders.LOCATION, String.valueOf(op.get("statusUrl"))).body(op);
     }
 }

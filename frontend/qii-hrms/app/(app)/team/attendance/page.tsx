@@ -19,14 +19,15 @@ import { fmtDate, fmtNumber, fmtTime, getAppTimeZone, todayIso } from "@/lib/for
 import { teamAttendanceListSchema, type TeamAttendanceRow } from "@/lib/schemas/admin";
 
 const GROUPS: { id: string; label: string; codes: string[] }[] = [
-  { id: "P", label: "Present", codes: ["P", "W"] },
+  { id: "P", label: "Present", codes: ["P"] },
   { id: "L", label: "Late", codes: ["L"] },
   { id: "HD", label: "Half day", codes: ["HD"] },
+  { id: "W", label: "Worked (off-day)", codes: ["W"] },
   { id: "M", label: "Missing out", codes: ["M"] },
   { id: "A", label: "Absent", codes: ["A", "NC"] },
-  { id: "OL", label: "On leave", codes: ["OL"] },
-  { id: "HO", label: "Holiday", codes: ["HO", "H"] },
   { id: "WO", label: "Week off", codes: ["WO"] },
+  { id: "HO", label: "Holiday", codes: ["HO", "H"] },
+  { id: "OL", label: "On leave", codes: ["OL"] },
 ];
 
 const codeOf = (r: TeamAttendanceRow) => String(r.statusCode ?? "").toUpperCase();
@@ -240,8 +241,8 @@ export default function TeamAttendancePage() {
                     <td>
                       <AttCode code={r.statusCode} label={r.status} />
                     </td>
-                    <td className="mono">{fmtTime(r.checkIn)}</td>
-                    <td className="mono">{r.checkOut ? fmtTime(r.checkOut) : r.checkIn ? <span className="muted">Still in</span> : "—"}</td>
+                    <td className="mono">{fmtTime(r.checkIn, r.timeZone)}</td>
+                    <td className="mono">{r.checkOut ? fmtTime(r.checkOut, r.timeZone) : r.checkIn ? <span className="muted">Still in</span> : "—"}</td>
                     <td className="n">{r.totalHours != null && r.checkIn ? fmtNumber(r.totalHours) : "—"}</td>
                     <td className="n">
                       {(r as TeamAttendanceRow & { loggedHours?: number }).loggedHours != null

@@ -489,6 +489,10 @@ textarea {
   background: var(--info-soft);
   color: var(--info);
 }
+.c-W {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
 .c-OL {
   background: var(--accent-soft);
   color: var(--accent);

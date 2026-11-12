@@ -46,6 +46,11 @@ public class PayrollClock {
         return zone;
     }
 
+    /** First instant of {@code period} in the payroll close zone. */
+    public java.time.Instant startOf(YearMonth period) {
+        return period.atDay(1).atStartOfDay(zone).toInstant();
+    }
+
     /** Parses and validates {@code YYYY-MM}. */
     public static YearMonth parse(String period) {
         if (period == null || !period.matches("\\d{4}-(0[1-9]|1[0-2])")) {

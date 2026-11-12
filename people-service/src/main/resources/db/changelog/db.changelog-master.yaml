@@ -18,3 +18,7 @@ databaseChangeLog:
       file: db/changelog/changes/006-employee-users-profile.yaml
   - include:
       file: db/changelog/changes/007-salary-permissions-appendix-b.yaml
+  - include:
+      file: db/changelog/changes/008-own-payslip-view-manager-hr.yaml
+  - include:
+      file: db/changelog/changes/009-employee-payroll-view-own.yaml

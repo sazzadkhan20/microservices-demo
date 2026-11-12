@@ -7,7 +7,7 @@
 # Seeds, per owning service database:
 #   people_db    3 scenario employees (Arpa — SRS worked example, Tanvir — joiner, Rumana — leaver),
 #                currency codes fixed to BDT/AUD (DR-02)
-#   timework_db  attendance 1 Sep – 9 Nov 2026 for everyone employed, with absences, a half day, late
+#   timework_db  attendance 1 Sep 2026 – yesterday (≤ 30 Nov) for everyone employed, with absences, a half day, late
 #                arrivals, a missing check-out and hourly shifts
 #   leave_db     unpaid leave, a half-day casual leave, cover balances for the scenarios
 #   payroll_db   clean salary records (incl. a mid-month raise and hourly rates)
@@ -106,40 +106,43 @@ INSERT INTO salary_record (employee_id, effective_date, pay_type, amount, curren
 COMMIT;
 SQL
 
-echo "==> timework_db: attendance 1 Sep – 9 Nov 2026"
+echo "==> timework_db: attendance 1 Sep 2026 – yesterday"
 psqlq "$HRMS" timework_db -v arpa="$ARPA" -v tanvir="$TANVIR" -v rumana="$RUMANA" <<'SQL'
 BEGIN;
 DELETE FROM attendance_record WHERE work_date BETWEEN '2026-09-01' AND '2026-11-30';
 WITH emp(id, zone, dows, t_in, t_out, d_from, d_to) AS (VALUES
-  (1,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (2,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (3,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (4,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (5,  'Australia/Darwin', '{1,2,3,4,5}'::int[],   '09:00'::time, '17:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (6,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (7,  'Asia/Dhaka',       '{0,1,2,3,4,6}'::int[], '12:00'::time, '20:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (8,  'Australia/Darwin', '{1,2,3,4,5}'::int[],   '09:00'::time, '17:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (9,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (10, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (11, 'Australia/Darwin', '{1,2,3,4,5}'::int[],   '09:00'::time, '17:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (12, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (13, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (15, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (16, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (17, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (18, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (19, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (20, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (21, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, '2026-11-09'::date),
-  (:arpa,   'Asia/Dhaka',  '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-11-09'::date),
-  (:tanvir, 'Asia/Dhaka',  '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-14'::date, '2026-11-09'::date),
+  (1,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (2,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (3,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (4,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (5,  'Australia/Darwin', '{1,2,3,4,5}'::int[],   '09:00'::time, '17:00'::time, '2026-09-01'::date, NULL::date),
+  (6,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (7,  'Asia/Dhaka',       '{0,1,2,3,4,6}'::int[], '12:00'::time, '20:00'::time, '2026-09-01'::date, NULL::date),
+  (8,  'Australia/Darwin', '{1,2,3,4,5}'::int[],   '09:00'::time, '17:00'::time, '2026-09-01'::date, NULL::date),
+  (9,  'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (10, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (11, 'Australia/Darwin', '{1,2,3,4,5}'::int[],   '09:00'::time, '17:00'::time, '2026-09-01'::date, NULL::date),
+  (12, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (13, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (15, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (16, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (17, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (18, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (19, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (20, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (21, 'Asia/Dhaka',       '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-11-01'::date, NULL::date),
+  (:arpa,   'Asia/Dhaka',  '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, NULL::date),
+  (:tanvir, 'Asia/Dhaka',  '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-14'::date, NULL::date),
   (:rumana, 'Asia/Dhaka',  '{0,1,2,3,4}'::int[],   '10:00'::time, '18:00'::time, '2026-09-01'::date, '2026-10-15'::date)
 )
 INSERT INTO attendance_record (employee_id, work_date, check_in_at, check_out_at, status_code, status_label,
                                time_zone, device_type, device, location_label, note, created_at, updated_at)
 SELECT e.id, d::date, (d::date + e.t_in) AT TIME ZONE e.zone, (d::date + e.t_out) AT TIME ZONE e.zone,
        'P', 'Present', e.zone, 'Desktop', 'Seed', 'Office', 'Payroll scenario seed', now(), now()
-FROM emp e, generate_series(e.d_from, e.d_to, interval '1 day') d
+-- d_to NULL = up to yesterday in the employee's own zone (capped at 30 Nov), so the November live draft
+-- only has the absences the scenarios define, whatever day the seed runs.
+FROM emp e, generate_series(e.d_from, COALESCE(e.d_to, LEAST(date '2026-11-30', (now() AT TIME ZONE e.zone)::date - 1)),
+                            interval '1 day') d
 WHERE extract(dow FROM d)::int = ANY (e.dows);
 
 -- Absences (no check-in): Arpa 8–9 Sep; Imran 14 Oct; Farhana 5–7 Oct; Priya 4 Nov (live draft).

@@ -10,8 +10,9 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 
 /**
- * FR-WL-06 — once per day, notify employees (+ managers) for worked days with no work log
- * in the last N days (default 3). Today is included only after check-out.
+ * FR-WL-06 — hourly UTC sweep; {@link WorkLogService#notifyMissing()} evaluates each
+ * employee in their location time zone (Dhaka / Darwin / Sydney / …). Idempotent notify
+ * keys keep one nag per missing day. Today is included only after check-out.
  */
 @Component
 @ConditionalOnProperty(name = "timework.worklog.missing-notify-job-enabled", havingValue = "true", matchIfMissing = true)
@@ -26,8 +27,8 @@ public class MissingWorkLogNotifyJob {
     }
 
     @Scheduled(
-            cron = "${timework.worklog.missing-notify-cron:0 30 9 * * *}",
-            zone = "${timework.worklog.missing-notify-zone:Asia/Dhaka}")
+            cron = "${timework.worklog.missing-notify-cron:0 0 * * * *}",
+            zone = "${timework.worklog.missing-notify-zone:UTC}")
     public void runScheduled() {
         runNow();
     }

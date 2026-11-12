@@ -10,10 +10,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.client.RestClient;
 
 import javax.sql.DataSource;
+import java.time.Clock;
 
 
 @Configuration
 public class TimeWorkAppConfig {
+
+    /** Injectable clock so attendance shift windows can be scenario-tested. */
+    @Bean
+    public Clock clock() {
+        return Clock.systemUTC();
+    }
 
     @Bean
     public JdbcTemplate jdbcTemplate(DataSource dataSource) {

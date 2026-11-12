@@ -1,0 +1,23 @@
+# FR-SAL-03 — every person (including Manager / HR) must see their own payslips and current pay.
+# Appendix B still applies: HR gets no salary:edit and no ALL-scoped salary/payroll (others' pay stays hidden).
+# OWN scope + /me/* and salary self-checks keep access to the holder only.
+databaseChangeLog:
+  - changeSet:
+      id: people-008-own-payslip-view-manager-hr
+      author: qii-hrms
+      changes:
+        - sql:
+            sql: |
+              INSERT INTO app_role_permission (role_id, permission_id, data_scope)
+              SELECT r.id, p.id, 'OWN'
+              FROM app_role r
+              CROSS JOIN app_permission p
+              WHERE UPPER(r.code) IN ('MANAGER', 'HR')
+                AND (
+                  (p.feature = 'payroll' AND p.action = 'view')
+                  OR (p.feature = 'salary' AND p.action = 'view')
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM app_role_permission rp
+                  WHERE rp.role_id = r.id AND rp.permission_id = p.id
+                );

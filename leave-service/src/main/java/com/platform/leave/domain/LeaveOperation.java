@@ -18,6 +18,8 @@ public class LeaveOperation {
 
     public static final String STATUS_SUCCEEDED = "SUCCEEDED";
     public static final String STATUS_FAILED = "FAILED";
+    /** Fenced by payroll before Leave processed the command: a later delivery replays this, never deducts. */
+    public static final String STATUS_CANCELLED = "CANCELLED";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

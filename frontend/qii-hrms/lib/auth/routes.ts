@@ -38,6 +38,20 @@ export const ROUTES: readonly RouteDef[] = [
     rule: anyOf(["leave", "view"]),
   },
   {
+    // Own payslips + estimate for every employee (FR-SAL-03). Company run tabs still need payroll:run.
+    // Placed under Me (not HR) so OWN-scoped holders see it; not a company-scope route.
+    path: "/payroll",
+    title: "Payroll",
+    nav: { group: "Me", label: "Payroll" },
+    rule: anyOf(
+      ["payroll", "view"],
+      ["salary", "view"],
+      ["payroll", "run"],
+      ["payroll", "create"],
+      ["payroll", "approve"],
+    ),
+  },
+  {
     path: "/reports/monthly",
     title: "Monthly reports",
     nav: { group: "Me", label: "Monthly reports" },
@@ -102,13 +116,6 @@ export const ROUTES: readonly RouteDef[] = [
   },
   { path: "/employees/new", title: "Add employee", rule: anyOf(["employees", "create"]) },
   { path: "/employees/[id]", title: "Employee", rule: anyOf(["employees", "view"]) },
-  {
-    path: "/payroll",
-    title: "Payroll",
-    nav: { group: "HR", label: "Payroll" },
-    // payroll:run → company runs; payroll:view → own payslips (draft + finalized details)
-    rule: anyOf(["payroll", "run"], ["payroll", "create"], ["payroll", "approve"], ["payroll", "view"]),
-  },
   {
     path: "/checklists",
     title: "Checklists",
@@ -215,10 +222,12 @@ export function findRoute(pathname: string): RouteDef | undefined {
 export type ScopeMap = Record<string, string> | null | undefined;
 
 function isCompanyRoute(route: RouteDef): boolean {
+  // /payroll is personal (own payslips) for everyone; payroll:run tabs are gated on the page.
+  // Do not require TEAM/ALL scope — OWN payroll:view / salary:view must reach My pay.
+  if (route.path === "/payroll") return false;
   if (route.nav?.group === "HR") return true;
   return (
     route.path.startsWith("/employees") ||
-    route.path === "/payroll" ||
     route.path === "/checklists" ||
     route.path.startsWith("/admin")
   );

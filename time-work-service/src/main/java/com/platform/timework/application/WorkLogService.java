@@ -406,24 +406,33 @@ public class WorkLogService {
     }
 
     /**
-     * FR-WL-06 daily scan — last {@code missingNotifyDays} calendar days (default 3),
-     * including today when the person already checked out (day is complete).
-     * Yesterday and older: any check-in with zero logs counts as a worked day.
+     * FR-WL-06 scan — last {@code missingNotifyDays} calendar days per employee location zone
+     * (default 3), including that employee's local today once they have checked out.
+     * Covers Dhaka / Darwin / Sydney / etc. in one pass (job should run hourly in UTC).
      */
     @Transactional
     public Map<String, Object> notifyMissing() {
         int days = missingNotifyDays();
-        LocalDate today = LocalDate.now(defaultZone());
+        // Span UTC today ±1 so every location's local "today" is included.
+        LocalDate utcToday = LocalDate.now(java.time.ZoneOffset.UTC);
+        java.util.LinkedHashSet<LocalDate> dates = new java.util.LinkedHashSet<>();
+        for (int i = -1; i < days + 1; i++) {
+            dates.add(utcToday.minusDays(i));
+        }
         int scanned = 0;
         int sent = 0;
         int candidates = 0;
-        for (int i = 0; i < days; i++) {
-            LocalDate d = today.minusDays(i);
+        for (LocalDate d : dates) {
             scanned++;
             for (AttendanceRecord att : attendanceRecordRepository.findByWorkDate(d)) {
                 if (att.getCheckInAt() == null) continue;
-                // Today: wait until check-out so we don't nag mid-shift.
-                if (i == 0 && att.getCheckOutAt() == null) continue;
+                EmployeeView emp = employeeRepository.findById(att.getEmployeeId()).orElse(null);
+                if (emp == null || !emp.isActive()) continue;
+                LocalDate empToday = todayFor(emp);
+                LocalDate oldest = empToday.minusDays(days - 1L);
+                if (d.isAfter(empToday) || d.isBefore(oldest)) continue;
+                // Employee-local today: wait until check-out so we don't nag mid-shift.
+                if (d.equals(empToday) && att.getCheckOutAt() == null) continue;
                 if (dayTotal(att.getEmployeeId(), d) > 0) continue;
                 candidates++;
                 sent += notifyIfNoWorkLog(att.getEmployeeId(), d);
@@ -433,7 +442,7 @@ public class WorkLogService {
         out.put("scannedDays", scanned);
         out.put("missingLogDays", candidates);
         out.put("notificationsAttempted", sent);
-        out.put("today", today.toString());
+        out.put("utcToday", utcToday.toString());
         return out;
     }
 

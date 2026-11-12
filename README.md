@@ -103,6 +103,7 @@ Payroll (rules, design and evidence: [docs/PAYROLL_SPEC.md](docs/PAYROLL_SPEC.md
 ```bash
 FORCE=1 bash scripts/seed-payroll-scenarios.sh   # dev only: Sep–Nov 2026 scenarios (absences, half days, unpaid leave, hourly, joiner/leaver)
 node scripts/test-payroll-e2e.mjs                # calculate → finalise → reopen → re-finalise, with every amount checked
+node scripts/test-payroll-recovery.mjs           # ≈12 min: rejection, facts changed, lost command/result, fenced manual resolve, orphan detection
 ```
 
 Production-readiness findings and their remediation order: [docs/BACKEND_PRODUCTION_READINESS_AUDIT.md](docs/BACKEND_PRODUCTION_READINESS_AUDIT.md).

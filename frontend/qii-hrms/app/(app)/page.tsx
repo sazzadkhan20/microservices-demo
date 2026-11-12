@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/components/auth/AuthProvider";
+import { PayslipView, periodLabel } from "@/components/payroll/PayslipView";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { Modal } from "@/components/ui/Modal";
 import { ErrorNote } from "@/components/ui/QueryState";
 import { AttCode, StatusPill } from "@/components/ui/StatusPill";
 import { useToast } from "@/components/ui/Toast";
@@ -39,9 +41,11 @@ export default function HomePage() {
   const router = useRouter();
   const canApproveLeave = can("leave", "approve");
   const canCorrect = can("attendance", "correct");
-  const canViewPay = can("payroll", "view");
+  // FR-SAL-03 — own payslips; salary:view aliases to payroll:view on BE/FE
+  const canViewPay = can("payroll", "view") || can("salary", "view");
   const leaveEligible = me.leaveEligible !== false;
   const canViewAttendance = can("attendance", "view");
+  const [openPayslip, setOpenPayslip] = useState<string | null>(null);
 
   const selfEmp = useQuery({
     queryKey: ["employee-self", me.employeeId],
@@ -130,6 +134,11 @@ export default function HomePage() {
     queryFn: ({ signal }) => apiFetch<Rec[]>(api.payroll("me/payslips"), { signal }),
     enabled: canViewPay,
   });
+  const payslipDetail = useQuery({
+    queryKey: ["payroll-me-payslip", openPayslip],
+    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll(`me/payslips/${openPayslip}`), { signal }),
+    enabled: canViewPay && !!openPayslip,
+  });
   const unread = useQuery({
     queryKey: ["notifications-unread"],
     queryFn: ({ signal }) => apiFetch<{ unreadCount?: number }>(api.notifications("unread-count"), { signal }),
@@ -170,6 +179,14 @@ export default function HomePage() {
   const checkInAt = t ? pick(t, "checkIn", "checkInAt") : null;
   const checkOutAt = t ? pick(t, "checkOut", "checkOutAt") : null;
   const lateNight = Boolean(t?.lateNightCheckoutAvailable);
+  const statusM = String(t?.statusCode ?? "").toUpperCase() === "M";
+  // Prefer API punch gates — never revive Check out after cut-off / Missing.
+  const canCheckInBtn =
+    t?.canCheckIn != null ? Boolean(t.canCheckIn) : Boolean(!checkInAt && !lateNight && !statusM);
+  const canCheckOutBtn =
+    t?.canCheckOut != null
+      ? Boolean(t.canCheckOut)
+      : Boolean(!statusM && ((checkInAt && !checkOutAt) || lateNight));
   const canCheck = can("attendance", "checkin");
 
   const leaveBalanceRows = useMemo(() => {
@@ -323,7 +340,7 @@ export default function HomePage() {
             </>
           ) : null}
           <div className="row">
-            {canCheck && !checkInAt && !lateNight ? (
+            {canCheck && canCheckInBtn ? (
               <button
                 type="button"
                 className="btn primary"
@@ -336,7 +353,7 @@ export default function HomePage() {
                 Check in
               </button>
             ) : null}
-            {canCheck && ((checkInAt && !checkOutAt) || lateNight) ? (
+            {canCheck && canCheckOutBtn ? (
               <button
                 type="button"
                 className="btn primary"
@@ -550,7 +567,7 @@ export default function HomePage() {
           <section className="card stack" style={{ gridColumn: "span 2" }}>
             <div className="card-head" style={{ marginBottom: 0 }}>
               <h2>My pay</h2>
-              <Link href="/payroll" className="btn sm">
+              <Link href="/payroll?tab=mypay" className="btn sm">
                 Payslips
               </Link>
             </div>
@@ -574,13 +591,28 @@ export default function HomePage() {
                   {slips.length > 0 ? (
                     <div className="stack" style={{ gap: 6 }}>
                       {slips.slice(0, 3).map((p) => (
-                        <div key={String(p.period)} className="row between">
-                          <span className="mono small">{str(p.period)}</span>
+                        <button
+                          key={String(p.period)}
+                          type="button"
+                          className="row between"
+                          style={{
+                            cursor: "pointer",
+                            width: "100%",
+                            textAlign: "left",
+                            background: "transparent",
+                            border: 0,
+                            padding: "6px 0",
+                            color: "inherit",
+                            font: "inherit",
+                          }}
+                          onClick={() => setOpenPayslip(String(p.period))}
+                        >
+                          <span className="mono small">{periodLabel(p.period)}</span>
                           <span className="row" style={{ gap: 8 }}>
                             <b>{fmtMoney(p.netPay, str(p.currency, ""))}</b>
                             <StatusPill status={p.status} />
                           </span>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   ) : (
@@ -591,6 +623,27 @@ export default function HomePage() {
             })()}
           </section>
         </div>
+      ) : null}
+
+      {openPayslip ? (
+        <Modal
+          open
+          wide
+          onClose={() => setOpenPayslip(null)}
+          title={`Payslip · ${periodLabel(openPayslip)}`}
+          footer={
+            <button type="button" className="btn" onClick={() => window.print()}>
+              Print
+            </button>
+          }
+        >
+          <ErrorNote error={payslipDetail.error} />
+          {payslipDetail.data ? (
+            <PayslipView slip={payslipDetail.data} />
+          ) : !payslipDetail.error ? (
+            <p className="muted">Loading…</p>
+          ) : null}
+        </Modal>
       ) : null}
 
       <section className="card stack">

@@ -6,6 +6,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -71,6 +72,9 @@ public class PayrollOperation {
     private String resolveReason;
     @Column(name = "created_at", nullable = false)
     private Instant createdAt = Instant.now();
+    @Version
+    @Column(nullable = false)
+    private long version;
     @Column(name = "completed_at")
     private Instant completedAt;
 

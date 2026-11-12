@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/components/auth/AuthProvider";
@@ -12,7 +12,7 @@ import { StatusPill } from "@/components/ui/StatusPill";
 import { Tabs } from "@/components/ui/Tabs";
 import { useToast } from "@/components/ui/Toast";
 import { PayslipView, periodLabel } from "@/components/payroll/PayslipView";
-import { api, apiFetch, downloadFile } from "@/lib/api/client";
+import { api, ApiError, apiFetch, DEFAULT_PAGE_SIZE, downloadFile } from "@/lib/api/client";
 import { rowsOf, useLeaveTypeCatalogue, type Rec } from "@/lib/api/lookups";
 import { currentPeriod, fmtDateTime, fmtMoney, fmtNumber, str } from "@/lib/format";
 
@@ -27,6 +27,7 @@ type Run = Rec & {
   reopenBlockers?: string[];
   leaveToTake?: Rec[];
   operations?: Rec[];
+  operationCount?: number;
 };
 
 const IN_FLIGHT = new Set(["FINALIZING", "REOPENING"]);
@@ -49,7 +50,8 @@ function PayrollInner() {
   const { can } = useAuth();
   const params = useSearchParams();
   const canRun = can("payroll", "run");
-  const canView = can("payroll", "view");
+  // FR-SAL-03 — own payslips; salary:view satisfies payroll:view via FE/BE aliases
+  const canView = can("payroll", "view") || can("salary", "view");
   const canExport = can("payroll", "export");
 
   const tabs = useMemo(() => {
@@ -60,10 +62,9 @@ function PayrollInner() {
     return t;
   }, [canRun, canView]);
 
-  const [tab, setTab] = useState(params.get("tab") ?? (canRun ? "run" : "mypay"));
-  useEffect(() => {
-    if (tabs.length > 0 && !tabs.some((t) => t.id === tab)) setTab(tabs[0].id);
-  }, [tabs, tab]);
+  const [chosenTab, setTab] = useState(params.get("tab") ?? (canRun ? "run" : "mypay"));
+  // A tab the user may not see (or an unknown ?tab=) falls back to the first one they can.
+  const tab = tabs.some((t) => t.id === chosenTab) ? chosenTab : (tabs[0]?.id ?? chosenTab);
 
   return (
     <div className="stack">
@@ -87,7 +88,8 @@ function RunPanel({ canExport }: { canExport: boolean }) {
   const [period, setPeriod] = useState(previousPeriod(currentPeriod()));
   const [q, setQ] = useState("");
   const [exceptionsOnly, setExceptionsOnly] = useState(false);
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(0); // payroll lines API is zero-based
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
   const [selected, setSelected] = useState<number | null>(null);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
@@ -101,20 +103,23 @@ function RunPanel({ canExport }: { canExport: boolean }) {
   const r = run.data;
 
   const lines = useQuery({
-    queryKey: ["payroll-lines", period, q, exceptionsOnly, page, r?.revision, r?.status],
+    queryKey: ["payroll-lines", period, q, exceptionsOnly, page, size, r?.revision, r?.status],
     queryFn: ({ signal }) =>
       apiFetch<Rec>(api.payroll(`runs/${period}/lines`), {
-        query: { q: q || undefined, exceptionsOnly, page, size: 50 },
+        query: { q: q || undefined, exceptionsOnly, page, size },
         signal,
       }),
     enabled: !!r?.exists,
   });
   const rows = rowsOf<Rec>(lines.data);
-  const totalPages = Number((lines.data as Rec | undefined)?.totalPages ?? 1);
+  const totalElements = Number((lines.data as Rec | undefined)?.totalElements ?? rows.length);
+  const totalPages = Math.max(Number((lines.data as Rec | undefined)?.totalPages ?? 1), 1);
+  const pageLabel = Math.min(page + 1, totalPages);
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["payroll-run", period] });
     void qc.invalidateQueries({ queryKey: ["payroll-lines", period] });
+    void qc.invalidateQueries({ queryKey: ["payroll-operations", period] });
     void qc.invalidateQueries({ queryKey: ["payroll-runs"] });
   };
 
@@ -275,20 +280,22 @@ function RunPanel({ canExport }: { canExport: boolean }) {
 
       {r?.exists ? (
         <section className="card stack">
-          <div className="filters" style={{ margin: 0 }}>
-            <label className="field">
+          <div className="row between" style={{ flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
+            <label className="field" style={{ flex: "1 1 320px", minWidth: 0, margin: 0 }}>
               <span>Search</span>
               <input
                 type="search"
-                placeholder="Name or code"
+                placeholder="Search by employee name or code…"
                 value={q}
                 onChange={(e) => {
                   setQ(e.target.value);
                   setPage(0);
                 }}
+                style={{ width: "100%" }}
+                aria-label="Search payroll rows"
               />
             </label>
-            <label className="checks" style={{ alignSelf: "flex-end" }}>
+            <label className="checks" style={{ flex: "0 0 auto", paddingBottom: 2 }}>
               <input
                 type="checkbox"
                 checked={exceptionsOnly}
@@ -322,7 +329,7 @@ function RunPanel({ canExport }: { canExport: boolean }) {
                 {rows.length === 0 ? (
                   <tr>
                     <td colSpan={11} className="empty">
-                      {lines.isLoading ? "Loading…" : "No rows"}
+                      {lines.isLoading || lines.isFetching ? "Loading…" : "No rows"}
                     </td>
                   </tr>
                 ) : (
@@ -362,20 +369,58 @@ function RunPanel({ canExport }: { canExport: boolean }) {
               </tbody>
             </table>
           </div>
-          {totalPages > 1 ? (
-            <div className="row" style={{ gap: 8, justifyContent: "flex-end" }}>
-              <button type="button" className="btn sm" disabled={page <= 0} onClick={() => setPage((p) => p - 1)}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <span className="small muted">
+              {totalElements} total · page {pageLabel}/{totalPages}
+              {lines.isFetching ? " · refreshing" : ""}
+            </span>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <label className="small muted row" style={{ gap: 6, alignItems: "center" }}>
+                Per page
+                <select
+                  value={size}
+                  onChange={(e) => {
+                    setSize(Number(e.target.value));
+                    setPage(0);
+                  }}
+                  style={{ width: 72 }}
+                  aria-label="Rows per page"
+                >
+                  {[10, 20, 50, 100].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page <= 0 || lines.isFetching}
+                onClick={() => setPage((p) => p - 1)}
+              >
                 Previous
               </button>
-              <span className="small muted">
-                Page {page + 1} of {totalPages}
-              </span>
-              <button type="button" className="btn sm" disabled={page + 1 >= totalPages} onClick={() => setPage((p) => p + 1)}>
+              <button
+                type="button"
+                className="btn sm"
+                disabled={page + 1 >= totalPages || lines.isFetching}
+                onClick={() => setPage((p) => p + 1)}
+              >
                 Next
               </button>
             </div>
-          ) : null}
+          </div>
         </section>
+      ) : null}
+
+      {r?.exists ? (
+        <LeaveSyncPanel
+          period={period}
+          status={String(status ?? "")}
+          revision={Number(r.revision ?? 0)}
+          onChanged={refresh}
+        />
       ) : null}
 
       {selected != null && r ? (
@@ -386,6 +431,335 @@ function RunPanel({ canExport }: { canExport: boolean }) {
       ) : null}
       {reopenOpen && r ? <ReopenModal run={r} onClose={() => setReopenOpen(false)} onDone={refresh} /> : null}
     </div>
+  );
+}
+
+/** Lists from the API error envelope's details (finalise blockers, facts that changed). */
+function errorDetails(e: unknown): string[] {
+  const body = e instanceof ApiError ? (e.body as Rec | undefined) : undefined;
+  const details = (body?.details ?? {}) as Rec;
+  const out: string[] = [];
+  for (const k of ["changes", "blockers"]) {
+    const v = details[k];
+    if (Array.isArray(v)) out.push(...v.map((x) => String(x)));
+  }
+  return out;
+}
+
+function ErrorWithDetails({ message, details }: { message: string; details: string[] }) {
+  if (!message) return null;
+  return (
+    <div className="notice bad">
+      <div>{message}</div>
+      {details.length > 0 ? (
+        <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+          {details.map((d, i) => (
+            <li key={i} className="small">
+              {d}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+const ACTION_LABEL: Record<string, string> = { FINALIZE: "Finalise", REOPEN: "Reopen" };
+
+/**
+ * Guide §6 recovery: every finalise/reopen operation of the month with its state, a safe manual
+ * resolve for one that is stuck, and the reconciliation against the Leave ledger.
+ */
+function LeaveSyncPanel({
+  period,
+  status,
+  revision,
+  onChanged,
+}: {
+  period: string;
+  status: string;
+  revision: number;
+  onChanged: () => void;
+}) {
+  const [resolving, setResolving] = useState<Rec | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [page, setPage] = useState(0);
+  const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
+
+  const opsQ = useQuery({
+    queryKey: ["payroll-operations", period, page, size, revision, status],
+    queryFn: ({ signal }) =>
+      apiFetch<Rec>(api.payroll(`runs/${period}/operations`), {
+        query: { page, size },
+        signal,
+      }),
+    enabled: /^\d{4}-\d{2}$/.test(period),
+    refetchInterval: (q) => {
+      const rows = rowsOf<Rec>(q.state.data);
+      return rows.some((o) => o.status === "PENDING") ? 5000 : false;
+    },
+  });
+  // Strictly this selected payroll month only (ignore any stale/cross-period rows).
+  const ops = rowsOf<Rec>(opsQ.data).filter((o) => !o.period || String(o.period) === period);
+  const totalElements = Number((opsQ.data as Rec | undefined)?.totalElements ?? ops.length);
+  const totalPages = Math.max(Number((opsQ.data as Rec | undefined)?.totalPages ?? 1), 1);
+  const pageLabel = Math.min(page + 1, totalPages);
+  const hasPending = ops.some((o) => o.status === "PENDING");
+
+  useEffect(() => {
+    if (!hasPending) return;
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, [hasPending]);
+
+  useEffect(() => {
+    setPage(0);
+  }, [period, size]);
+
+  return (
+    <section className="card stack">
+      <div className="card-head" style={{ marginBottom: 0 }}>
+        <div>
+          <h2 style={{ margin: 0 }}>Leave balance sync · {periodLabel(period)}</h2>
+          <p className="small muted" style={{ margin: "4px 0 0" }}>
+            Finalise and reopen leave-cover for <b>{period}</b> only — not other months. Automatic re-sends and Leave
+            ledger checks.
+          </p>
+        </div>
+      </div>
+      <ErrorNote error={opsQ.error} />
+      <div className="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Action</th>
+              <th>Status</th>
+              <th className="n">Sent</th>
+              <th>Started</th>
+              <th>Completed</th>
+              <th>Details</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {ops.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="empty">
+                  {opsQ.isLoading || opsQ.isFetching
+                    ? "Loading…"
+                    : `No leave-cover operations for ${periodLabel(period)} yet`}
+                </td>
+              </tr>
+            ) : (
+              ops.map((o) => {
+                const pending = o.status === "PENDING";
+                const resolvableAt = o.resolvableAt ? new Date(String(o.resolvableAt)).getTime() : 0;
+                const canResolve = pending && resolvableAt > 0 && now >= resolvableAt;
+                return (
+                  <tr key={String(o.operationId)}>
+                    <td className="mono small">{str(o.period, period)}</td>
+                    <td>
+                      <b>{ACTION_LABEL[String(o.action)] ?? str(o.action)}</b>
+                      <div className="muted small mono">{str(o.operationKey)}</div>
+                    </td>
+                    <td>
+                      <StatusPill status={str(o.status)} />
+                    </td>
+                    <td className="n">{str(o.attempts)}×</td>
+                    <td className="small">{fmtDateTime(o.createdAt)}</td>
+                    <td className="small">{o.completedAt ? fmtDateTime(o.completedAt) : "—"}</td>
+                    <td className="small" style={{ maxWidth: 320 }}>
+                      {pending ? (
+                        <span className="muted">
+                          Waiting for Leave — re-sent automatically.
+                          {!canResolve && resolvableAt > 0 ? ` Manual resolve from ${fmtDateTime(o.resolvableAt)}.` : ""}
+                        </span>
+                      ) : null}
+                      {o.error ? <span>{str(o.error)}</span> : null}
+                      {o.resolvedBy ? (
+                        <div className="muted">
+                          Resolved manually by #{str(o.resolvedBy)}: {str(o.resolveReason)}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td>
+                      {pending ? (
+                        <button type="button" className="btn sm" disabled={!canResolve} onClick={() => setResolving(o)}>
+                          Resolve…
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <span className="small muted">
+          {totalElements} total · page {pageLabel}/{totalPages}
+          {opsQ.isFetching ? " · refreshing" : ""}
+        </span>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <label className="small muted row" style={{ gap: 6, alignItems: "center" }}>
+            Per page
+            <select
+              value={size}
+              onChange={(e) => setSize(Number(e.target.value))}
+              style={{ width: 72 }}
+              aria-label="Operations per page"
+            >
+              {[10, 20, 50, 100].map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="btn sm" disabled={page <= 0 || opsQ.isFetching} onClick={() => setPage((p) => p - 1)}>
+            Previous
+          </button>
+          <button
+            type="button"
+            className="btn sm"
+            disabled={page + 1 >= totalPages || opsQ.isFetching}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+          </button>
+        </div>
+      </div>
+      <ReconciliationView period={period} status={status} revision={revision} />
+      {resolving ? (
+        <ResolveModal
+          op={resolving}
+          onClose={() => setResolving(null)}
+          onDone={() => {
+            setResolving(null);
+            onChanged();
+            void opsQ.refetch();
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function ReconciliationView({ period, status, revision }: { period: string; status: string; revision: number }) {
+  const rec = useQuery({
+    queryKey: ["payroll-reconciliation", period, status, revision],
+    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll(`runs/${period}/reconciliation`), { signal }),
+    enabled: false,
+  });
+  const d = rec.data;
+  const diffs = (Array.isArray(d?.differences) ? d?.differences : []) as Rec[];
+  const orphans = (Array.isArray(d?.orphans) ? d?.orphans : []) as Rec[];
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button
+          type="button"
+          className="btn sm"
+          disabled={rec.isFetching || IN_FLIGHT.has(status)}
+          onClick={() => void rec.refetch()}
+        >
+          {rec.isFetching ? "Checking…" : "Check against Leave ledger"}
+        </button>
+        {d && d.applicable === false ? <span className="small muted">{str(d.message)}</span> : null}
+        {d && d.applicable === true && d.matches === true ? (
+          <span className="pill good">Matches — Leave holds exactly what payroll covered</span>
+        ) : null}
+        {d && d.applicable === true && d.matches === false ? <span className="pill bad">Mismatch</span> : null}
+      </div>
+      <ErrorNote error={rec.error} />
+      {diffs.length > 0 ? (
+        <div className="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Employee : category</th>
+                <th className="n">Payroll covered</th>
+                <th className="n">Leave holds</th>
+              </tr>
+            </thead>
+            <tbody>
+              {diffs.map((x) => (
+                <tr key={String(x.key)}>
+                  <td className="mono small">{str(x.key)}</td>
+                  <td className="n">{fmtNumber(x.payrollDays)}</td>
+                  <td className="n">{fmtNumber(x.leaveLedgerDays)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {orphans.length > 0 ? (
+        <div className="notice bad small">
+          Leave still holds cover taken under operations that are not this month&apos;s current finalise:
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {orphans.map((o, i) => (
+              <li key={i} className="mono">
+                {str(o.operationKey)} · employee {str(o.employeeId)} · {fmtNumber(o.days)} {str(o.category)}
+              </li>
+            ))}
+          </ul>
+          Correct these balances in Leave (audited adjustment), then check again.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Guide §6 manual resolve: payroll asks Leave what happened (fencing the key first) and applies that. */
+function ResolveModal({ op, onClose, onDone }: { op: Rec; onClose: () => void; onDone: () => void }) {
+  const toast = useToast();
+  const [reason, setReason] = useState("");
+  const resolve = useMutation({
+    mutationFn: () =>
+      apiFetch<Rec>(api.payroll(`operations/${String(op.operationId)}/resolve`), { method: "POST", body: { reason } }),
+    onSuccess: (res) => {
+      toast.show(
+        res.status === "SUCCEEDED"
+          ? "Leave had applied it — the operation is complete"
+          : "Leave had not applied it — it is now cancelled in Leave and nothing will change there",
+      );
+      onDone();
+    },
+  });
+  return (
+    <Modal open onClose={resolve.isPending ? () => {} : onClose} title={`Resolve ${ACTION_LABEL[String(op.action)] ?? ""} operation`}>
+      <div className="stack">
+        <p className="small">
+          <span className="mono">{str(op.operationKey)}</span> has waited for Leave since {fmtDateTime(op.createdAt)} (
+          {str(op.attempts)} sends).
+        </p>
+        <p className="small">
+          Payroll asks Leave what happened. If Leave never processed it, Leave records it as cancelled first, so a delayed
+          message can no longer change any balance, and the month goes to <b>Action required</b> (finalise) or stays{" "}
+          <b>Finalised</b> (reopen). If Leave did process it, its result is applied. You do not choose the outcome.
+        </p>
+        <FormField label="Reason (audited)" required>
+          <input type="text" maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
+        </FormField>
+        {resolve.isError ? <ErrorWithDetails message={resolve.error.message} details={errorDetails(resolve.error)} /> : null}
+        <div className="modal-foot">
+          <button type="button" className="btn" disabled={resolve.isPending} onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            disabled={!reason.trim() || resolve.isPending}
+            onClick={() => resolve.mutate()}
+          >
+            {resolve.isPending ? "Checking with Leave…" : "Resolve with Leave"}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -434,12 +808,13 @@ function LineModal({
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [err, setErr] = useState("");
-  useEffect(() => {
-    if (slip) {
-      setAmount(Number(slip.adjustment ?? 0) !== 0 ? String(slip.adjustment) : "");
-      setNote(str(slip.adjustmentNote, ""));
-    }
-  }, [slip]);
+  // Form follows the loaded payslip (React's "adjust state when a prop changes" pattern, no effect).
+  const [formFor, setFormFor] = useState<Rec | undefined>(undefined);
+  if (slip && slip !== formFor) {
+    setFormFor(slip);
+    setAmount(Number(slip.adjustment ?? 0) !== 0 ? String(slip.adjustment) : "");
+    setNote(str(slip.adjustmentNote, ""));
+  }
 
   const after = (data: Rec) => {
     qc.setQueryData(["payroll-line", period, employeeId], data);
@@ -543,20 +918,26 @@ function LineModal({
   );
 }
 
+/** Polls GET /operations/{id} until it leaves PENDING, then calls {@code onFinished} once. */
 function useOperationPoll(onFinished: (op: Rec) => void) {
   const [operationId, setOperationId] = useState<string | null>(null);
-  const op = useQuery({
+  const finished = useRef(onFinished);
+  useEffect(() => {
+    finished.current = onFinished;
+  }, [onFinished]);
+  useQuery({
     queryKey: ["payroll-operation", operationId],
-    queryFn: ({ signal }) => apiFetch<Rec>(api.payroll(`operations/${operationId}`), { signal }),
+    queryFn: async ({ signal }) => {
+      const data = await apiFetch<Rec>(api.payroll(`operations/${operationId}`), { signal });
+      if (data.status !== "PENDING") {
+        setOperationId(null);
+        finished.current(data);
+      }
+      return data;
+    },
     enabled: !!operationId,
     refetchInterval: (query) => (query.state.data?.status === "PENDING" || !query.state.data ? 1500 : false),
   });
-  useEffect(() => {
-    if (op.data && op.data.status !== "PENDING") {
-      onFinished(op.data);
-      setOperationId(null);
-    }
-  }, [op.data, onFinished]);
   return { start: setOperationId, polling: !!operationId };
 }
 
@@ -565,6 +946,7 @@ function FinalizeModal({ run, onClose, onDone }: { run: Run; onClose: () => void
   const toast = useToast();
   const [typed, setTyped] = useState("");
   const [err, setErr] = useState("");
+  const [errList, setErrList] = useState<string[]>([]);
   const poll = useOperationPoll((op) => {
     if (op.status === "SUCCEEDED") toast.show(`${periodLabel(run.period)} finalised — employees notified`);
     else setErr(`Finalise ${str(op.status)}: ${str(op.error, "see the run warnings")}`);
@@ -589,11 +971,15 @@ function FinalizeModal({ run, onClose, onDone }: { run: Run; onClose: () => void
         onDone();
       }
     },
-    onError: (e: Error) => setErr(e.message),
+    onError: (e: Error) => {
+      setErr(e.message);
+      setErrList(errorDetails(e));
+      onDone();
+    },
   });
   const busy = finalize.isPending || poll.polling;
   return (
-    <Modal open onClose={busy ? () => {} : onClose} title={`Finalise ${periodLabel(run.period)}?`}>
+    <Modal open onClose={finalize.isPending ? () => {} : onClose} title={`Finalise ${periodLabel(run.period)}?`}>
       <div className="stack">
         <p className="small">
           This locks every payslip of the month (revision {str(run.revision)}), takes covered absences from leave balances
@@ -611,10 +997,16 @@ function FinalizeModal({ run, onClose, onDone }: { run: Run; onClose: () => void
         <FormField label={`Type ${run.period} to confirm`}>
           <input type="text" value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
         </FormField>
-        {err ? <div className="notice bad">{err}</div> : null}
+        {poll.polling ? (
+          <div className="notice small">
+            Waiting for Leave to take the covered days. You can close this window — the month shows Finalising and updates by
+            itself; a lost message is re-sent automatically.
+          </div>
+        ) : null}
+        <ErrorWithDetails message={err} details={errList} />
         <div className="modal-foot">
-          <button type="button" className="btn" disabled={busy} onClick={onClose}>
-            Cancel
+          <button type="button" className="btn" disabled={finalize.isPending} onClick={onClose}>
+            {poll.polling ? "Close" : "Cancel"}
           </button>
           <button
             type="button"
@@ -622,6 +1014,7 @@ function FinalizeModal({ run, onClose, onDone }: { run: Run; onClose: () => void
             disabled={typed.trim() !== run.period || busy}
             onClick={() => {
               setErr("");
+              setErrList([]);
               finalize.mutate();
             }}
           >
@@ -639,6 +1032,7 @@ function ReopenModal({ run, onClose, onDone }: { run: Run; onClose: () => void; 
   const [typed, setTyped] = useState("");
   const [reason, setReason] = useState("");
   const [err, setErr] = useState("");
+  const [errList, setErrList] = useState<string[]>([]);
   const poll = useOperationPoll((op) => {
     if (op.status === "SUCCEEDED") toast.show(`${periodLabel(run.period)} reopened — leave adjustments returned`);
     else setErr(`Reopen ${str(op.status)}: ${str(op.error)}`);
@@ -656,11 +1050,14 @@ function ReopenModal({ run, onClose, onDone }: { run: Run; onClose: () => void; 
         onClose();
       }
     },
-    onError: (e: Error) => setErr(e.message),
+    onError: (e: Error) => {
+      setErr(e.message);
+      setErrList(errorDetails(e));
+    },
   });
   const busy = reopen.isPending || poll.polling;
   return (
-    <Modal open onClose={busy ? () => {} : onClose} title={`Reopen ${periodLabel(run.period)}?`}>
+    <Modal open onClose={reopen.isPending ? () => {} : onClose} title={`Reopen ${periodLabel(run.period)}?`}>
       <div className="stack">
         <p className="small">
           The finalised payslips are kept as a revision, the leave taken for covered absences is returned, and the month goes
@@ -672,10 +1069,16 @@ function ReopenModal({ run, onClose, onDone }: { run: Run; onClose: () => void; 
         <FormField label={`Type ${run.period} to confirm`}>
           <input type="text" value={typed} onChange={(e) => setTyped(e.target.value)} />
         </FormField>
-        {err ? <div className="notice bad">{err}</div> : null}
+        {poll.polling ? (
+          <div className="notice small">
+            Waiting for Leave to return the covered days. You can close this window — the month shows Reopening and updates by
+            itself.
+          </div>
+        ) : null}
+        <ErrorWithDetails message={err} details={errList} />
         <div className="modal-foot">
-          <button type="button" className="btn" disabled={busy} onClick={onClose}>
-            Cancel
+          <button type="button" className="btn" disabled={reopen.isPending} onClick={onClose}>
+            {poll.polling ? "Close" : "Cancel"}
           </button>
           <button
             type="button"
@@ -828,16 +1231,15 @@ function RulesPanel() {
   const leaveTypes = useLeaveTypeCatalogue();
   const [form, setForm] = useState<{ perDayRateBasis: string; absenceRule: string; cover: string[]; notify: boolean } | null>(null);
   const [err, setErr] = useState("");
-  useEffect(() => {
-    if (settings.data && !form) {
-      setForm({
-        perDayRateBasis: str(settings.data.perDayRateBasis, "WORKING_DAYS"),
-        absenceRule: str(settings.data.absenceRule, "BALANCE_FIRST"),
-        cover: Array.isArray(settings.data.absenceCoverOrder) ? (settings.data.absenceCoverOrder as string[]) : [],
-        notify: settings.data.notifyPayslipReady !== false,
-      });
-    }
-  }, [settings.data, form]);
+  if (settings.data && !form) {
+    // Initialise the form once from the saved rules (state adjusted during render, no effect).
+    setForm({
+      perDayRateBasis: str(settings.data.perDayRateBasis, "WORKING_DAYS"),
+      absenceRule: str(settings.data.absenceRule, "BALANCE_FIRST"),
+      cover: Array.isArray(settings.data.absenceCoverOrder) ? (settings.data.absenceCoverOrder as string[]) : [],
+      notify: settings.data.notifyPayslipReady !== false,
+    });
+  }
 
   const save = useMutation({
     mutationFn: (body: Rec) => apiFetch<Rec>(api.payroll("settings"), { method: "PUT", body }),

@@ -216,6 +216,28 @@ class WorkScheduleServiceTest {
     }
 
     @Test
+    @DisplayName("FIXED overnight shift (end before start) is accepted")
+    void overnightFixedCreateAllowed() {
+        when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
+        WorkSchedule incoming = new WorkSchedule();
+        incoming.setScopeType("TEAM");
+        incoming.setScopeId(5L);
+        incoming.setMode("FIXED");
+        incoming.setWorkingDays("[\"MON\",\"TUE\",\"WED\",\"THU\",\"FRI\"]");
+        incoming.setStartTime("22:00");
+        incoming.setEndTime("06:00");
+        incoming.setGraceMinutes(15);
+        incoming.setHalfDayHours(new BigDecimal("4"));
+        incoming.setCheckoutCutoff("08:00");
+
+        WorkSchedule saved = service.create(incoming);
+        assertEquals("22:00", saved.getStartTime());
+        assertEquals("06:00", saved.getEndTime());
+        assertEquals("08:00", saved.getCheckoutCutoff());
+        assertEquals(0, service.fixedDayHours(saved).compareTo(new BigDecimal("8.0000")));
+    }
+
+    @Test
     void hourlyCreateClearsFixedFields() {
         when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
         WorkSchedule incoming = new WorkSchedule();
@@ -323,13 +345,49 @@ class WorkScheduleServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.create(incoming));
     }
 
+    /** A half-day threshold at or above the office length is fitted into the shift, not rejected. */
     @Test
-    void createRejectsHalfDayAtOrAboveOfficeLength() {
+    void createFitsHalfDayAtOrAboveOfficeLengthBelowTheOfficeDay() {
         when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
         WorkSchedule incoming = sch("LOCATION", 3L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "18:00");
         ReflectionTestUtils.setField(incoming, "id", null);
         incoming.setCheckoutCutoff("00:00");
         incoming.setHalfDayHours(new BigDecimal("8"));
+        WorkSchedule saved = service.create(incoming);
+        // 8-hour office day → nearest half-hour step strictly below it.
+        assertEquals(0, new BigDecimal("7.5").compareTo(saved.getHalfDayHours()), String.valueOf(saved.getHalfDayHours()));
+    }
+
+    @Test
+    void createFitsHalfDayForAShortOfficeDay() {
+        when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
+        WorkSchedule incoming = sch("LOCATION", 3L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "13:15");
+        ReflectionTestUtils.setField(incoming, "id", null);
+        incoming.setCheckoutCutoff("18:00");
+        incoming.setHalfDayHours(new BigDecimal("4"));
+        WorkSchedule saved = service.create(incoming);
+        // 3.25-hour office day → 3.0.
+        assertEquals(0, new BigDecimal("3").compareTo(saved.getHalfDayHours()), String.valueOf(saved.getHalfDayHours()));
+    }
+
+    @Test
+    void createKeepsAHalfDayThatAlreadyFits() {
+        when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
+        WorkSchedule incoming = sch("LOCATION", 3L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "18:00");
+        ReflectionTestUtils.setField(incoming, "id", null);
+        incoming.setCheckoutCutoff("00:00");
+        incoming.setHalfDayHours(new BigDecimal("4"));
+        WorkSchedule saved = service.create(incoming);
+        assertEquals(0, new BigDecimal("4").compareTo(saved.getHalfDayHours()));
+    }
+
+    @Test
+    void createStillRejectsANegativeHalfDay() {
+        when(repository.findByScopeTypeAndScopeId(anyString(), anyLong())).thenReturn(Optional.empty());
+        WorkSchedule incoming = sch("LOCATION", 3L, "FIXED", "[\"SUN\",\"MON\"]", "10:00", "18:00");
+        ReflectionTestUtils.setField(incoming, "id", null);
+        incoming.setCheckoutCutoff("00:00");
+        incoming.setHalfDayHours(new BigDecimal("-1"));
         assertThrows(IllegalArgumentException.class, () -> service.create(incoming));
     }
 }

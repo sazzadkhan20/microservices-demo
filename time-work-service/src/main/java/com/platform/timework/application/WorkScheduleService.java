@@ -18,8 +18,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.DayOfWeek;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -506,7 +508,7 @@ public class WorkScheduleService {
         try {
             LocalTime start = LocalTime.parse(schedule.getStartTime().trim());
             LocalTime end = LocalTime.parse(schedule.getEndTime().trim());
-            long minutes = Duration.between(start, end).toMinutes();
+            long minutes = minutesFrom(start, end);
             if (minutes <= 0) {
                 return BigDecimal.ZERO;
             }
@@ -514,6 +516,30 @@ public class WorkScheduleService {
         } catch (Exception e) {
             return BigDecimal.ZERO;
         }
+    }
+
+    /**
+     * Instant when the FIXED office day ends for {@code workDate}.
+     * Overnight shifts (end before start) end on the next calendar day.
+     */
+    public static Instant shiftEndInstant(LocalDate workDate, LocalTime start, LocalTime end, ZoneId zone) {
+        LocalDate endDate = end.isBefore(start) ? workDate.plusDays(1) : workDate;
+        return endDate.atTime(end).atZone(zone).toInstant();
+    }
+
+    /**
+     * Missing check-out cut-off instant — always at or after shift end for that work date
+     * (same calendar day or next day when the cut-off clock time is before end).
+     */
+    public static Instant checkoutCutoffInstant(
+            LocalDate workDate, LocalTime start, LocalTime end, LocalTime cutoff, ZoneId zone) {
+        Instant endAt = shiftEndInstant(workDate, start, end, zone);
+        LocalDate endLocal = endAt.atZone(zone).toLocalDate();
+        Instant onEndDate = endLocal.atTime(cutoff).atZone(zone).toInstant();
+        if (!onEndDate.isBefore(endAt)) {
+            return onEndDate;
+        }
+        return endLocal.plusDays(1).atTime(cutoff).atZone(zone).toInstant();
     }
 
     public boolean isWorkingDay(WorkSchedule schedule, LocalDate day) {
@@ -650,13 +676,15 @@ public class WorkScheduleService {
             } catch (Exception e) {
                 throw new IllegalArgumentException("startTime/endTime must be HH:mm");
             }
-            if (!end.isAfter(start)) {
-                throw new IllegalArgumentException("endTime must be after startTime");
+            if (end.equals(start)) {
+                throw new IllegalArgumentException(
+                        "endTime must differ from startTime (overnight shifts: end before start is allowed)");
             }
             s.setStartTime(formatHm(start));
             s.setEndTime(formatHm(end));
 
-            long workMinutes = Duration.between(start, end).toMinutes();
+            // Same-day or overnight (end before start → crosses midnight).
+            long workMinutes = minutesFrom(start, end);
             BigDecimal workHours = BigDecimal.valueOf(workMinutes)
                     .divide(BigDecimal.valueOf(60), 4, RoundingMode.HALF_UP);
 
@@ -673,14 +701,20 @@ public class WorkScheduleService {
             s.setCheckoutCutoff(formatHm(cutoff));
             validateCutoffWindow(start, end, cutoff);
 
+            // Fit half-day / grace into the shift; do not reject short office days for those fields.
             if (s.getHalfDayHours() != null) {
                 if (s.getHalfDayHours().signum() < 0) {
                     throw new IllegalArgumentException("halfDayHours must be ≥ 0");
                 }
                 if (s.getHalfDayHours().compareTo(workHours) >= 0) {
-                    throw new IllegalArgumentException(
-                            "halfDayHours must be less than the office day length ("
-                                    + workHours.stripTrailingZeros().toPlainString() + " hours)");
+                    // Nearest half-hour step strictly below office length (min 0).
+                    BigDecimal step = new BigDecimal("0.5");
+                    BigDecimal fitted = workHours
+                            .subtract(new BigDecimal("0.01"))
+                            .divide(step, 0, RoundingMode.FLOOR)
+                            .multiply(step)
+                            .max(BigDecimal.ZERO);
+                    s.setHalfDayHours(fitted);
                 }
             }
             if (s.getGraceMinutes() != null) {
@@ -688,8 +722,7 @@ public class WorkScheduleService {
                     throw new IllegalArgumentException("graceMinutes must be between 0 and 240");
                 }
                 if (s.getGraceMinutes() >= workMinutes) {
-                    throw new IllegalArgumentException(
-                            "graceMinutes must be less than the office day length (" + workMinutes + " minutes)");
+                    s.setGraceMinutes((int) Math.max(0, workMinutes - 1));
                 }
             }
         }

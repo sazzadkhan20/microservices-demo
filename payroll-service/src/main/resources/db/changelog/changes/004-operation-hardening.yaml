@@ -1,0 +1,48 @@
+# EXPAND step (docs/PAYROLL_SPEC.md §2.2, §2.3):
+#  - payroll_operation.version: optimistic lock, so a reconciler re-send can never overwrite a result
+#    that Leave delivered at the same moment.
+#  - payroll_job_lease: one scheduler instance at a time for the reconciler / reconciliation sweep
+#    when payroll runs on several instances.
+databaseChangeLog:
+  - changeSet:
+      id: payroll-004-operation-version
+      author: qii-hrms
+      changes:
+        - addColumn:
+            tableName: payroll_operation
+            columns:
+              - column:
+                  name: version
+                  type: bigint
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+  - changeSet:
+      id: payroll-004-job-lease
+      author: qii-hrms
+      changes:
+        - createTable:
+            tableName: payroll_job_lease
+            columns:
+              - column:
+                  name: name
+                  type: varchar(64)
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: holder
+                  type: varchar(128)
+              - column:
+                  name: locked_until
+                  type: timestamptz
+                  defaultValueComputed: now()
+                  constraints:
+                    nullable: false
+        - insert:
+            tableName: payroll_job_lease
+            columns:
+              - column: { name: name, value: payroll-operations }
+        - insert:
+            tableName: payroll_job_lease
+            columns:
+              - column: { name: name, value: payroll-reconciliation }

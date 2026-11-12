@@ -96,6 +96,10 @@ public class SalaryService {
         List<SalaryRecord> history = repository.findByEmployeeIdOrderByEffectiveDateDesc(employeeId);
         SalaryRecord before = history.stream()
                 .filter(r -> !r.getEffectiveDate().isAfter(effective)).findFirst().orElse(null);
+        SalaryRecord next = history.stream()
+                .filter(r -> r.getEffectiveDate().isAfter(effective))
+                .reduce((a, b) -> b).orElse(null); // history is newest first: the last match is the nearest
+        requireWholeMonthCurrency(currency, effective, before, next);
 
         SalaryRecord rec = new SalaryRecord();
         rec.setEmployeeId(employeeId);
@@ -115,6 +119,24 @@ public class SalaryService {
         auditService.record(actor, "SALARY_CHANGE", "salary_record", String.valueOf(saved.getId()),
                 before == null ? null : view(before), view(saved));
         return view(saved);
+    }
+
+    /**
+     * Decision D3 / DR-02: days in one month are valued at the salary of their own day, but a payslip has
+     * one currency and amounts are never converted. A currency change must therefore start on the 1st of
+     * a month — for the new record and for the record that follows it.
+     */
+    static void requireWholeMonthCurrency(String currency, LocalDate effective, SalaryRecord before, SalaryRecord next) {
+        if (before != null && !before.getCurrency().equalsIgnoreCase(currency) && effective.getDayOfMonth() != 1) {
+            throw PayrollException.rule("CURRENCY_CHANGE_MID_MONTH", "Changing the currency from " + before.getCurrency()
+                    + " to " + currency + " must take effect on the 1st of a month (for example "
+                    + effective.withDayOfMonth(1).plusMonths(1) + ") — one payslip cannot mix currencies");
+        }
+        if (next != null && !next.getCurrency().equalsIgnoreCase(currency) && next.getEffectiveDate().getDayOfMonth() != 1) {
+            throw PayrollException.rule("CURRENCY_CHANGE_MID_MONTH", "The salary change of " + next.getEffectiveDate()
+                    + " is in " + next.getCurrency() + ", so this " + currency + " record would make that a currency change "
+                    + "in the middle of a month");
+        }
     }
 
     public static Map<String, Object> view(SalaryRecord r) {

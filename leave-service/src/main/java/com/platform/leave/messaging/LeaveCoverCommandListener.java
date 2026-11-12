@@ -26,6 +26,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -165,37 +166,34 @@ public class LeaveCoverCommandListener {
         op.setPeriodLabel(period);
         op.setReverseFlag("REOPEN".equals(action));
         op.setCreatedAt(Instant.now());
-        try {
-            if ("FINALIZE".equals(action)) {
-                @SuppressWarnings("unchecked")
-                java.util.List<Map<String, Object>> lines = payload.get("lines") instanceof java.util.List<?> l
-                        ? (java.util.List<Map<String, Object>>) l : java.util.List.of();
-                java.util.List<String> problems = leaveCoverService.applyFinalize(operationKey, period, lines);
-                if (problems.isEmpty()) {
-                    op.setStatus(LeaveOperation.STATUS_SUCCEEDED);
-                    resultPayload.put("success", true);
-                    resultPayload.put("employees", lines.size());
-                } else {
-                    op.setStatus(LeaveOperation.STATUS_FAILED);
-                    resultPayload.put("success", false);
-                    resultPayload.put("errorMessage", String.join("; ", problems));
-                    resultPayload.put("problems", problems);
-                }
-            } else if ("REOPEN".equals(action)) {
-                int reversed = leaveCoverService.applyReversal(str(payload.get("reverseOfKey")), period);
+        // Only a business rejection or a malformed command is recorded as FAILED. Anything else (lock
+        // conflict with a concurrent leave approval, database timeout, …) is thrown: the whole delivery —
+        // inbox key, ledger rows, leave_operation and result outbox — rolls back and is retried; after the
+        // listener retries it dead-letters and payroll's reconciler re-sends the same keyed command.
+        String invalid = validate(operationKey, action, period, payload);
+        if (invalid != null) {
+            op.setStatus(LeaveOperation.STATUS_FAILED);
+            resultPayload.put("success", false);
+            resultPayload.put("errorMessage", "Invalid payroll leave-cover command: " + invalid);
+            log.error("Invalid payroll leave-cover command opKey={}: {}", operationKey, invalid);
+        } else if ("FINALIZE".equals(action)) {
+            List<LeaveCoverService.CoverLine> lines = LeaveCoverService.parseLines(payload.get("lines"));
+            List<String> problems = leaveCoverService.applyFinalize(operationKey, period, lines);
+            if (problems.isEmpty()) {
                 op.setStatus(LeaveOperation.STATUS_SUCCEEDED);
                 resultPayload.put("success", true);
-                resultPayload.put("reversedRows", reversed);
+                resultPayload.put("covers", lines.size());
             } else {
                 op.setStatus(LeaveOperation.STATUS_FAILED);
                 resultPayload.put("success", false);
-                resultPayload.put("errorMessage", "Unknown payroll leave-cover action: " + action);
+                resultPayload.put("errorMessage", String.join("; ", problems));
+                resultPayload.put("problems", problems);
             }
-        } catch (Exception e) {
-            op.setStatus(LeaveOperation.STATUS_FAILED);
-            resultPayload.put("success", false);
-            resultPayload.put("errorMessage", e.getMessage());
-            log.warn("Leave cover failed opKey={}: {}", operationKey, e.getMessage());
+        } else {
+            int reversed = leaveCoverService.applyReversal(str(payload.get("reverseOfKey")), period);
+            op.setStatus(LeaveOperation.STATUS_SUCCEEDED);
+            resultPayload.put("success", true);
+            resultPayload.put("reversedRows", reversed);
         }
         resultPayload.put("status", op.getStatus());
         op.setResultJson(new LinkedHashMap<>(resultPayload));
@@ -232,6 +230,31 @@ public class LeaveCoverCommandListener {
                 }
             });
         }
+    }
+
+    /** Permanent command errors (they fail the same way on every retry); {@code null} when valid. */
+    static String validate(String operationKey, String action, String period, Map<String, Object> payload) {
+        if (operationKey.isBlank()) {
+            return "operationKey is missing";
+        }
+        if (!"FINALIZE".equals(action) && !"REOPEN".equals(action)) {
+            return "unknown action " + action;
+        }
+        try {
+            java.time.YearMonth.parse(period);
+        } catch (Exception e) {
+            return "period must be YYYY-MM";
+        }
+        if ("FINALIZE".equals(action)) {
+            try {
+                LeaveCoverService.parseLines(payload.get("lines"));
+            } catch (IllegalArgumentException e) {
+                return e.getMessage();
+            }
+        } else if (str(payload.get("reverseOfKey")).isBlank()) {
+            return "reverseOfKey is missing";
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")

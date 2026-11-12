@@ -1,0 +1,18 @@
+# FR-SAL-03 — Employee payroll:view is own payslips only (not company payroll).
+# Aligns with Manager/HR OWN grants; company runs still require payroll:run (Admin/Super Admin).
+databaseChangeLog:
+  - changeSet:
+      id: people-009-employee-payroll-view-own
+      author: qii-hrms
+      changes:
+        - sql:
+            sql: |
+              UPDATE app_role_permission rp
+              SET data_scope = 'OWN'
+              FROM app_role r, app_permission p
+              WHERE rp.role_id = r.id
+                AND rp.permission_id = p.id
+                AND UPPER(r.code) = 'EMPLOYEE'
+                AND p.feature = 'payroll'
+                AND p.action = 'view'
+                AND UPPER(COALESCE(rp.data_scope, '')) <> 'OWN';

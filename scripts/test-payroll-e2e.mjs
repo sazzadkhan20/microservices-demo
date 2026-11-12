@@ -266,13 +266,24 @@ console.log("\n== October 2026: adjustments, leavers, half-day leave, cover orde
 
 console.log("\n== November 2026: live draft (month not over)");
 {
+  // Seeded attendance runs to yesterday, so the only November absence is Priya's 4 Nov, whatever the
+  // date. Working days are derived independently: Sun–Thu in November minus company holidays at her
+  // location (holidays added by hand in this environment count too).
+  const novemberOver = sql("timework_db", "select (now() at time zone 'Asia/Dhaka')::date > date '2026-11-30'") === "t";
+  const holidays = Number(sql("timework_db", "select count(distinct d) from holiday h, generate_series(h.start_date, h.end_date, interval '1 day') d "
+    + "where d between '2026-11-01' and '2026-11-30' and extract(dow from d) in (0,1,2,3,4) and not h.optional_flag "
+    + "and (h.location_id is null or h.location_id = 1)"));
+  const workingDays = 22 - holidays; // 22 Sun–Thu days in November 2026
+  const round2 = (x) => (Math.round(x * 100) / 100).toFixed(2);
   await call(ADMIN, "POST", "runs/2026-11/calculate");
   const run = (await call(ADMIN, "GET", "runs/2026-11")).body;
   eq("November is a DRAFT", run.status, "DRAFT");
-  check("November cannot be finalised", run.canFinalize === false);
+  if (!novemberOver) check("November cannot be finalised", run.canFinalize === false);
   const L = await lines("2026-11");
-  eq("Priya absent 4 Nov, no balance → 2045.45", L["Priya Das"].deduction, "2045.45");
-  check("month-not-over note", (L["Priya Das"].notes ?? []).some((n) => n.startsWith("Month not over")));
+  eq(`Priya working days = 22 − ${holidays} holiday(s)`, L["Priya Das"].workingDays, workingDays);
+  eq("Priya absent only 4 Nov", L["Priya Das"].absentDays, 1);
+  eq(`Priya no balance → 45000 / ${workingDays} deducted`, L["Priya Das"].deduction, round2(45000 / workingDays));
+  if (!novemberOver) check("month-not-over note", (L["Priya Das"].notes ?? []).some((n) => n.startsWith("Month not over")));
   eq("Anindya hourly 30 h", L["Anindya Basak"].hoursWorked, "30.00");
   eq("Anindya pay 6000.00", L["Anindya Basak"].basePay, "6000.00");
   check("employee without salary is flagged", L["No Checklist"]?.exception === true, JSON.stringify(L["No Checklist"]?.notes));

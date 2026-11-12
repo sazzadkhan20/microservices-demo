@@ -40,6 +40,10 @@ function parseDays(v: unknown): string[] {
   return [];
 }
 
+/** Default office length when start is chosen; hard max for FIXED shifts (same-day or overnight). */
+export const DEFAULT_SHIFT_HOURS = 9;
+export const MAX_SHIFT_HOURS = 10;
+
 function toMinutes(hhmm: string): number | null {
   if (!/^\d{2}:\d{2}$/.test(hhmm)) return null;
   const [h, m] = hhmm.split(":").map(Number);
@@ -60,6 +64,54 @@ export function minutesFrom(from: string, to: string): number | null {
   const b = toMinutes(to);
   if (a == null || b == null) return null;
   return (b - a + 24 * 60) % (24 * 60);
+}
+
+/** Office end = start + default hours (wraps midnight for overnight). */
+export function defaultEndAfterStart(start: string, hours = DEFAULT_SHIFT_HOURS): string {
+  const startM = toMinutes(start);
+  if (startM == null) return "18:00";
+  return fromMinutes(startM + hours * 60);
+}
+
+/** Clamp end so shift length is at most {@link MAX_SHIFT_HOURS} (keeps overnight when needed). */
+export function clampEndWithinMaxShift(start: string, end: string): string {
+  const startM = toMinutes(start);
+  const len = minutesFrom(start, end);
+  if (startM == null || len == null) return end;
+  // Same clock time → leave for validation (must differ). Over-length → cap at max.
+  if (len > MAX_SHIFT_HOURS * 60) {
+    return fromMinutes(startM + MAX_SHIFT_HOURS * 60);
+  }
+  return end;
+}
+
+/** Keep half-day / grace inside the shift length without surfacing office-length errors. */
+export function fitHalfDayAndGrace(
+  start: string,
+  end: string,
+  halfDayHours: string,
+  graceMinutes: string,
+): { halfDayHours: string; graceMinutes: string } {
+  const workMinutes = minutesFrom(start, end) ?? 0;
+  if (workMinutes <= 0) {
+    return { halfDayHours, graceMinutes };
+  }
+  const workHours = workMinutes / 60;
+  let hd = halfDayHours;
+  if (halfDayHours !== "") {
+    const n = Number(halfDayHours);
+    if (!Number.isNaN(n) && n >= workHours) {
+      // Nearest valid half-hour step strictly below office length (min 0).
+      const fitted = Math.max(0, Math.floor((workHours - 0.01) * 2) / 2);
+      hd = String(fitted);
+    }
+  }
+  let grace = graceMinutes;
+  const g = Number(graceMinutes);
+  if (!Number.isNaN(g) && g >= workMinutes) {
+    grace = String(Math.max(0, workMinutes - 1));
+  }
+  return { halfDayHours: hd, graceMinutes: grace };
 }
 
 /** Default cut-off = end + 6h, clamped before next office start. */
@@ -87,10 +139,10 @@ export function isCutoffInWindow(start: string, end: string, cutoff: string): bo
   return fromEnd >= 0 && fromEnd < untilStart;
 }
 
-/** Product default for new locations / empty override preview (Mon–Fri 09:00–17:00). */
+/** Product default for new locations / empty override preview (Mon–Fri, start + 9h). */
 function blankForm(rules?: Rules, prefer?: { scopeType?: string; scopeId?: string }) {
   const start = "09:00";
-  const end = "17:00";
+  const end = defaultEndAfterStart(start);
   return {
     scopeType: (prefer?.scopeType || "TEAM").toUpperCase(),
     scopeId: prefer?.scopeId ? String(prefer.scopeId) : "",
@@ -100,7 +152,7 @@ function blankForm(rules?: Rules, prefer?: { scopeType?: string; scopeId?: strin
     endTime: end,
     graceMinutes: String(rules?.defaultGraceMinutes ?? 15),
     halfDayHours: String(rules?.defaultHalfDayHours ?? 4),
-    checkoutCutoff: String(rules?.defaultCheckoutCutoff ?? "23:59"),
+    checkoutCutoff: defaultCutoffAfterEnd(start, end),
     weeklyHours: "40",
   };
 }
@@ -273,12 +325,23 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
             if (!v.endTime) ctx.addIssue({ code: "custom", path: ["endTime"], message: "End time is required" });
             const startM = toMinutes(v.startTime);
             const endM = toMinutes(v.endTime);
-            if (startM != null && endM != null && endM <= startM) {
-              ctx.addIssue({ code: "custom", path: ["endTime"], message: "End must be after start" });
+            if (startM != null && endM != null && startM === endM) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["endTime"],
+                message: "End must differ from start (overnight: end before start is OK)",
+              });
             }
-            if (startM != null && endM != null && endM > startM) {
-              const workMinutes = endM - startM;
-              const workHours = workMinutes / 60;
+            if (startM != null && endM != null && startM !== endM) {
+              const workMinutes = minutesFrom(v.startTime, v.endTime) ?? 0;
+              // Only validate total hours between start and end (max shift length).
+              if (workMinutes > MAX_SHIFT_HOURS * 60) {
+                ctx.addIssue({
+                  code: "custom",
+                  path: ["endTime"],
+                  message: `Office day cannot exceed ${MAX_SHIFT_HOURS} hours (auto default is ${DEFAULT_SHIFT_HOURS} hours)`,
+                });
+              }
               if (v.checkoutCutoff) {
                 if (!isCutoffInWindow(v.startTime, v.endTime, v.checkoutCutoff)) {
                   ctx.addIssue({
@@ -292,20 +355,7 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
                 const hd = Number(v.halfDayHours);
                 if (Number.isNaN(hd) || hd < 0) {
                   ctx.addIssue({ code: "custom", path: ["halfDayHours"], message: "Must be a number ≥ 0" });
-                } else if (hd >= workHours) {
-                  ctx.addIssue({
-                    code: "custom",
-                    path: ["halfDayHours"],
-                    message: `Must be less than office day length (${workHours} h)`,
-                  });
                 }
-              }
-              if (v.graceMinutes >= workMinutes) {
-                ctx.addIssue({
-                  code: "custom",
-                  path: ["graceMinutes"],
-                  message: `Must be less than office day length (${workMinutes} min)`,
-                });
               }
             }
           } else if (v.weeklyHours && (Number.isNaN(Number(v.weeklyHours)) || Number(v.weeklyHours) < 0)) {
@@ -321,12 +371,45 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
     return (employees.data ?? []).map((l) => ({ id: String(l.id), label: l.fullName || `#${l.id}` }));
   }
 
+  function liveFixedErrors(next: {
+    mode: string;
+    startTime: string;
+    endTime: string;
+    checkoutCutoff: string;
+    graceMinutes: string;
+    halfDayHours: string;
+  }): Record<string, string> {
+    if (next.mode.toUpperCase() === "HOURLY") return {};
+    const out: Record<string, string> = {};
+    const startM = toMinutes(next.startTime);
+    const endM = toMinutes(next.endTime);
+    if (startM != null && endM != null && startM === endM) {
+      out.endTime = "End must differ from start (overnight: end before start is OK)";
+    }
+    if (startM != null && endM != null && startM !== endM) {
+      const workMinutes = minutesFrom(next.startTime, next.endTime) ?? 0;
+      if (workMinutes > MAX_SHIFT_HOURS * 60) {
+        out.endTime = `Office day cannot exceed ${MAX_SHIFT_HOURS} hours (auto default is ${DEFAULT_SHIFT_HOURS} hours)`;
+      }
+      if (next.checkoutCutoff && !isCutoffInWindow(next.startTime, next.endTime, next.checkoutCutoff)) {
+        out.checkoutCutoff =
+          "Must be at/after office end and before next office start (may cross midnight)";
+      }
+    }
+    return out;
+  }
+
   function setOfficeEnd(end: string) {
     setForm((prev) => {
-      const next = { ...prev, endTime: end };
-      if (!cutoffTouched.current && prev.startTime && end) {
-        next.checkoutCutoff = defaultCutoffAfterEnd(prev.startTime, end);
+      const endTime = prev.startTime ? clampEndWithinMaxShift(prev.startTime, end) : end;
+      const next = { ...prev, endTime };
+      if (!cutoffTouched.current && prev.startTime && endTime) {
+        next.checkoutCutoff = defaultCutoffAfterEnd(prev.startTime, endTime);
       }
+      if (prev.startTime && endTime) {
+        Object.assign(next, fitHalfDayAndGrace(prev.startTime, endTime, next.halfDayHours, next.graceMinutes));
+      }
+      setErrors(liveFixedErrors(next));
       return next;
     });
   }
@@ -334,9 +417,15 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
   function setOfficeStart(start: string) {
     setForm((prev) => {
       const next = { ...prev, startTime: start };
-      if (!cutoffTouched.current && start && prev.endTime) {
-        next.checkoutCutoff = defaultCutoffAfterEnd(start, prev.endTime);
+      // Start drives end: default office length = 9h (may wrap midnight).
+      if (start && toMinutes(start) != null) {
+        next.endTime = defaultEndAfterStart(start);
+        if (!cutoffTouched.current) {
+          next.checkoutCutoff = defaultCutoffAfterEnd(start, next.endTime);
+        }
+        Object.assign(next, fitHalfDayAndGrace(start, next.endTime, next.halfDayHours, next.graceMinutes));
       }
+      setErrors(liveFixedErrors(next));
       return next;
     });
   }
@@ -358,7 +447,15 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    const parsed = schema.safeParse(form);
+    let candidate = form;
+    if (form.mode.toUpperCase() !== "HOURLY" && form.startTime && form.endTime) {
+      const fitted = fitHalfDayAndGrace(form.startTime, form.endTime, form.halfDayHours, form.graceMinutes);
+      candidate = { ...form, ...fitted };
+      if (fitted.halfDayHours !== form.halfDayHours || fitted.graceMinutes !== form.graceMinutes) {
+        setForm(candidate);
+      }
+    }
+    const parsed = schema.safeParse(candidate);
     if (!parsed.success) {
       const next: Record<string, string> = {};
       for (const i of parsed.error.issues) next[String(i.path[0])] ||= i.message;
@@ -491,10 +588,20 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
                 {errors.workingDays ? <span className="field-err">{errors.workingDays}</span> : null}
                 <small className="muted">Any number of days — 5-day and 6-day people can share a team.</small>
               </div>
-              <FormField label="Office start" required error={errors.startTime}>
+              <FormField
+                label="Office start"
+                required
+                error={errors.startTime}
+                hint={`Sets end to start + ${DEFAULT_SHIFT_HOURS}h and cut-off to end + 6h`}
+              >
                 <input type="time" value={form.startTime} onChange={(e) => setOfficeStart(e.target.value)} />
               </FormField>
-              <FormField label="Office end" required error={errors.endTime}>
+              <FormField
+                label="Office end"
+                required
+                error={errors.endTime}
+                hint={`Max ${MAX_SHIFT_HOURS}h from start. Overnight OK when end is before start (still ≤ ${MAX_SHIFT_HOURS}h)`}
+              >
                 <input type="time" value={form.endTime} onChange={(e) => setOfficeEnd(e.target.value)} />
               </FormField>
               <FormField label="Late grace (minutes)" error={errors.graceMinutes}>
@@ -524,7 +631,9 @@ export function ScheduleEditorModal({ open, target, onClose, onSaved, allowScope
                   value={form.checkoutCutoff}
                   onChange={(e) => {
                     cutoffTouched.current = true;
-                    setForm({ ...form, checkoutCutoff: e.target.value });
+                    const next = { ...form, checkoutCutoff: e.target.value };
+                    setForm(next);
+                    setErrors(liveFixedErrors(next));
                   }}
                 />
               </FormField>

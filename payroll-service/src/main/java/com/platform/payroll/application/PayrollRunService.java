@@ -50,12 +50,14 @@ public class PayrollRunService {
     private final PayrollClock clock;
     private final AuditService audit;
     private final ObjectMapper mapper;
+    private final PayrollOperationPolicy policy;
     private final TransactionTemplate tx;
 
     public PayrollRunService(PayrollRunRepository runs, PayrollLineRepository lines,
                              PayrollAdjustmentRepository adjustments, PayrollOperationRepository operations,
                              PayrollFactsAssembler assembler, PayrollSettingsService settings, PayrollClock clock,
-                             AuditService audit, ObjectMapper mapper, PlatformTransactionManager txManager) {
+                             AuditService audit, ObjectMapper mapper, PayrollOperationPolicy policy,
+                             PlatformTransactionManager txManager) {
         this.runs = runs;
         this.lines = lines;
         this.adjustments = adjustments;
@@ -65,6 +67,7 @@ public class PayrollRunService {
         this.clock = clock;
         this.audit = audit;
         this.mapper = mapper;
+        this.policy = policy;
         this.tx = new TransactionTemplate(txManager);
     }
 
@@ -164,6 +167,14 @@ public class PayrollRunService {
                 throw PayrollException.conflict("ADJUSTMENT_CONFLICT", "Adjustment was changed concurrently — retry");
             }
             recalcFromSnapshot(run, line, new PayrollInputs.Adjustment(amt, note));
+            if (line.getNetPay().signum() < 0) {
+                // Decision D5: pay is never negative. Refuse here, with the limit, rather than only flagging
+                // the row; the transaction rolls back, so nothing is saved.
+                BigDecimal recoverable = line.getBasePay().subtract(line.getDeduction()).max(BigDecimal.ZERO);
+                throw PayrollException.rule("NEGATIVE_NET", "This adjustment would make net pay " + line.getNetPay().toPlainString()
+                        + ". At most " + recoverable.toPlainString() + " can be recovered this month — recover the rest next month",
+                        Map.of("maxRecoverable", recoverable, "netPay", line.getNetPay()));
+            }
             audit.record(actor, "PAYROLL_ADJUSTMENT", "payroll_adjustment", period + ":" + employeeId, before,
                     Map.of("amount", amt, "note", note));
         });
@@ -256,8 +267,28 @@ public class PayrollRunService {
         out.put("canReopen", reopenBlockers.isEmpty());
         out.put("reopenBlockers", reopenBlockers);
         out.put("canCalculate", run.is(PayrollRun.DRAFT));
+        out.put("resolveMinAgeSeconds", policy.resolveMinAge().toSeconds());
         List<PayrollOperation> ops = operations.findByRunIdOrderByCreatedAtDesc(run.getId());
-        out.put("operations", ops.stream().limit(10).map(PayrollFinalizeService::operationView).toList());
+        // Preview only — full history is GET /runs/{period}/operations (paged).
+        out.put("operations", ops.stream().limit(10).map(o -> PayrollFinalizeService.operationView(o, policy)).toList());
+        out.put("operationCount", ops.size());
+        return out;
+    }
+
+    /** Leave-balance sync table: finalise/reopen operations for this month only (newest first). */
+    @Transactional(readOnly = true)
+    public Map<String, Object> operations(String period, int page, int size) {
+        PayrollClock.parse(period);
+        PayrollRun run = runs.findByPeriod(period).orElseThrow(() -> PayrollException.notFound("No run for " + period));
+        Page<PayrollOperation> p = operations.findByRunIdAndPeriodOrderByCreatedAtDesc(
+                run.getId(), period, PageRequest.of(Math.max(0, page), clampSize(size)));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("period", period);
+        out.put("content", p.getContent().stream().map(o -> PayrollFinalizeService.operationView(o, policy)).toList());
+        out.put("page", p.getNumber());
+        out.put("size", p.getSize());
+        out.put("totalElements", p.getTotalElements());
+        out.put("totalPages", p.getTotalPages());
         return out;
     }
 
@@ -354,6 +385,16 @@ public class PayrollRunService {
         }
         if (!clock.monthEnded(ym)) {
             out.add("The month has not ended yet (finalise from " + ym.atEndOfMonth().plusDays(1) + ")");
+        } else if (run.getCalculatedAt() != null && run.getCalculatedAt().isBefore(clock.startOf(ym.plusMonths(1)))) {
+            // A live draft only counts absences up to the day it was calculated.
+            out.add("Recalculate — this draft was calculated before the month ended, so absences after that day are missing");
+        }
+        PayrollOperation lastFinalize = operations.findByRunIdOrderByCreatedAtDesc(run.getId()).stream()
+                .filter(o -> PayrollOperation.FINALIZE.equals(o.getAction())).findFirst().orElse(null);
+        if (lastFinalize != null && PayrollOperation.REJECTED.equals(lastFinalize.getStatus())
+                && run.getCalculatedAt() != null && lastFinalize.getCompletedAt() != null
+                && !run.getCalculatedAt().isAfter(lastFinalize.getCompletedAt())) {
+            out.add("Recalculate — Leave rejected the last finalise of this draft: " + lastFinalize.getError());
         }
         if (all.isEmpty()) {
             out.add("The run has no rows — calculate it first");
@@ -372,6 +413,77 @@ public class PayrollRunService {
             out.add("Recalculate — " + prev.getPeriod() + " was finalised after this draft was calculated, so leave balances changed");
         }
         return out;
+    }
+
+    /** Current facts for a finalise check, fetched outside any database transaction (guide §7). */
+    public List<PayrollInputs.Line> freshInputs(String period) {
+        return assembler.assemble(PayrollClock.parse(period), clock.today(), settings.rules(), null);
+    }
+
+    /**
+     * FR-PAY-11/12 — what is finalised must be what the current facts give. Recomputes every row from
+     * fresh facts (with this month's adjustments) and lists every person whose result differs from the
+     * reviewed draft: attendance corrections, leave approved or cancelled, salary records, employment
+     * dates, cover balances or rules changed after the draft was calculated. Empty = unchanged.
+     */
+    List<String> factsDrift(String period, List<PayrollLine> all, List<PayrollInputs.Line> fresh) {
+        Map<Long, PayrollAdjustment> adj = new HashMap<>();
+        adjustments.findByPeriod(period).forEach(a -> adj.put(a.getEmployeeId(), a));
+        Map<Long, PayrollLine> byEmp = new HashMap<>();
+        all.forEach(l -> byEmp.put(l.getEmployeeId(), l));
+        List<String> out = new ArrayList<>();
+        java.util.Set<Long> seen = new java.util.HashSet<>();
+        for (PayrollInputs.Line in : fresh) {
+            Long id = in.employee().employeeId();
+            seen.add(id);
+            PayrollLine l = byEmp.get(id);
+            String who = in.employee().fullName() + " (" + in.employee().employeeCode() + ")";
+            if (l == null) {
+                out.add(who + " is employed in " + period + " but has no row");
+                continue;
+            }
+            PayrollEngine.Result r = PayrollEngine.calculate(withAdjustment(in, adj.get(id)));
+            List<String> changed = new ArrayList<>();
+            diff(changed, "pay type", l.getPayType(), r.payType());
+            diff(changed, "currency", l.getCurrency(), r.currency());
+            diff(changed, "base pay", l.getBasePay(), r.basePay());
+            diff(changed, "absent days", l.getAbsentDays(), r.absentDays());
+            diff(changed, "unpaid leave days", l.getUnpaidLeaveDays(), r.unpaidLeaveDays());
+            diff(changed, "covered days", l.getCoveredDays(), r.coveredDays());
+            diff(changed, "deduction", l.getDeduction(), r.deduction());
+            diff(changed, "net pay", l.getNetPay(), r.netPay());
+            Map<String, BigDecimal> was = new TreeMap<>();
+            l.getCovers().forEach(c -> was.merge(String.valueOf(c.get("category")),
+                    new BigDecimal(String.valueOf(c.get("days"))).stripTrailingZeros(), BigDecimal::add));
+            Map<String, BigDecimal> now = new TreeMap<>();
+            r.covers().forEach(c -> now.merge(c.category(), c.days().stripTrailingZeros(), BigDecimal::add));
+            if (!was.equals(now)) {
+                changed.add("leave cover " + was + " → " + now);
+            }
+            if (l.isException() != r.exception()) {
+                changed.add(r.exception() ? "now needs attention" : "no longer needs attention");
+            }
+            if (!changed.isEmpty()) {
+                out.add(who + ": " + String.join(", ", changed));
+            }
+        }
+        for (PayrollLine l : all) {
+            if (!seen.contains(l.getEmployeeId())) {
+                out.add(l.getEmployeeName() + " (" + l.getEmployeeCode() + ") is no longer employed in " + period);
+            }
+        }
+        return out;
+    }
+
+    private static void diff(List<String> out, String what, Object was, Object now) {
+        boolean same = was instanceof BigDecimal a && now instanceof BigDecimal b ? a.compareTo(b) == 0 : Objects.equals(was, now);
+        if (!same) {
+            out.add(what + " " + plain(was) + " → " + plain(now));
+        }
+    }
+
+    private static String plain(Object v) {
+        return v instanceof BigDecimal b ? b.stripTrailingZeros().toPlainString() : String.valueOf(v);
     }
 
     /** FR-PAY-14 + reverse order: a month can be reopened only while the next month is not finalised. */

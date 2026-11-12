@@ -3,6 +3,7 @@ package com.platform.leave.api.rest;
 import com.platform.common.security.InternalCalls;
 import com.platform.leave.application.LeaveAppliesToService;
 import com.platform.leave.application.LeaveCoverService;
+import com.platform.leave.application.PayrollOperationFenceService;
 import com.platform.leave.client.people.PeopleEmployeeGateway;
 import com.platform.leave.domain.LeaveApplication;
 import com.platform.leave.infrastructure.persistence.LeaveApplicationRepository;
@@ -10,10 +11,13 @@ import com.platform.common.security.PublicEndpoint;
 import io.swagger.v3.oas.annotations.Hidden;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,6 +50,7 @@ public class InternalPayrollLeaveController {
     private final LeaveCoverService cover;
     private final LeaveAppliesToService leaveAppliesToService;
     private final PeopleEmployeeGateway employees;
+    private final PayrollOperationFenceService fences;
     private final String internalKey;
 
     public InternalPayrollLeaveController(
@@ -53,11 +58,13 @@ public class InternalPayrollLeaveController {
             LeaveCoverService cover,
             LeaveAppliesToService leaveAppliesToService,
             PeopleEmployeeGateway employees,
+            PayrollOperationFenceService fences,
             @Value("${platform.security.internal-key}") String internalKey) {
         this.applications = applications;
         this.cover = cover;
         this.leaveAppliesToService = leaveAppliesToService;
         this.employees = employees;
+        this.fences = fences;
         this.internalKey = internalKey;
     }
 
@@ -146,11 +153,57 @@ public class InternalPayrollLeaveController {
         return out;
     }
 
-    /** Net cover days recorded for a payroll finalise operation key (guide §6 reconciliation). */
+    /**
+     * Cover ledger for reconciliation (guide §6): by finalise key (net per employee/category), or by
+     * month (every cover row of every finalise key, with what is still held).
+     */
     @GetMapping("/cover-ledger")
-    public Map<String, Object> coverLedger(@RequestParam String operationKey, HttpServletRequest request) {
+    public Map<String, Object> coverLedger(@RequestParam(required = false) String operationKey,
+                                           @RequestParam(required = false) String period,
+                                           HttpServletRequest request) {
         requireInternal(request);
+        if (period != null && !period.isBlank()) {
+            try {
+                return Map.of("period", period, "rows", cover.ledgerForPeriod(period));
+            } catch (DateTimeParseException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "period must be YYYY-MM");
+            }
+        }
+        if (operationKey == null || operationKey.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "operationKey or period is required");
+        }
         return Map.of("operationKey", operationKey, "rows", cover.ledgerFor(operationKey));
+    }
+
+    /** What Leave recorded for a payroll operation key ({@code known:false} when never processed). */
+    @GetMapping("/operation")
+    public Map<String, Object> operation(@RequestParam String operationKey, HttpServletRequest request) {
+        requireInternal(request);
+        try {
+            return PayrollOperationFenceService.view(operationKey, fences.find(operationKey).orElse(null));
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    /**
+     * Fence before a manual resolve: records CANCELLED if Leave never processed the key (a late command
+     * then replays CANCELLED and changes nothing); otherwise returns the outcome Leave already recorded.
+     */
+    @PostMapping("/operation/fence")
+    public Map<String, Object> fence(@RequestParam String operationKey,
+                                     @RequestBody(required = false) Map<String, Object> body,
+                                     HttpServletRequest request) {
+        requireInternal(request);
+        String reason = body == null || body.get("reason") == null ? null : String.valueOf(body.get("reason"));
+        try {
+            return PayrollOperationFenceService.view(operationKey, fences.fence(operationKey, reason));
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        } catch (DataIntegrityViolationException e) {
+            // The command was being processed at the same moment and won the unique key: report its outcome.
+            return PayrollOperationFenceService.view(operationKey, fences.find(operationKey).orElse(null));
+        }
     }
 
     private static Map<String, Object> span(LeaveApplication a) {

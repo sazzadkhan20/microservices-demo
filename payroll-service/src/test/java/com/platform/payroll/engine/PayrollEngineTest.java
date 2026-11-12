@@ -218,7 +218,189 @@ class PayrollEngineTest {
 
         var joiner = PayrollEngine.calculate(line(OCT, cal, emp(LocalDate.of(2026, 10, 22), null),
                 List.of(monthly("2026-10-22", "30000")), new Month(OCT, SUN_THU), List.of(), List.of(), null));
-        assertEquals(new BigDecimal("10000.00"), joiner.basePay()); // 10 calendar days × 1000
+        assertEquals(new BigDecimal("9677.42"), joiner.basePay()); // 10 of 31 calendar days = 9.68 paid days
+        assertEquals(new BigDecimal("9.68"), joiner.daysEmployed());
+    }
+
+    // ---------------------------------------------------------------- Decision D2 (÷30) edge cases
+
+    private static final YearMonth FEB = YearMonth.of(2027, 2);
+    private static final Rules CAL30 = new Rules(Rules.CALENDAR_30, Rules.BALANCE_FIRST, List.of("CASUAL", "ANNUAL"));
+
+    private static Line cal30Line(YearMonth ym, LocalDate start, LocalDate exit, List<Salary> s, Month m, List<CoverBalance> cover) {
+        return new Line(ym, LocalDate.of(2027, 6, 1), CAL30, emp(start, exit), s, m.list(), List.of(), cover, null);
+    }
+
+    @Test
+    void calendar30FullFebruaryPaysExactGross() {
+        var r = PayrollEngine.calculate(cal30Line(FEB, LocalDate.of(2020, 1, 1), null,
+                List.of(monthly("2020-01-01", "30000")), new Month(FEB, SUN_THU), balances("0", "0")));
+        assertEquals(new BigDecimal("30000.00"), r.basePay());
+        assertEquals(new BigDecimal("30.00"), r.daysEmployed());
+        assertEquals(new BigDecimal("30000.00"), r.netPay());
+    }
+
+    @Test
+    void calendar30JoinerIsPaidInExactProportionInShortAndLongMonths() {
+        // Joined 2 Feb: 27 of 28 days → 28.93 paid days (not 27).
+        var feb = PayrollEngine.calculate(cal30Line(FEB, LocalDate.of(2027, 2, 2), null,
+                List.of(monthly("2027-02-02", "30000")), new Month(FEB, SUN_THU), balances("0", "0")));
+        assertEquals(new BigDecimal("28928.57"), feb.basePay());
+        // Joined 2 Oct: 30 of 31 days → 29.03 paid days (not a full month).
+        var oct = PayrollEngine.calculate(line(OCT, CAL30, emp(LocalDate.of(2026, 10, 2), null),
+                List.of(monthly("2026-10-02", "30000")), new Month(OCT, SUN_THU), List.of(), balances("0", "0"), null));
+        assertEquals(new BigDecimal("29032.26"), oct.basePay());
+        assertTrue(oct.basePay().compareTo(new BigDecimal("30000.00")) < 0);
+    }
+
+    @Test
+    void calendar30LeaverIsSymmetricWithAJoiner() {
+        // Left 14 Oct: 14 of 31 days.
+        var r = PayrollEngine.calculate(line(OCT, CAL30, emp(LocalDate.of(2020, 1, 1), LocalDate.of(2026, 10, 14)),
+                List.of(monthly("2020-01-01", "31000")), new Month(OCT, SUN_THU), List.of(), balances("0", "0"), null));
+        assertEquals(new BigDecimal("14000.00"), r.basePay());
+        assertTrue(r.notes().stream().anyMatch(n -> n.startsWith("Left 14 Oct")));
+    }
+
+    @Test
+    void calendar30AbsenceDeductsOneThirtiethAfterCover() {
+        Month m = new Month(OCT, SUN_THU).absent(5).absent(6).absent(7);
+        var r = PayrollEngine.calculate(line(OCT, CAL30, emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000")), m, List.of(), balances("1", "1"), null));
+        assertEquals(new BigDecimal("2"), r.coveredDays());
+        assertEquals(new BigDecimal("1000.00"), r.deduction()); // 1 uncovered × 30000 / 30
+        assertEquals(new BigDecimal("29000.00"), r.netPay());
+    }
+
+    @Test
+    void calendar30UnpaidOnEveryWorkingDayEarnsNothing() {
+        Month m = new Month(OCT, SUN_THU);
+        for (int d = 1; d <= 31; d++) {
+            if (m.days.get(OCT.atDay(d)).working()) {
+                m.absent(d);
+            }
+        }
+        var r = PayrollEngine.calculate(line(OCT, CAL30, emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000")), m, List.of(), balances("0", "0"), null));
+        assertEquals(new BigDecimal("30000.00"), r.deduction()); // rest days are not paid on their own
+        assertEquals(new BigDecimal("0.00"), r.netPay());
+        assertTrue(r.notes().stream().anyMatch(n -> n.startsWith("Unpaid on every working day")));
+    }
+
+    @Test
+    void calendar30AbsencesCoveredByLeaveKeepTheMonthPaid() {
+        Month m = new Month(OCT, SUN_THU);
+        int working = 0;
+        for (int d = 1; d <= 31; d++) {
+            if (m.days.get(OCT.atDay(d)).working()) {
+                m.absent(d);
+                working++;
+            }
+        }
+        var r = PayrollEngine.calculate(line(OCT, CAL30, emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000")), m, List.of(), balances(String.valueOf(working), "0"), null));
+        assertEquals(new BigDecimal("0.00"), r.deduction());
+        assertEquals(new BigDecimal("30000.00"), r.netPay());
+    }
+
+    @Test
+    void calendar30OneWorkedDayStillPaysTheRestOfTheMonth() {
+        Month m = new Month(OCT, SUN_THU);
+        int absent = 0;
+        for (int d = 2; d <= 31; d++) {
+            if (m.days.get(OCT.atDay(d)).working()) {
+                m.absent(d);
+                absent++;
+            }
+        }
+        var r = PayrollEngine.calculate(line(OCT, CAL30, emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000")), m, List.of(), balances("0", "0"), null));
+        assertEquals(new BigDecimal(30000 - absent * 1000).setScale(2), r.netPay());
+        assertFalse(r.notes().stream().anyMatch(n -> n.startsWith("Unpaid on every working day")));
+    }
+
+    @Test
+    void calendar30SalaryChangeIsSegmentedByDay() {
+        // 1–14 Oct at 30,000; 15–31 Oct at 31,000.
+        var r = PayrollEngine.calculate(line(OCT, CAL30, emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000"), monthly("2026-10-15", "31000")),
+                new Month(OCT, SUN_THU).absent(20), List.of(), balances("0", "0"), null));
+        assertEquals(new BigDecimal("30548.39"), r.basePay()); // (14×30000 + 17×31000) / 31
+        assertEquals(new BigDecimal("1033.33"), r.deduction()); // 20 Oct is valued at 31000 / 30
+    }
+
+    // ---------------------------------------------------------------- Decision D3 (segmentation) edge cases
+
+    @Test
+    void absenceIsValuedAtTheSalaryOfItsOwnDay() {
+        // Working-days basis, Oct 2026 (21 working days): raise 30,000 → 42,000 from 15 Oct.
+        Month m = new Month(OCT, SUN_THU).absent(5).absent(20);
+        var r = PayrollEngine.calculate(line(OCT, Rules.srsDefaults(), emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000"), monthly("2026-10-15", "42000")), m, List.of(), balances("0", "0"), null));
+        // 5 Oct at 30000/21, 20 Oct at 42000/21.
+        assertEquals(new BigDecimal("3428.57"), r.deduction());
+        assertTrue(r.notes().stream().anyMatch(n -> n.startsWith("Salary changed mid-month")));
+    }
+
+    @Test
+    void currencyChangeMidMonthIsAnException() {
+        var r = PayrollEngine.calculate(line(OCT, Rules.srsDefaults(), emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000"),
+                        new Salary(LocalDate.of(2026, 10, 15), "MONTHLY", new BigDecimal("6000"), "AUD")),
+                new Month(OCT, SUN_THU), List.of(), balances("0", "0"), null));
+        assertTrue(r.exception());
+        assertTrue(r.notes().stream().anyMatch(n -> n.startsWith("Currency changed mid-month (BDT → AUD)")), r.notes().toString());
+    }
+
+    @Test
+    void currencyChangeOnTheFirstIsNormal() {
+        var r = PayrollEngine.calculate(line(OCT, Rules.srsDefaults(), emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "30000"),
+                        new Salary(LocalDate.of(2026, 10, 1), "MONTHLY", new BigDecimal("6000"), "AUD")),
+                new Month(OCT, SUN_THU), List.of(), balances("0", "0"), null));
+        assertFalse(r.exception());
+        assertEquals("AUD", r.currency());
+        assertEquals(new BigDecimal("6000.00"), r.netPay());
+    }
+
+    // ---------------------------------------------------------------- Decision D1 (half-day leave)
+
+    @Test
+    void halfDayLeaveWithNoCheckInCountsTheOtherHalfAbsent() {
+        Month m = new Month(OCT, SUN_THU);
+        m.days.put(OCT.atDay(12), new Day(OCT.atDay(12), true, false, "OL", new BigDecimal("0.5"), 0, false));
+        var r = PayrollEngine.calculate(line(OCT, Rules.srsDefaults(), emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "21000")), m,
+                List.of(new Leave(OCT.atDay(12), OCT.atDay(12), "AM", true, "CASUAL")), balances("0", "0"), null));
+        assertEquals(new BigDecimal("0.5"), r.absentDays());
+        assertEquals(new BigDecimal("500.00"), r.deduction()); // half of 21000 / 21
+    }
+
+    @Test
+    void unpaidHalfDayLeaveWithNoCheckInDeductsTheWholeDayOnce() {
+        Month m = new Month(OCT, SUN_THU);
+        m.days.put(OCT.atDay(12), new Day(OCT.atDay(12), true, false, "OL", new BigDecimal("0.5"), 0, false));
+        var r = PayrollEngine.calculate(line(OCT, Rules.srsDefaults(), emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "21000")), m,
+                List.of(new Leave(OCT.atDay(12), OCT.atDay(12), "PM", false, "UNPAID")), balances("0", "0"), null));
+        assertEquals(new BigDecimal("0.5"), r.unpaidLeaveDays());
+        assertEquals(new BigDecimal("1000.00"), r.deduction()); // 0.5 unpaid + 0.5 absent = one day
+    }
+
+    @Test
+    void deductionNeverExceedsMonthlyPay() {
+        Month m = new Month(OCT, SUN_THU);
+        for (int d = 1; d <= 31; d++) {
+            if (m.days.get(OCT.atDay(d)).working()) {
+                m.absent(d);
+            }
+        }
+        var r = PayrollEngine.calculate(line(OCT, Rules.srsDefaults(), emp(LocalDate.of(2020, 1, 1), null),
+                List.of(monthly("2020-01-01", "21000")), m,
+                List.of(new Leave(OCT.atDay(1), OCT.atDay(31), "FULL", false, "UNPAID")), balances("0", "0"), null));
+        assertEquals(new BigDecimal("21000.00"), r.deduction());
+        assertEquals(new BigDecimal("0.00"), r.netPay());
+        assertFalse(r.exception());
     }
 
     @Test

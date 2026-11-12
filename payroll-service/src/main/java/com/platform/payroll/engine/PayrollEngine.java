@@ -88,7 +88,12 @@ public final class PayrollEngine {
         boolean cal30 = in.rules().calendar30();
         BigDecimal divisor = cal30 ? THIRTY : BigDecimal.valueOf(scheduleWorkingDays);
         int daysInMonth = period.lengthOfMonth();
-        boolean wholeMonth = !from.isAfter(monthStart) && !to.isBefore(monthEnd);
+        // Decision D2: on the ÷30 basis every calendar day of the month is worth 30 / (days in month)
+        // paid days, so a full month is exactly 30 days (= the monthly gross) in February and in 31-day
+        // months alike, and a partial month is paid in exact proportion to the calendar days employed.
+        BigDecimal cal30DayWeight = THIRTY.divide(BigDecimal.valueOf(daysInMonth), SCALE, RoundingMode.HALF_UP);
+        int monthlyWorkingDaysEmployed = 0;
+        java.util.Set<String> currencies = new java.util.LinkedHashSet<>();
 
         BigDecimal base = BigDecimal.ZERO;
         BigDecimal daysEmployed = BigDecimal.ZERO;
@@ -116,6 +121,9 @@ public final class PayrollEngine {
                     }
                     continue;
                 }
+                if (s.currency() != null) {
+                    currencies.add(s.currency().toUpperCase(Locale.ROOT));
+                }
                 if (s.hourly()) {
                     anyHourly = true;
                     if (day != null) {
@@ -135,14 +143,13 @@ public final class PayrollEngine {
                 if (day != null && day.missingCheckout()) {
                     monthlyMissingCheckouts++;
                 }
+                if (workingDay) {
+                    monthlyWorkingDaysEmployed++;
+                }
                 if (cal30) {
                     BigDecimal rate = s.amount().divide(THIRTY, SCALE, RoundingMode.HALF_UP);
-                    // Whole month = exactly the monthly gross whatever the month length (Decision D2).
-                    BigDecimal weight = wholeMonth
-                            ? THIRTY.divide(BigDecimal.valueOf(daysInMonth), SCALE, RoundingMode.HALF_UP)
-                            : BigDecimal.ONE;
-                    base = base.add(rate.multiply(weight));
-                    daysEmployed = daysEmployed.add(weight);
+                    base = base.add(rate.multiply(cal30DayWeight));
+                    daysEmployed = daysEmployed.add(cal30DayWeight);
                     rateByDay.put(d, rate);
                 } else if (workingDay && divisor.signum() > 0) {
                     BigDecimal rate = s.amount().divide(divisor, SCALE, RoundingMode.HALF_UP);
@@ -154,12 +161,6 @@ public final class PayrollEngine {
                     absences.add(new Object[]{d, day.absence(), rateByDay.get(d)});
                 }
             }
-        }
-        if (cal30 && !wholeMonth && daysEmployed.compareTo(THIRTY) > 0) {
-            // Partial month in a 31-day month cannot exceed 30 paid days.
-            BigDecimal scale = THIRTY.divide(daysEmployed, SCALE, RoundingMode.HALF_UP);
-            base = base.multiply(scale);
-            daysEmployed = THIRTY;
         }
 
         // Unpaid leave (FR-PAY-05): approved unpaid leave on working, employed, monthly-paid days.
@@ -221,8 +222,19 @@ public final class PayrollEngine {
             }
         }
 
+        BigDecimal monthlyDeduction = uncoveredAmount.add(unpaidAmount);
+        boolean absentEveryWorkingDay = monthlyWorkingDaysEmployed > 0
+                && uncoveredDays.add(unpaidDays).compareTo(BigDecimal.valueOf(monthlyWorkingDaysEmployed)) >= 0;
+        if (cal30 && absentEveryWorkingDay) {
+            // Decision D2: rest days and holidays are paid only as part of a month that was worked (or
+            // covered by leave). Someone unpaid on every working day earns nothing — the same outcome as
+            // the working-days basis.
+            monthlyDeduction = base;
+        }
+        // A deduction can never be more than the monthly pay it is taken from.
+        monthlyDeduction = monthlyDeduction.min(base);
         BigDecimal basePay = money(base.add(hourlyPay));
-        BigDecimal deduction = money(uncoveredAmount.add(unpaidAmount));
+        BigDecimal deduction = money(monthlyDeduction);
         BigDecimal adjustment = in.adjustment() == null ? BigDecimal.ZERO : money(in.adjustment().amount());
         String adjustmentNote = in.adjustment() == null ? null : in.adjustment().note();
         BigDecimal net = basePay.subtract(deduction).add(adjustment).setScale(2, RoundingMode.HALF_UP);
@@ -269,6 +281,15 @@ public final class PayrollEngine {
         }
         if (unpaidDays.signum() > 0) {
             notes.add("Unpaid leave " + fmt(unpaidDays) + " day(s) deducted");
+        }
+        if (cal30 && absentEveryWorkingDay) {
+            notes.add("Unpaid on every working day — rest days and holidays are not paid (÷30 basis)");
+        }
+        if (currencies.size() > 1) {
+            // DR-02: one currency per payslip, no conversion. A month cannot mix BDT and AUD days.
+            exception = true;
+            notes.add("Currency changed mid-month (" + String.join(" → ", currencies)
+                    + ") — make the new salary effective on the 1st of a month");
         }
         if (missingCheckouts > 0) {
             notes.add(missingCheckouts + " shift(s) with missing check-out — not paid until corrected");

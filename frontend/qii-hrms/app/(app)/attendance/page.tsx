@@ -101,6 +101,15 @@ export default function MyAttendancePage() {
   const inAt = t ? pick(t, "checkIn", "checkInAt") : null;
   const outAt = t ? pick(t, "checkOut", "checkOutAt") : null;
   const lateNight = Boolean(t?.lateNightCheckoutAvailable);
+  const statusM = String(t?.statusCode ?? "").toUpperCase() === "M";
+  // Prefer API punch gates — never revive Check out after cut-off / Missing.
+  const canCheckInBtn =
+    t?.canCheckIn != null ? Boolean(t.canCheckIn) : Boolean(!inAt && !lateNight && !statusM);
+  const canCheckOutBtn =
+    t?.canCheckOut != null
+      ? Boolean(t.canCheckOut)
+      : Boolean(!statusM && ((inAt && !outAt) || lateNight));
+  const activeWorkDate = t?.activeWorkDate != null ? String(t.activeWorkDate) : null;
 
   function refresh() {
     void qc.invalidateQueries({ queryKey: ["attendance-today"] });
@@ -215,7 +224,7 @@ export default function MyAttendancePage() {
           </div>
           <div className="grow" />
           <div className="row">
-            {canCheck && !inAt && !lateNight ? (
+            {canCheck && canCheckInBtn ? (
               <button
                 type="button"
                 className="btn primary"
@@ -228,7 +237,7 @@ export default function MyAttendancePage() {
                 Check in
               </button>
             ) : null}
-            {canCheck && ((inAt && !outAt) || lateNight) ? (
+            {canCheck && canCheckOutBtn ? (
               <button
                 type="button"
                 className="btn primary"
@@ -238,13 +247,15 @@ export default function MyAttendancePage() {
                   checkOut.mutate();
                 }}
               >
-                {lateNight ? "Check out (yesterday)" : "Check out"}
+                {lateNight ? "Check out (prior shift)" : "Check out"}
               </button>
             ) : null}
           </div>
           {attActionError ? <p className="err" role="alert">{attActionError}</p> : null}
         </div>
         <p className="muted small" style={{ margin: 0 }}>
+          {activeWorkDate ? `Shift date ${activeWorkDate}` : null}
+          {activeWorkDate ? " · " : ""}
           {t?.locationLabel ? String(t.locationLabel) : "Location not shared"}
           {t?.deviceType ? ` · ${String(t.deviceType)}` : ""}
           {t?.timeZone ? ` · ${String(t.timeZone)}` : ""}

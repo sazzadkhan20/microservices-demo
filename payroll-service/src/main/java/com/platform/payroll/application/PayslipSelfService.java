@@ -32,6 +32,7 @@ public class PayslipSelfService {
                 .orElseThrow(() -> PayrollException.notFound("No finalised payslip for " + period));
         Map<String, Object> m = new LinkedHashMap<>(rev.getSnapshot());
         m.remove("calc");
+        m.remove("facts"); // audit inputs stay in the stored revision; the employee sees the payslip itself
         m.put("status", "FINALIZED");
         m.put("finalizedAt", rev.getFinalizedAt().toString());
         return m;

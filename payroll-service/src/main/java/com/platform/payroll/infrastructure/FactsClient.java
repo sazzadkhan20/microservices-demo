@@ -87,6 +87,34 @@ public class FactsClient {
         return get("Leave", leaveBaseUrl + "/api/internal/payroll/cover-ledger?operationKey=" + enc(operationKey));
     }
 
+    /** Every cover row Leave holds for a month, across all finalise keys (period reconciliation). */
+    public Map<String, Object> coverLedgerForPeriod(String period) {
+        return get("Leave", leaveBaseUrl + "/api/internal/payroll/cover-ledger?period=" + enc(period));
+    }
+
+    /** What Leave recorded for an operation key: {@code {known, status, success, result}}. */
+    public Map<String, Object> leaveOperation(String operationKey) {
+        return get("Leave", leaveBaseUrl + "/api/internal/payroll/operation?operationKey=" + enc(operationKey));
+    }
+
+    /**
+     * Fences an operation key in Leave before a manual resolve: Leave records CANCELLED if it never
+     * processed the key (a late command then changes nothing) and returns the outcome it holds.
+     */
+    public Map<String, Object> fenceLeaveOperation(String operationKey, String reason) {
+        String body;
+        try {
+            body = mapper.writeValueAsString(Map.of("reason", reason == null ? "" : reason));
+        } catch (Exception e) {
+            throw new FactsUnavailableException("Cannot encode fence request");
+        }
+        HttpRequest req = base(leaveBaseUrl + "/api/internal/payroll/operation/fence?operationKey=" + enc(operationKey))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        return send("Leave", req);
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Map<String, Object>> byEmployee(String provider, String url) {
         Map<String, Object> body = get(provider, url);
@@ -97,15 +125,20 @@ public class FactsClient {
         return (Map<String, Map<String, Object>>) m;
     }
 
-    private Map<String, Object> get(String provider, String url) {
-        HttpRequest req = HttpRequest.newBuilder()
+    private HttpRequest.Builder base(String url) {
+        return HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(requestTimeout)
                 .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                 .header(InternalCalls.HEADER, internalKey)
-                .header(PlatformHeaders.CORRELATION_ID, CorrelationContext.getOrCreate())
-                .GET()
-                .build();
+                .header(PlatformHeaders.CORRELATION_ID, CorrelationContext.getOrCreate());
+    }
+
+    private Map<String, Object> get(String provider, String url) {
+        return send(provider, base(url).GET().build());
+    }
+
+    private Map<String, Object> send(String provider, HttpRequest req) {
         try {
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() >= 300) {

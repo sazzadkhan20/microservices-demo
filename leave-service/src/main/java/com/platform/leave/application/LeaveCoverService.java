@@ -25,7 +25,8 @@ import java.util.Optional;
  * <p>Finalise takes covered days from balances as ledger entries keyed
  * {@code COVER:<payrollOperationKey>:<employee>:<category>}; reopen reverses exactly those recorded rows
  * with keys {@code REVERSE:<coverKey>}. Ledger keys are unique, so a re-delivered or re-sent command can
- * never deduct or restore twice.
+ * never deduct or restore twice. Ledger writes run inside the command listener's transaction, so the
+ * inbox key, the ledger rows, the {@code leave_operation} row and the result outbox commit together.
  */
 @Service
 public class LeaveCoverService {
@@ -45,6 +46,10 @@ public class LeaveCoverService {
 
     /** A cover category resolved for a payroll month: actual balance code and leave year. */
     public record CoverCategory(String family, String code, int year) {
+    }
+
+    /** One covered absence in a payroll finalise command. */
+    public record CoverLine(Long employeeId, String category, BigDecimal days) {
     }
 
     /**
@@ -74,45 +79,90 @@ public class LeaveCoverService {
     }
 
     /**
-     * Applies all covers of one payroll finalisation atomically (REQUIRES_NEW so a business rejection
-     * rolls back only the ledger work; the caller still records the REJECTED result).
+     * Parses the {@code lines} of a payroll finalise command. A malformed command fails the same way on
+     * every retry, so it is a permanent error that is reported back, never retried.
+     *
+     * @throws IllegalArgumentException when the command is malformed
+     */
+    public static List<CoverLine> parseLines(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        if (!(raw instanceof List<?> lines)) {
+            throw new IllegalArgumentException("lines must be a list");
+        }
+        Map<String, CoverLine> seen = new LinkedHashMap<>();
+        for (Object o : lines) {
+            if (!(o instanceof Map<?, ?> line)) {
+                throw new IllegalArgumentException("each line must be an object");
+            }
+            Long emp;
+            try {
+                emp = Long.valueOf(String.valueOf(line.get("employeeId")));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("invalid employeeId " + line.get("employeeId"));
+            }
+            Object covers = line.get("covers");
+            if (covers == null) {
+                continue;
+            }
+            if (!(covers instanceof List<?> list)) {
+                throw new IllegalArgumentException("covers of employee " + emp + " must be a list");
+            }
+            for (Object c : list) {
+                if (!(c instanceof Map<?, ?> cover) || cover.get("category") == null) {
+                    throw new IllegalArgumentException("invalid cover for employee " + emp);
+                }
+                String code = String.valueOf(cover.get("category")).trim().toUpperCase(Locale.ROOT);
+                BigDecimal days;
+                try {
+                    days = new BigDecimal(String.valueOf(cover.get("days")));
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("invalid days for employee " + emp + " " + code);
+                }
+                if (code.isEmpty() || days.signum() < 0) {
+                    throw new IllegalArgumentException("invalid cover for employee " + emp + " " + code);
+                }
+                if (days.signum() == 0) {
+                    continue;
+                }
+                String k = emp + ":" + code;
+                if (seen.containsKey(k)) {
+                    throw new IllegalArgumentException("duplicate cover for employee " + emp + " " + code);
+                }
+                seen.put(k, new CoverLine(emp, code, days));
+            }
+        }
+        return new ArrayList<>(seen.values());
+    }
+
+    /**
+     * Applies all covers of one payroll finalisation, all or nothing, inside the caller's transaction
+     * (guide §6: inbox, ledger and result outbox in one local transaction). Every cover is validated
+     * before anything is written, so a business rejection writes nothing; any other failure is thrown
+     * and rolls the whole delivery back so it is retried.
      *
      * @return per-employee problems; empty when everything was applied.
      */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public List<String> applyFinalize(String operationKey, String period, List<Map<String, Object>> lines) {
+    @Transactional(propagation = Propagation.MANDATORY)
+    public List<String> applyFinalize(String operationKey, String period, List<CoverLine> lines) {
         YearMonth month = YearMonth.parse(period);
         List<String> problems = new ArrayList<>();
         record Item(Long employeeId, CoverCategory cat, BigDecimal days) { }
         List<Item> items = new ArrayList<>();
-        for (Map<String, Object> line : lines) {
-            Long emp = Long.valueOf(String.valueOf(line.get("employeeId")));
-            Object raw = line.get("covers");
-            if (!(raw instanceof List<?> covers)) {
-                continue;
+        for (CoverLine line : lines) {
+            CoverCategory cat = resolveByCode(line.category(), month);
+            String key = coverKey(operationKey, line.employeeId(), line.category());
+            if (ledger.findByOperationKey(key).isPresent()) {
+                continue; // already applied by an earlier delivery
             }
-            for (Object o : covers) {
-                if (!(o instanceof Map<?, ?> c)) {
-                    continue;
-                }
-                String code = String.valueOf(c.get("category")).toUpperCase(Locale.ROOT);
-                BigDecimal days = new BigDecimal(String.valueOf(c.get("days")));
-                if (days.signum() <= 0) {
-                    continue;
-                }
-                CoverCategory cat = resolveByCode(code, month);
-                String key = coverKey(operationKey, emp, code);
-                if (ledger.findByOperationKey(key).isPresent()) {
-                    continue; // already applied by an earlier delivery
-                }
-                BigDecimal usable = usable(emp, cat);
-                if (usable.compareTo(days) < 0) {
-                    problems.add("Employee " + emp + ": " + code + " has " + usable.stripTrailingZeros().toPlainString()
-                            + " day(s) left but payroll covered " + days.stripTrailingZeros().toPlainString()
-                            + " — recalculate " + period);
-                }
-                items.add(new Item(emp, cat, days));
+            BigDecimal usable = usable(line.employeeId(), cat);
+            if (usable.compareTo(line.days()) < 0) {
+                problems.add("Employee " + line.employeeId() + ": " + line.category() + " has "
+                        + usable.stripTrailingZeros().toPlainString() + " day(s) left but payroll covered "
+                        + line.days().stripTrailingZeros().toPlainString() + " — recalculate " + period);
             }
+            items.add(new Item(line.employeeId(), cat, line.days()));
         }
         if (!problems.isEmpty()) {
             return problems; // nothing written: reject the whole finalisation explicitly
@@ -126,8 +176,11 @@ public class LeaveCoverService {
         return List.of();
     }
 
-    /** Reverses exactly the rows recorded for the finalise key (restores once, even if re-delivered). */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    /**
+     * Reverses exactly the rows recorded for the finalise key (restores once, even if re-delivered),
+     * inside the caller's transaction.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
     public int applyReversal(String reverseOfKey, String period) {
         int n = 0;
         for (LeaveBalanceLedger row : ledger.findByOperationKeyStartingWithOrderByIdAsc("COVER:" + reverseOfKey + ":")) {
@@ -164,9 +217,50 @@ public class LeaveCoverService {
         return out;
     }
 
-    private CoverCategory resolveByCode(String code, YearMonth month) {
+    /**
+     * Every payroll cover row Leave recorded for a month, across all finalise keys, with what is still
+     * held (not reversed). Lets payroll detect covers that belong to no finalised revision (guide §6).
+     */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> ledgerForPeriod(String period) {
+        YearMonth.parse(period);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (LeaveBalanceLedger row : ledger.findByOperationKeyStartingWithOrderByIdAsc("COVER:FINALIZE:" + period + ":")) {
+            String rowKey = row.getOperationKey();
+            boolean reversed = ledger.findByOperationKey("REVERSE:" + rowKey).isPresent();
+            BigDecimal taken = row.getDeltaDays().negate();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("operationKey", finalizeKeyOf(rowKey));
+            m.put("employeeId", row.getEmployeeId());
+            m.put("category", row.getLeaveTypeCode());
+            m.put("days", taken);
+            m.put("reversed", reversed);
+            m.put("heldDays", reversed ? BigDecimal.ZERO : taken);
+            out.add(m);
+        }
+        return out;
+    }
+
+    /** {@code COVER:FINALIZE:2026-10:r7:31:CASUAL} → {@code FINALIZE:2026-10:r7}. */
+    static String finalizeKeyOf(String coverRowKey) {
+        String rest = coverRowKey.startsWith("COVER:") ? coverRowKey.substring("COVER:".length()) : coverRowKey;
+        int last = rest.lastIndexOf(':');
+        int cut = last > 0 ? rest.lastIndexOf(':', last - 1) : -1;
+        return cut > 0 ? rest.substring(0, cut) : rest;
+    }
+
+    /**
+     * Decision D4 — the same code can exist once per leave period (e.g. a 2026 and a 2027 row). The balance
+     * year is that of the row whose period contains the payroll month — the same rule {@link #resolve} used
+     * when payroll read the balance — never simply the first row with the code.
+     */
+    CoverCategory resolveByCode(String code, YearMonth month) {
+        LocalDate first = month.atDay(1);
+        LocalDate last = month.atEndOfMonth();
         return categories.findByCodeIgnoreCase(code).stream()
-                .findFirst()
+                .filter(c -> c.getPeriodStart() == null || !c.getPeriodStart().isAfter(last))
+                .filter(c -> c.getPeriodEnd() == null || !c.getPeriodEnd().isBefore(first))
+                .max(Comparator.comparing((LeaveCategory c) -> c.getPeriodStart() == null ? LocalDate.MIN : c.getPeriodStart()))
                 .map(c -> new CoverCategory(code, code, c.getPeriodStart() == null ? month.getYear() : c.getPeriodStart().getYear()))
                 .orElse(new CoverCategory(code, code, month.getYear()));
     }

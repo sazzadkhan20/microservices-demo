@@ -61,6 +61,16 @@ function synonyms(action: string): string[] {
   return [action];
 }
 
+/**
+ * Coarse API aliases mirrored from people-service RbacService.API_ALIASES.
+ * /me already expands these into the permission list; this keeps FE checks aligned
+ * if a caller only holds an aliased matrix key (e.g. salary:view → payroll:view).
+ */
+const FE_ALIASES: Record<string, readonly string[]> = {
+  "payroll:view": ["payroll:view", "salary:view", "salary:edit"],
+  "salary:view": ["salary:view", "salary:edit"],
+};
+
 export function hasPermission(
   perms: PermissionSet | readonly string[] | undefined | null,
   feature: Feature | string,
@@ -70,8 +80,12 @@ export function hasPermission(
   if (set.size === 0) return false;
   if (set.has("*:*")) return true;
   const f = feature.toLowerCase();
-  if (set.has(`${f}:*`) || set.has(`*:${action.toLowerCase()}`)) return true;
-  return synonyms(action.toLowerCase()).some((a) => set.has(`${f}:${a}`));
+  const a = action.toLowerCase();
+  if (set.has(`${f}:*`) || set.has(`*:${a}`)) return true;
+  if (synonyms(a).some((syn) => set.has(`${f}:${syn}`))) return true;
+  const want = `${f}:${a}`;
+  const alts = FE_ALIASES[want];
+  return !!alts?.some((alt) => set.has(alt));
 }
 
 /** [feature, action] */

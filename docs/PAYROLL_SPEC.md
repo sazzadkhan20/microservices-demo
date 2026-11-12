@@ -80,15 +80,20 @@ All day counts use **the person's own schedule** (location, overridden by team, 
 | OL On leave (unpaid) | counted in unpaid leave days |
 | HO Holiday, WO Weekly off | not a working day |
 
-**Decision D1 — half-day leave plus no check-in.** Appendix A marks the day OL. Payroll counts the unworked half as **0.5 absent**; otherwise a half-day request would pay a full day. A half-day leave plus any check-in counts 0 absent.
+Decisions D1–D5 were confirmed by the product owner on 12 Nov 2026 (D1 as written; D2–D5 delegated to engineering with the rules below).
 
-**Decision D2 — CALENDAR_30 basis.** The rate is gross ÷ 30. Base pay is the full gross for a full month; for a partial month it is `rate × calendar days employed` (capped at 30). Each absent day deducts one per-day rate.
+**Decision D1 — half-day leave plus no check-in (confirmed).** Appendix A marks the day OL. Payroll counts the unworked half as **0.5 absent**; otherwise a half-day request would pay a full day. A half-day leave plus any check-in counts 0 absent. An *unpaid* half-day leave with no check-in therefore deducts exactly one day: 0.5 unpaid leave + 0.5 absent.
 
-**Decision D3 — salary segmentation (guide §6).** When salary changes mid-month, each working day is valued at the salary effective that day: `rate(d) = gross(d) ÷ W`. Absent days are valued at their own day's rate. Cover is applied to absent days in date order.
+**Decision D2 — CALENDAR_30 basis.** The per-day rate is gross ÷ 30, and each uncovered absent day deducts one rate.
+- Every calendar day of the month is worth **30 ÷ (days in the month)** paid days, so a full month is exactly 30 days (= the gross) in February and in 31-day months alike, and a partial month is paid in exact proportion: joined 2 Feb (27 of 28 days) → 28.93 days; joined 2 Oct (30 of 31) → 29.03 days, not a full month. (The literal "calendar days × gross/30" rule would pay a 2 Feb joiner 27/30 and a 2 Oct joiner a full month.)
+- Rest days and holidays are paid as part of a month that was worked or covered by leave. Someone **unpaid on every working day** of their employment in the month earns nothing — the same outcome as the working-days basis; covered absences keep the month paid.
+- A deduction is never more than the monthly pay it comes from.
 
-**Decision D4 — usable balance for cover.** The balance used is the category balance for the leave year that contains the month, minus days reserved by pending requests. The leave category period decides which category applies: code `CASUAL` matches `CASUAL` or a renewed copy `CASUAL_<year>` whose period contains the month.
+**Decision D3 — salary segmentation (guide §6).** When salary changes mid-month, each day is valued at the salary effective that day: `rate(d) = gross(d) ÷ W` (or ÷ 30). Absent days are valued at their own day's rate. Cover is applied to absent days in date order. A payslip has **one currency** (DR-02, no conversion): a currency change must take effect on the 1st of a month — the salary API refuses a mid-month currency change (`CURRENCY_CHANGE_MID_MONTH`), including a record that would turn the following one into a mid-month change — and a month that still mixes currencies is an exception row that blocks finalise.
 
-**Decision D5 — negative net.** A row whose net pay is below zero (for example, a large advance recovery) is flagged and **blocks finalise** until the adjustment is corrected.
+**Decision D4 — usable balance for cover.** The balance used is the category balance for the leave year that contains the month, minus days reserved by pending requests. The leave category period decides which category applies: code `CASUAL` matches `CASUAL` or a renewed copy `CASUAL_<year>` whose period contains the month. When the same code exists once per period (a 2026 and a 2027 row), Leave validates and deducts the balance of the row **whose period contains the payroll month** — a December month finalised in January still takes December's leave year.
+
+**Decision D5 — negative net.** Pay is never negative. An adjustment that would make net pay negative is **refused when it is entered** (`NEGATIVE_NET`, with the most that can be recovered this month); the rest is recovered next month. If a recalculation later makes a row negative, the row is flagged and **blocks finalise** until the adjustment is corrected.
 
 **Worked example (SRS §8.2, Arpa, September 2026):**
 
@@ -145,7 +150,7 @@ A row is **needs attention** (`exception = true`) when it has no salary record b
 |---|---|
 | Live draft | A month's run is a draft until finalised. Recalculate any time. Each recalculation re-reads salary, employment, attendance and leave, and bumps the run revision |
 | Adjustments | Stored on their own (one per person per month) and kept across recalculations. Saving one recalculates that person's row |
-| Finalise preconditions | (1) The month has ended in the company time zone (BR-18). (2) Months finalise **in order**: every month from the first payroll month up to the previous month has a FINALIZED run. (3) No exception rows. (4) The request carries the run revision the user reviewed (second confirmation), and it is still current. (5) The draft was calculated after the previous month was finalised; otherwise "Recalculate first", because its balances changed |
+| Finalise preconditions | (1) The month has ended in the company time zone (BR-18). (2) Months finalise **in order**: every month from the first payroll month up to the previous month has a FINALIZED run. (3) No exception rows. (4) The request carries the run revision the user reviewed (second confirmation), and it is still current. (5) The draft was calculated after the previous month was finalised; otherwise "Recalculate first", because its balances changed. (6) The draft was calculated **after the month ended** — a live draft only counts absences up to the day it was calculated. (7) After Leave rejected a finalise, the draft must be recalculated before the next attempt. (8) **What is finalised is what current facts give**: finalise re-reads every fact (employment, salary records, attendance, leave, cover balances, rules), recomputes each row with its adjustment and refuses with `409 FACTS_CHANGED`, listing every person whose numbers changed, if anything differs from the reviewed draft |
 | Second confirmation | The UI shows the totals per currency and the leave that will be taken, then asks the user to type the month (`2026-09`) before sending `confirm: true` |
 | On finalise | Numbers are locked as a snapshot (DR-03). Covered absences are taken from leave balances as ledger adjustments (kind *payroll*, with the payroll month). Each employee gets one "Payslip ready" notification |
 | Warning (FR-PAY-13) | Viewing or calculating a month warns when the previous month is not finalised, because its covered absences will change this month's balances |
@@ -239,8 +244,9 @@ Every check runs on the server (NFR-02). Privileged payroll writes check current
 | `payroll_run` | `period char(7)` **unique**, `status` check, `revision`, `calculated_at/by`, `finalized_at/by`, `reopened_at/by`, `reopen_reason`, `operation_id`, `prev_finalized_at_seen`, `version` (optimistic lock) |
 | `payroll_line` | `run_id` FK, `employee_id`; **unique (`run_id`, `employee_id`)**; `currency`, `pay_type`, money columns `numeric(19,2)`, day columns `numeric(6,2)`, `exception` flag, `notes jsonb`, `calc jsonb` (full calculation snapshot), `facts jsonb` (inputs snapshot), `status`, `revision` |
 | `payroll_adjustment` | **unique (`period`, `employee_id`)**, `amount numeric(19,2) ≠ 0`, `note` not null, `created_by`, `updated_by`, timestamps |
-| `payslip_revision` | append-only finalised snapshots: `run_id`, `period`, `employee_id`, `run_revision`, `snapshot jsonb`, `net_pay`, `currency`, `finalized_at/by`, `superseded_at`, `superseded_by_operation`; **unique (`run_id`, `run_revision`, `employee_id`)** |
-| `payroll_operation` | `operation_id` unique, `operation_key` **unique** (`FINALIZE:<period>:r<rev>`, `REOPEN:<period>:r<rev>`), `run_id`, `period`, `revision`, `action`, `status` check (`PENDING`, `SUCCEEDED`, `REJECTED`, `RESOLVED`), `attempts`, `last_sent_at`, `result jsonb`, `error`, `initiated_by`, `resolved_by/reason` |
+| `payslip_revision` | append-only finalised snapshots: `run_id`, `period`, `employee_id`, `run_revision`, `snapshot jsonb` (numbers, calculation breakdown **and the input facts** behind them; employees are shown the payslip without the facts), `net_pay`, `currency`, `finalized_at/by`, `superseded_at`, `superseded_by_operation`; **unique (`run_id`, `run_revision`, `employee_id`)** |
+| `payroll_operation` | `operation_id` unique, `operation_key` **unique** (`FINALIZE:<period>:r<rev>`, `REOPEN:<period>:r<rev>:a<n>`), `run_id`, `period`, `revision`, `action`, `status` check (`PENDING`, `SUCCEEDED`, `REJECTED`, `RESOLVED`), `attempts`, `last_sent_at`, `result jsonb`, `error`, `initiated_by`, `resolved_by/reason`, `version` (optimistic lock, `004`) |
+| `payroll_job_lease` | `004`: one row per scheduled job (`payroll-operations`, `payroll-reconciliation`); `holder`, `locked_until` — only one payroll instance runs a job at a time |
 | `payroll_audit_log` | existing; written **in the same transaction** as the change it records |
 
 Money is `numeric(19,2)`, rounded HALF_UP at each money amount. Rates are kept unrounded (scale 10) inside the calculation and shown at 2 dp (DR-02, guide §5).
@@ -249,26 +255,30 @@ Legacy tables `payslip`, `finalize_operation` and `payroll_config` are supersede
 
 ### 2.3 Finalise and reopen workflow (guide §6, PAY01, PAY02)
 
-1. `POST /api/payroll/runs/{period}/finalize {confirm: true, revision}` checks the preconditions in §1.6. Then, in one local transaction:
+1. `POST /api/payroll/runs/{period}/finalize {confirm: true, revision}` returns the existing operation for a repeated request (same revision). Otherwise it reads the current facts **outside** any transaction (a provider outage → 503, nothing changes), then locks the run, checks the preconditions in §1.6 including the facts comparison, and in one local transaction:
    - run → `FINALIZING`;
    - insert `payroll_operation(PENDING, key FINALIZE:<period>:r<rev>)`;
    - write the outbox command `payroll.leave-cover.command` with the lines that have covers;
    - write an audit entry.
 
-   Response: **202** `{operationId, statusUrl}`. If no row has a cover, it completes in the same transaction (no remote dependency).
-2. Leave consumes the command. Within one local transaction it records:
+   Response: always **202** `{operationId, statusUrl, resolvableAt}` with a `Location` header — also for a repeated request or a month with no cover, which completes in the same transaction (no remote dependency).
+2. Leave consumes the command. Within **one** local transaction (the cover service runs with `MANDATORY` propagation inside the listener's transaction) it records:
    - the inbox key;
    - the `leave_operation` by key;
    - the ledger rows, `source_type = COVER`, with idempotency key `COVER:<opKey>:<emp>:<type>`;
    - the result outbox.
 
-   It validates every cover against the usable balance. **Invalid cover is rejected explicitly for the whole run**, with per-employee reasons. A duplicate command returns the recorded result.
-3. Payroll consumes `leave.cover.result` idempotently (inbox). It acts only if the operation id, the run revision and `FINALIZING` all match; stale or duplicate results are ignored.
+   It validates every cover against the usable balance before writing anything. **Invalid cover is rejected explicitly for the whole run**, with per-employee reasons, and a malformed command is rejected permanently. Every other failure (a lock conflict with a leave approval at the same moment, a database timeout) is **thrown**: the whole delivery rolls back and is retried, then dead-lettered, and payroll's reconciler re-sends it — a temporary problem never becomes a rejection. A duplicate command, or one whose key Leave already holds (including a fenced `CANCELLED` key), returns the recorded result and touches no balance.
+3. Payroll consumes `leave.cover.result` idempotently (inbox). It locks the run first, then reads the operation, and acts only if the operation id, the run revision and `FINALIZING` all match; stale or duplicate results are ignored. A result that **contradicts** an already closed operation raises an alert (`payroll.operations.result.mismatch`, ERROR log) and changes nothing.
    - Success → run and lines `FINALIZED`, plus one `payslip_revision` per line, notifications (outbox, dedupe `payslip-ready:<period>:r<rev>:<emp>`) and audit.
    - Rejection → `ACTION_REQUIRED` with reasons shown. The user can fix the cause and press *Return to draft*; nothing was deducted.
 4. Reopen: `POST /runs/{period}/reopen {confirm: true, reason}` → `REOPENING` plus the operation `REOPEN:<period>:r<rev>`. Leave reverses **exactly the ledger rows recorded for the finalise operation key** (keyed `REVERSE:<finalizeKey>:…`, so it restores once), then replies. Payroll marks the retained revisions superseded and returns the run to `DRAFT` with revision + 1.
-5. **Recovery.** A scheduled reconciler re-sends the command of `PENDING` operations older than 2 minutes (same key, so it is idempotent). Re-sends use exponential backoff, capped at 30 min, and there is an alert log and metric when an operation is older than 15 min. Admins can list pending operations and **resolve manually with a reason** (audited).
-   - Reconciliation endpoint: `GET /runs/{period}/reconciliation` compares Payroll's covered days per employee and category with Leave's ledger totals for the operation key.
+5. **Recovery.**
+   - *Outbox:* a message the broker cannot route (returned) stays pending in the outbox and is published again.
+   - *Reconciler:* re-sends the command of `PENDING` operations after 2 minutes (same key, so it is idempotent), with exponential backoff capped at 30 min. It takes the run lock, and the operation's `version` guards the write, so a re-send can never overwrite a result that arrives at the same moment. It alerts (ERROR log, at most once per 15 min per operation, plus `payroll.operations.pending` / `payroll.operations.oldest.age.seconds`) when an operation is older than 15 min. Only the instance holding the `payroll_job_lease` runs it.
+   - *Manual resolve* (`POST /operations/{id}/resolve {reason}`, audited): allowed only after `resolvableAt` (5 min, so the automatic re-send gets its chance). **The operator does not choose the outcome.** Payroll first **fences** the key in Leave (`POST /api/internal/payroll/operation/fence`): if Leave never processed it, Leave records `CANCELLED` under the unique key, so a command still in flight replays `CANCELLED` and can never deduct or restore leave; if Leave did process it, Leave returns that outcome. Payroll then applies Leave's outcome (`SUCCEEDED` → finalised / reopened; otherwise finalise → `ACTION_REQUIRED`, reopen → stays `FINALIZED`). An optional `outcome` from the operator is only compared and reported. If Leave cannot be reached the resolve fails with 503 and nothing changes.
+   - *Reconciliation:* `GET /runs/{period}/reconciliation` compares the month with **every** cover row Leave holds for it, across all finalise keys: a finalised month must hold exactly its line covers under its current finalise key; a draft month must hold none. Rows under any other key are reported as **orphans**. An hourly sweep (`payroll.reconciliation.mismatches`) checks the last 24 months.
+   - The payroll page shows every operation (state, sends, errors, who resolved it and why), a *Resolve…* action once allowed, and *Check against Leave ledger*.
    - Delivery is at-least-once with idempotent consumers. Exactly-once is not claimed.
 
 ### 2.4 API (all under gateway `/payroll/api/payroll`)
@@ -287,7 +297,7 @@ Legacy tables `payslip`, `finalize_operation` and `payroll_config` are supersede
 | GET | `/runs/{period}/export.csv` | export |
 | GET | `/runs/{period}/reconciliation` | run |
 | GET | `/operations/{operationId}`, `/operations?status=PENDING` | run |
-| POST | `/operations/{operationId}/resolve` `{reason}` | run |
+| POST | `/operations/{operationId}/resolve` `{reason, outcome?}` — fences Leave, applies Leave's outcome; 409 `TOO_EARLY` before `resolvableAt` | run |
 | GET / PUT | `/settings` | view (read), run (write) |
 | GET | `/me/payslips`, `/me/payslips/{period}`, `/me/estimate`, `/me/salary` | payroll:view / salary:view (own) |
 | GET / POST | `/salary/employees/{id}` (history + current) / `{payType, amount, currency, effectiveDate, reason}` | salary:edit, or own with salary:view |
@@ -311,11 +321,15 @@ Errors use the common envelope `{code, message, correlationId}`:
 - rounding.
 
 **Service tests:**
-- finalise preconditions (order, month end, revision, exceptions, staleness);
-- idempotent result handling: duplicate, stale and wrong-revision results;
-- reopen reversal once.
+- finalise preconditions (order, month end, calculated before month end, after a Leave rejection, revision, exceptions, staleness);
+- facts drift (attendance change, joiner/leaver) and the `FACTS_CHANGED` refusal;
+- idempotent result handling: duplicate, stale, wrong-revision and contradicting results; run locked before the operation is read;
+- re-send under the run lock; reconciler backoff, lease and alert de-duplication;
+- manual resolve: too early, reason required, Leave fenced → rejected, Leave applied → completed, reopen stays finalised, Leave unreachable → unchanged;
+- month reconciliation: matches, orphan key, draft holding cover, operation in flight;
+- Leave: all-or-nothing cover, once per key, reversal once, month ledger, malformed command, temporary failure re-thrown, late command after a fence.
 
-**End-to-end** (local stack, scripted): seeded scenarios for Sep–Nov 2026 calculated, finalised, reopened and re-finalised, with leave balances checked after each step.
+**End-to-end** (local stack, scripted): seeded scenarios for Sep–Nov 2026 calculated, finalised, reopened and re-finalised, with leave balances checked after each step (`scripts/test-payroll-e2e.mjs`, date-independent). **Recovery** (`scripts/test-payroll-recovery.mjs`): concurrency, Leave rejection, facts changed after review, lost command, manual resolve with the command in flight, manual resolve with lost results, orphan detection — against the real broker.
 
 ---
 
@@ -391,23 +405,27 @@ node scripts/test-payroll-e2e.mjs                # 102 checks: money, guards, fi
 `scripts/seed/qii/*.sql` (loaded by `scripts/seed-qii-dev.sh load`) contains the resulting state, so a fresh dev
 environment starts with September and October finalised and November as a live draft.
 
-## 6. Verification evidence (10 Nov 2026, local stack)
+## 6. Verification evidence (12 Nov 2026, local stack)
 
 | Check | Result |
 |---|---|
-| Engine unit tests (`PayrollEngineTest`) — worked example, joiner, leaver, segmentation, unpaid leave, cover order, Direct, ÷30, hourly, missing check-out, negative net, missing salary, month not over | 15 / 15 pass |
-| Workflow tests (`PayrollWorkflowTest`) — month end, order, gap month, exceptions, stale draft, reopen order, stale revision, confirmation, duplicate result, stale result, success snapshots + notifications, rejection | 12 / 12 pass |
-| End-to-end (`scripts/test-payroll-e2e.mjs`) against People, Time & Work, Leave, Payroll, Gateway, RabbitMQ | 102 / 102 pass |
+| Engine unit tests (`PayrollEngineTest`) — worked example, joiner, leaver, segmentation, unpaid leave, cover order, Direct, ÷30, hourly, missing check-out, negative net, missing salary, month not over; D1 half-day leave (paid and unpaid); D2 ÷30 full February, proportional joiners/leavers, unpaid-every-working-day, covered month, segmentation; D3 day-rate absences, mid-month currency change; deduction cap | 29 / 29 pass |
+| Workflow tests (`PayrollWorkflowTest`) — every finalise blocker incl. calculated-before-month-end and after-rejection, facts drift and `FACTS_CHANGED`, idempotent / stale / contradicting results, run-locked re-send, fenced manual resolve, month reconciliation; D5 negative-net adjustment refused with its limit; D3 currency change only on the 1st | 39 / 39 pass |
+| Reconciler tests — backoff, single-instance lease, alert de-duplication | 4 / 4 pass |
+| Leave tests (`LeaveCoverServiceTest`, `LeaveCoverCommandListenerTest`) — all-or-nothing cover, once per key, reversal once, month ledger, malformed command, temporary failure re-thrown, late command after a fence; D4 balance year of the category row valid in the month (December finalised in January) | 19 / 19 pass |
+| End-to-end (`scripts/test-payroll-e2e.mjs`, date-independent) against People, Time & Work, Leave, Payroll, Gateway, RabbitMQ | 104 / 104 pass |
+| Recovery (`scripts/test-payroll-recovery.mjs`) against the real broker — concurrency, balance changed before finalise, Leave rejection in a race, facts changed after review, lost command (re-sent on attempt 2), manual resolve with the command in flight (fenced; the delayed command took nothing), manual resolve with lost results (completed once), orphan detection | 56 / 56 pass |
 | SRS worked example in the running system (Arpa, Sep 2026) | per-day 681.82, deduction 1,022.73, net **13,977.27** |
 | AT-15 finalise → reopen → re-finalise | Arpa Casual 1 → 0 → 1 → 0; ledger net −1 (deducted once) |
 | PAY01 duplicate finalise | same operation returned, no second deduction; reconciliation matches |
 | DATA01 five concurrent recalculations | all 200, one row per employee (30 / 30) |
 | NFR-07 performance | ~1 s per run for 30 employees (one batch call per provider) |
-| Whole backend `./gradlew test` | all modules green |
+| Whole backend `./gradlew test` | **267 / 267 pass** (approval-chain code moved to `LeaveApprovalChainBuilder`, so `LeaveApplicationService` is 1123 lines; the Time & Work half-day tests match the fit-into-shift behaviour) |
 
 Known limits (recorded, not hidden):
 - Schedules are not versioned in Time & Work. Recalculating an old draft month uses the schedule as it is now.
   Finalised months are unaffected, because they are snapshots.
-- Decisions D1–D5 are defaults that need HR/Finance sign-off (guide §2, §15).
+- Decisions D1–D5 were confirmed on 12 Nov 2026 (§1.3); any later change to them is a rule change with its own release.
+- A salary change effective inside an already finalised month changes nothing in that month's snapshot; it applies only if that month is reopened and recalculated.
 - Legacy People columns `employee.base_salary` and `employee.hourly_rate` are no longer read or written. They can
   be dropped in a later contract migration.

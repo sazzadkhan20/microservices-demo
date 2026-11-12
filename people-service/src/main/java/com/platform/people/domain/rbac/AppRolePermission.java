@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 
 @Entity
 @Table(name = "app_role_permission")
+@jakarta.persistence.EntityListeners(com.platform.people.application.RbacCacheInvalidationListener.class)
 public class AppRolePermission {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;

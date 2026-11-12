@@ -89,6 +89,40 @@ class WorkScheduleServiceTest {
     }
 
     @Test
+    @DisplayName("Period expected hours: one Leave call for the period, identical to the per-day sum")
+    void periodBatchesLeaveLookupAndMatchesPerDaySum() {
+        EmployeeView e = emp(1L, null, 10L);
+        WorkSchedule loc = sch("LOCATION", 10L, "FIXED",
+                "[\"SUN\",\"MON\",\"TUE\",\"WED\",\"THU\"]", "10:00", "18:00");
+        when(repository.findByScopeTypeAndScopeId("LOCATION", 10L)).thenReturn(Optional.of(loc));
+        Holiday h = new Holiday();
+        h.setLocationId(10L);
+        h.setStartDate(LocalDate.of(2026, 11, 4));
+        h.setEndDate(LocalDate.of(2026, 11, 4));
+        when(holidayRepository.findAll()).thenReturn(List.of(h));
+        LocalDate from = LocalDate.of(2026, 11, 1);
+        LocalDate to = LocalDate.of(2026, 11, 14);
+        Map<LocalDate, LeaveClient.LeaveImpact> impacts = new java.util.HashMap<>();
+        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) impacts.put(d, LeaveClient.LeaveImpact.NONE);
+        impacts.put(LocalDate.of(2026, 11, 2), LeaveClient.LeaveImpact.FULL);
+        impacts.put(LocalDate.of(2026, 11, 3), LeaveClient.LeaveImpact.HALF);
+        when(leaveClient.leaveImpact(anyLong(), any())).thenAnswer(inv -> impacts.get(inv.getArgument(1, LocalDate.class)));
+        when(leaveClient.leaveImpacts(1L, from, to)).thenReturn(impacts);
+
+        BigDecimal perDay = BigDecimal.ZERO;
+        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) perDay = perDay.add(service.expectedHoursForDay(e, d));
+        org.mockito.Mockito.clearInvocations(leaveClient, holidayRepository);
+
+        BigDecimal period = service.expectedHoursForPeriod(e, from, to);
+        assertEquals(0, period.compareTo(perDay), "batched period == sum of per-day answers");
+        // 10 working days × 8h − full leave (8) − half leave (4) − holiday (8) = 60h
+        assertEquals(0, period.compareTo(new BigDecimal("60")));
+        verify(leaveClient, org.mockito.Mockito.times(1)).leaveImpacts(1L, from, to);
+        verify(leaveClient, never()).leaveImpact(anyLong(), any());
+        verify(holidayRepository, org.mockito.Mockito.times(1)).findAll();
+    }
+
+    @Test
     void resolvePrefersEmployeeOverTeamOverLocation() {
         EmployeeView e = emp(5L, 2L, 1L);
         when(repository.findByScopeTypeAndScopeId("EMPLOYEE", 5L))

@@ -131,9 +131,12 @@ export default function EmployeeDetailPage() {
   });
   const tabAllowed = tabs.some((t) => t.id === tab);
   const activeTab = tabAllowed ? tab : (tabs[0]?.id ?? "profile");
-  const photoFileId =
-    e.photoFileId ??
-    (e as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId;
+  const photoFileId = (e.photoFileId ??
+    (e as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId) as
+    | string
+    | number
+    | null
+    | undefined;
 
   return (
     <div className="stack">
@@ -214,9 +217,12 @@ function ProfileTab({
     if (d != null && String(d).trim()) return String(d);
     return cf?.[k] == null ? "—" : String(cf[k]);
   };
-  const photoFileId =
-    emp.photoFileId ??
-    (emp as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId;
+  const photoFileId = (emp.photoFileId ??
+    (emp as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId) as
+    | string
+    | number
+    | null
+    | undefined;
 
   return (
     <div className="card stack">
@@ -942,11 +948,11 @@ function DocumentsTab({ empId, canEdit }: { empId: string; canEdit: boolean }) {
 
 function LeaveTab({ empId }: { empId: string }) {
   const { can } = useAuth();
-  if (!can("leave", "view") && !can("leave_balances", "view") && !can("leave_requests", "view")) {
-    return null;
-  }
+  // Hooks always run in the same order (rules of hooks); without permission nothing is fetched or shown.
+  const allowed = can("leave", "view") || can("leave_balances", "view") || can("leave_requests", "view");
   const balances = useQuery({
     queryKey: ["employee-balances-current", empId],
+    enabled: allowed,
     queryFn: ({ signal }) =>
       apiFetch(api.hrms(`leave-balances/employee/${empId}`), {
         query: { currentOnly: "true" },
@@ -955,9 +961,13 @@ function LeaveTab({ empId }: { empId: string }) {
   });
   const requests = useQuery({
     queryKey: ["employee-leave", empId],
+    enabled: allowed,
     queryFn: ({ signal }) =>
       apiFetch(api.hrms(`leave/employee/${empId}`), { query: { page: 1, size: 50 }, signal }),
   });
+  if (!allowed) {
+    return null;
+  }
   const bal = rowsOf<Rec>(balances.data)
     .slice()
     .sort(

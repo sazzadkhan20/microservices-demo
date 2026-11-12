@@ -12,9 +12,14 @@ import com.platform.people.infrastructure.persistence.rbac.AppRolePermissionRepo
 import com.platform.people.infrastructure.persistence.rbac.AppRoleRepository;
 import com.platform.people.infrastructure.persistence.rbac.AppUserRoleRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.function.Supplier;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -87,25 +92,52 @@ public class RbacService {
     private final AppRolePermissionRepository rolePermissionRepository;
     private final AppPermissionRepository permissionRepository;
     private final EmployeeRepository employeeRepository;
+    private final RbacCache rbacCache;
+    private final TransactionTemplate readTx;
 
     public RbacService(
             AppUserRoleRepository userRoleRepository,
             AppRoleRepository roleRepository,
             AppRolePermissionRepository rolePermissionRepository,
             AppPermissionRepository permissionRepository,
-            EmployeeRepository employeeRepository) {
+            EmployeeRepository employeeRepository,
+            RbacCache rbacCache,
+            PlatformTransactionManager transactionManager) {
         this.userRoleRepository = userRoleRepository;
         this.roleRepository = roleRepository;
         this.rolePermissionRepository = rolePermissionRepository;
         this.permissionRepository = permissionRepository;
         this.employeeRepository = employeeRepository;
+        this.rbacCache = rbacCache;
+        this.readTx = new TransactionTemplate(transactionManager);
+        this.readTx.setReadOnly(true);
     }
 
-    @Transactional(readOnly = true)
+    /*
+     * Cached reads (RbacCache): a hit never touches the database or opens a transaction.
+     * Loaders call only the *Uncached helpers so the cache is never re-entered while loading.
+     */
+    private record Key(String kind, Long employeeId, String feature, String action) {
+    }
+
+    private <T> T cached(String kind, Long employeeId, String feature, String action, Supplier<T> loader) {
+        // A transaction that changed RBAC data, or is an RBAC write (role assignment, permission sync),
+        // always reads current state: privileged writes check current authority and see their own changes.
+        if (RbacCache.transactionDirty()) {
+            return loader.get();
+        }
+        return rbacCache.get(new Key(kind, employeeId, feature, action), k -> readTx.execute(st -> loader.get()));
+    }
+
     public List<AppRole> rolesFor(Long employeeId) {
         if (employeeId == null) {
             return List.of();
         }
+        return cached("roles", employeeId, null, null,
+                () -> Collections.unmodifiableList(new ArrayList<>(rolesForUncached(employeeId))));
+    }
+
+    private List<AppRole> rolesForUncached(Long employeeId) {
         List<Long> roleIds = userRoleRepository.findByEmployeeId(employeeId).stream()
                 .map(AppUserRole::getRoleId).toList();
         if (roleIds.isEmpty()) {
@@ -116,32 +148,44 @@ public class RbacService {
                 .toList();
     }
 
-    @Transactional(readOnly = true)
     public List<String> roleCodesFor(Long employeeId) {
         return rolesFor(employeeId).stream().map(AppRole::getCode).toList();
     }
 
-    @Transactional(readOnly = true)
     public boolean hasWildcard(Long employeeId) {
         return rolesFor(employeeId).stream().anyMatch(AppRole::isGrantsWildcard);
     }
 
-    @Transactional(readOnly = true)
     public boolean isProtectedFromOffboard(Long employeeId) {
         return rolesFor(employeeId).stream().anyMatch(AppRole::isProtectFromOffboard);
     }
 
-    @Transactional(readOnly = true)
     public Set<String> permissionKeysFor(Long employeeId) {
         // SEC-08 — inactive / offboarded employees get no permissions
         if (employeeId == null) {
             return Set.of();
         }
+        return cached("perms", employeeId, null, null,
+                () -> Collections.unmodifiableSet(new HashSet<>(permissionKeysForUncached(employeeId))));
+    }
+
+    /**
+     * Always reads the database (no cache). Used by the gRPC permission lookup that Payroll calls
+     * for privileged writes (guide §4: privileged payroll writes check current authority).
+     */
+    public Set<String> permissionKeysForFresh(Long employeeId) {
+        if (employeeId == null) {
+            return Set.of();
+        }
+        return readTx.execute(st -> permissionKeysForUncached(employeeId));
+    }
+
+    private Set<String> permissionKeysForUncached(Long employeeId) {
         Employee emp = employeeRepository.findById(employeeId).orElse(null);
         if (emp == null || !emp.isActive()) {
             return Set.of();
         }
-        List<AppRole> roles = rolesFor(employeeId);
+        List<AppRole> roles = rolesForUncached(employeeId);
         if (roles.isEmpty()) {
             return Set.of();
         }
@@ -175,7 +219,6 @@ public class RbacService {
         return withAliases;
     }
 
-    @Transactional(readOnly = true)
     public boolean hasPermission(Long employeeId, String feature, String action) {
         Set<String> keys = permissionKeysFor(employeeId);
         if (keys.contains("*:*")) {
@@ -203,6 +246,7 @@ public class RbacService {
      */
     @Transactional
     public void syncLegacyApiGrants(Long roleId) {
+        RbacCache.markTransactionDirty();
         List<AppRolePermission> links = rolePermissionRepository.findByRoleIdIn(List.of(roleId));
         Map<Long, AppPermission> byId = permissionRepository.findAll().stream()
                 .collect(Collectors.toMap(AppPermission::getId, p -> p));
@@ -267,9 +311,12 @@ public class RbacService {
     /**
      * Widest data scope across roles. Config flag {@code grants_wildcard} ⇒ ALL.
      */
-    @Transactional(readOnly = true)
     public String widestScope(Long employeeId, String feature, String action) {
-        List<AppRole> roles = rolesFor(employeeId);
+        return cached("widest", employeeId, feature, action, () -> widestScopeUncached(employeeId, feature, action));
+    }
+
+    private String widestScopeUncached(Long employeeId, String feature, String action) {
+        List<AppRole> roles = rolesForUncached(employeeId);
         if (roles.isEmpty()) {
             return "NONE";
         }
@@ -306,10 +353,14 @@ public class RbacService {
      * Widest data scope per permission key ({@code feature:action}, lower-case).
      * Wildcard roles yield {@code *:* → ALL}. View/read aliases share a scope.
      */
-    @Transactional(readOnly = true)
     public Map<String, String> permissionScopesFor(Long employeeId) {
+        return cached("scopes", employeeId, null, null,
+                () -> Collections.unmodifiableMap(new HashMap<>(permissionScopesForUncached(employeeId))));
+    }
+
+    private Map<String, String> permissionScopesForUncached(Long employeeId) {
         Map<String, String> out = new HashMap<>();
-        List<AppRole> roles = rolesFor(employeeId);
+        List<AppRole> roles = rolesForUncached(employeeId);
         if (roles.isEmpty()) {
             return out;
         }
@@ -367,6 +418,7 @@ public class RbacService {
      */
     @Transactional
     public List<String> addRole(Long employeeId, String roleCode) {
+        RbacCache.markTransactionDirty();
         if (roleCode == null || roleCode.isBlank()) {
             throw new IllegalArgumentException("roleCode is required");
         }
@@ -383,6 +435,7 @@ public class RbacService {
      */
     @Transactional
     public List<String> removeRole(Long employeeId, String roleCode) {
+        RbacCache.markTransactionDirty();
         if (roleCode == null || roleCode.isBlank()) {
             throw new IllegalArgumentException("roleCode is required");
         }
@@ -399,6 +452,7 @@ public class RbacService {
      */
     @Transactional
     public List<String> assignSystemDefaults(Long employeeId, List<String> roleCodes) {
+        RbacCache.markTransactionDirty();
         if (employeeId == null || roleCodes == null || roleCodes.isEmpty()) {
             return roleCodesFor(employeeId);
         }
@@ -426,6 +480,7 @@ public class RbacService {
     /** Replace all roles for an employee — enforces assignable_by + min_holders from config. */
     @Transactional
     public List<String> assignRoles(Long employeeId, List<String> roleCodes) {
+        RbacCache.markTransactionDirty();
         List<AppRole> current = rolesFor(employeeId);
         List<String> nextCodes = roleCodes == null ? List.of() : roleCodes.stream()
                 .filter(c -> c != null && !c.isBlank())
@@ -522,6 +577,7 @@ public class RbacService {
      */
     @Transactional
     public int ensurePrivilegedRolesHaveCatalogPermissions() {
+        RbacCache.markTransactionDirty();
         AppRole admin = roleRepository.findByCode("ADMIN").orElse(null);
         if (admin == null) {
             return 0;

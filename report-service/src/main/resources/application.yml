@@ -1,6 +1,17 @@
 server:
   port: 8085
   shutdown: graceful
+  max-http-request-header-size: 16KB
+  tomcat:
+    # Bounded worker budget (guide §7); saturation is visible via tomcat.threads.* metrics.
+    threads:
+      max: ${SERVER_MAX_THREADS:200}
+      min-spare: 10
+    accept-count: ${SERVER_ACCEPT_COUNT:100}
+    connection-timeout: 20s
+    keep-alive-timeout: 20s
+    mbeanregistry:
+      enabled: true
 
 spring:
   application:
@@ -21,6 +32,8 @@ spring:
       max-lifetime: 1700000
       keepalive-time: 120000
       leak-detection-threshold: 60000
+      # Guide §7: no runaway statement, lock wait or abandoned transaction can pin a pooled connection.
+      connection-init-sql: "SET statement_timeout = '${DB_STATEMENT_TIMEOUT:60s}'; SET lock_timeout = '${DB_LOCK_TIMEOUT:15s}'; SET idle_in_transaction_session_timeout = '${DB_IDLE_TX_TIMEOUT:120s}'"
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.yaml
     user: ${REPORT_DB_MIGRATION_USER:report_migrator}
@@ -57,6 +70,9 @@ spring:
       ddl-auto: none
     properties:
       hibernate:
+        default_batch_fetch_size: 32
+        query:
+          in_clause_parameter_padding: true
         dialect: org.hibernate.dialect.PostgreSQLDialect
         jdbc:
           time_zone: UTC
@@ -81,6 +97,14 @@ springdoc:
     tryItOutEnabled: true
 
 management:
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 100ms,300ms,800ms,2s
   endpoint:
     health:
       probes:
@@ -99,5 +123,8 @@ management:
       enabled: true
 
 logging:
+  pattern:
+    # Guide §9: correlation id on every log line (MDC set by CorrelationIdFilter / message consumers).
+    correlation: "[${spring.application.name:},%X{correlationId:-}] "
   level:
     com.platform.report: INFO

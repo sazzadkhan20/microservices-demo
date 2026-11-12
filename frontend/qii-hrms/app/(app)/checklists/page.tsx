@@ -279,7 +279,7 @@ export default function ChecklistsPage() {
     if (!parsed.success) {
       const next: Record<string, string> = {};
       for (const i of parsed.error.issues) {
-        const key = i.path.length > 1 ? `${i.path[0]}.${i.path[1]}` : String(i.path[0]);
+        const key = i.path.length > 1 ? `${String(i.path[0])}.${String(i.path[1])}` : String(i.path[0]);
         next[key] ||= i.message;
         if (i.path[0] === "items" && i.path.includes("ownerEmployeeId")) {
           next.ownerEmployeeId = i.message;

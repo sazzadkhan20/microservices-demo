@@ -90,14 +90,18 @@ public final class HrmsPermissionClient {
     }
 
     private Set<String> fetch(Long employeeId) {
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/api/me"))
                 .timeout(Duration.ofSeconds(5))
                 .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId))
                 .header(PlatformHeaders.SERVICE_KEY, serviceKey)
                 .header("Accept", "application/json")
-                .GET()
-                .build();
+                .GET();
+        String cid = com.platform.common.correlation.CorrelationHeaders.current();
+        if (cid != null) {
+            builder.header(com.platform.common.correlation.CorrelationHeaders.HEADER, cid);
+        }
+        HttpRequest request = builder.build();
         try {
             HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
             int status = response.statusCode();

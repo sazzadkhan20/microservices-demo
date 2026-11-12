@@ -18,6 +18,8 @@
 | **DEFERRED (OIDC / IdP)** | SEC-01 (OIDC+PKCE login), SEC-09 (opaque server sessions — needs IdP refresh), SEC-10 (asymmetric JWT/JWKS), SEC-15 (MFA `acr`) |
 | **PARTIAL / FOLLOW-UP** | SEC-03 (still shared service key; identity stamps remain until workload JWT/mTLS), DB-01/DB-02/DB-03 (per-service PG roles + move changelogs out of registry), DB-05/DB-06/DB-07/DB-08/DB-09, PAY-03 (full `payslip_revision` table), PAY-06/07/08/10/11/13, LV-06/07, MSG-02+, OPS HA/TLS/backups/CI restore drills, AUD-* |
 
+> **2026-11-12 update:** system test + hardening round — SEC-13 (actuator/docs exposure), API-01 (deadlines everywhere), API-03 (error envelope, no internals), API-06 (edge rate limiting), MSG-08 (salary out of the directory), OPS-01 (correlation in logs/HTTP/messages, metrics), OPS-02 (CI/CD, scans, build-once promotion), OPS-03 (Spring Boot 3.5.16 / Cloud 2025.0.3), OPS-05 (deployment hardening), TW-04 (directory caching) and a new document-metadata IDOR are resolved. See [SYSTEM_HARDENING.md](SYSTEM_HARDENING.md).
+
 `./gradlew compileJava test` was green after these remediations. Set `REDIS_PASSWORD` in `.env` before `docker compose up`.
 
 ---

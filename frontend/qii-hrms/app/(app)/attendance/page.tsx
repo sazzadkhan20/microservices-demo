@@ -299,7 +299,10 @@ export default function MyAttendancePage() {
             <button type="button" className="btn sm" onClick={() => shiftMonth(-1)} aria-label="Previous month">
               ←
             </button>
-            <button type="button" className="btn sm" onClick={() => setMonth({ y: now.getFullYear(), m: now.getMonth() })}>
+            <button type="button" className="btn sm" onClick={() => {
+              const [y, m] = todayIso(me.locationTimeZone).split("-").map(Number);
+              setMonth({ y, m: m - 1 });
+            }}>
               This month
             </button>
             <button type="button" className="btn sm" onClick={() => shiftMonth(1)} aria-label="Next month">

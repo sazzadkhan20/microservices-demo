@@ -8,16 +8,20 @@ plugins {
 
 dependencies {
     api 'com.fasterxml.jackson.core:jackson-databind'
-    api 'io.jsonwebtoken:jjwt-api:0.12.6'
-    api 'com.zaxxer:HikariCP:5.1.0'
-    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
-    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+    api 'io.jsonwebtoken:jjwt-api:0.12.7'
+    api 'com.zaxxer:HikariCP'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.7'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.7'
     compileOnly 'org.slf4j:slf4j-api'
     // EnvironmentPostProcessor (loads repo-root .env for IDE Run/Debug)
     compileOnly 'org.springframework.boot:spring-boot'
+    // ResilientHttp (RestClient factory with deadlines); services provide spring-web at runtime
+    compileOnly 'org.springframework:spring-web'
 
-    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.5'
+    testImplementation 'org.junit.jupiter:junit-jupiter'
     testImplementation 'org.springframework.boot:spring-boot'
+    testImplementation 'org.slf4j:slf4j-api'
+    testRuntimeOnly 'ch.qos.logback:logback-classic'
     testRuntimeOnly 'com.h2database:h2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }

@@ -1,0 +1,4 @@
+# Used instead of the root .dockerignore for docker/java-runtime.Dockerfile (BuildKit per-Dockerfile ignore):
+# the build context only needs the prebuilt boot jars.
+*
+!*/build/libs/*-1.0.0-SNAPSHOT.jar

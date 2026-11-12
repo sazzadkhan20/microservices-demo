@@ -42,16 +42,35 @@ public class EmployeeDocumentController {
     private final AuditService auditService;
     private final EmployeeRulesService employeeRulesService;
     private final FilesGatewayClient filesGatewayClient;
+    private final com.platform.people.application.DataScopeService dataScopeService;
 
     public EmployeeDocumentController(
             EmployeeRepository employeeRepository,
             AuditService auditService,
             EmployeeRulesService employeeRulesService,
-            FilesGatewayClient filesGatewayClient) {
+            FilesGatewayClient filesGatewayClient,
+            com.platform.people.application.DataScopeService dataScopeService) {
         this.employeeRepository = employeeRepository;
         this.auditService = auditService;
         this.employeeRulesService = employeeRulesService;
         this.filesGatewayClient = filesGatewayClient;
+        this.dataScopeService = dataScopeService;
+    }
+
+    /**
+     * Guide §4 — feature permission AND record scope. The interceptor only proves the feature
+     * ({@code employees:view|edit}); this proves the target employee is inside the caller's scope:
+     * self, the {@code employees:<action>} data scope (manager → team, HR → all), or an explicit
+     * {@code documents:<docAction>} grant.
+     */
+    private void requireDocumentScope(Long employeeId, String employeesAction, String documentsAction) {
+        Long actor = AuthContext.requireEmployeeId();
+        if (actor.equals(employeeId)
+                || dataScopeService.canAccess(actor, employeeId, "employees", employeesAction)
+                || dataScopeService.canAccess(actor, employeeId, "documents", documentsAction)) {
+            return;
+        }
+        throw new SecurityException("Forbidden: documents of employee " + employeeId + " are outside your access scope");
     }
 
     @GetMapping
@@ -59,6 +78,7 @@ public class EmployeeDocumentController {
     @Operation(summary = "List document metadata for an employee (includes live file-service scanStatus)")
     @Transactional(readOnly = true)
     public List<Map<String, Object>> list(@PathVariable Long id) {
+        requireDocumentScope(id, "view", "view");
         return enrichScanState(documentsOf(requireEmployee(id)));
     }
 
@@ -68,6 +88,7 @@ public class EmployeeDocumentController {
     @Operation(summary = "Attach uploaded file metadata (fileId, documentType, name)")
     @Transactional
     public Map<String, Object> add(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        requireDocumentScope(id, "edit", "create");
         Employee employee = requireEmployee(id);
         String fileId = requireText(body, "fileId");
         String type = body.get("documentType") != null ? text(body.get("documentType")) : text(body.get("type"));
@@ -119,6 +140,7 @@ public class EmployeeDocumentController {
             @PathVariable Long id,
             @PathVariable String fileId,
             @RequestBody(required = false) Map<String, Object> body) {
+        requireDocumentScope(id, "view", "view");
         Employee employee = requireEmployee(id);
         Map<String, Object> doc = documentsOf(employee).stream()
                 .filter(d -> fileId.equals(String.valueOf(d.get("fileId"))))
@@ -147,6 +169,7 @@ public class EmployeeDocumentController {
     @Operation(summary = "Remove document metadata by fileId")
     @Transactional
     public void remove(@PathVariable Long id, @PathVariable String fileId) {
+        requireDocumentScope(id, "edit", "delete");
         Employee employee = requireEmployee(id);
         List<Map<String, Object>> docs = documentsOf(employee);
         Map<String, Object> removed = docs.stream()

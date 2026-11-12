@@ -1,157 +1,190 @@
 server:
   port: 8090
+  # Guide §9: drain in-flight requests on SIGTERM (rolling deploys).
+  shutdown: graceful
+  max-http-request-header-size: 16KB
 
 spring:
   application:
     name: api-gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
+      timeout: 2s
+      connect-timeout: 2s
   cloud:
     gateway:
-      # Allow Swagger UI Try-it-out even if browser host differs slightly
-      # SEC-12: never reflect arbitrary Origin. Empty = no CORS (BFF is server-to-server).
-      # Set GATEWAY_CORS_ORIGINS=http://localhost:3000 for local browser→gateway debugging.
-      globalcors:
-        cors-configurations:
-          '[/**]':
-            allowedOrigins: ${GATEWAY_CORS_ORIGINS:}
-            allowedMethods:
-              - GET
-              - POST
-              - PUT
-              - PATCH
-              - DELETE
-              - OPTIONS
-            allowedHeaders: "*"
-            allowCredentials: false
-      # NOTE: Do NOT use default-filter RemoveRequestHeader=X-Employee-ID here.
-      # It runs AFTER JwtGatewayFilter and would strip the trusted identity
-      # header we just injected. Stripping+injection is done only in that filter.
-      routes:
-        # --- OpenAPI docs proxied through gateway (for Swagger UI dropdown) ---
-        - id: people-docs
-          uri: ${PEOPLE_URI:http://127.0.0.1:8081}
-          predicates:
-            - Path=/docs/people/**
-          filters:
-            - RewritePath=/docs/people/(?<segment>.*), /${segment}
+      # Spring Cloud Gateway 4.3+: server properties live under server.webflux
+      server:
+        webflux:
+          # Guide §7 deadlines + bounded connection budget to every service.
+          httpclient:
+            connect-timeout: ${GATEWAY_CONNECT_TIMEOUT_MS:3000}
+            response-timeout: ${GATEWAY_RESPONSE_TIMEOUT:30s}
+            pool:
+              type: FIXED
+              max-connections: ${GATEWAY_POOL_MAX_CONNECTIONS:1000}
+              acquire-timeout: 5000
+              # Below Tomcat's 20 s keep-alive so the gateway never reuses a socket the service already closed.
+              max-idle-time: 15s
+              max-life-time: 5m
+              eviction-interval: 10s
+          default-filters:
+            # Edge protection: per-employee token bucket in Redis (see RateLimitConfig).
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: ${GATEWAY_RATE_LIMIT_PER_SECOND:20}
+                redis-rate-limiter.burstCapacity: ${GATEWAY_RATE_LIMIT_BURST:60}
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@platformRateLimitKeyResolver}"
+                deny-empty-key: false
+          # Allow Swagger UI Try-it-out even if browser host differs slightly
+          # SEC-12: never reflect arbitrary Origin. Empty = no CORS (BFF is server-to-server).
+          # Set GATEWAY_CORS_ORIGINS=http://localhost:3000 for local browser→gateway debugging.
+          globalcors:
+            cors-configurations:
+              '[/**]':
+                allowedOrigins: ${GATEWAY_CORS_ORIGINS:}
+                allowedMethods:
+                  - GET
+                  - POST
+                  - PUT
+                  - PATCH
+                  - DELETE
+                  - OPTIONS
+                allowedHeaders: "*"
+                allowCredentials: false
+          # NOTE: Do NOT use default-filter RemoveRequestHeader=X-Employee-ID here.
+          # It runs AFTER JwtGatewayFilter and would strip the trusted identity
+          # header we just injected. Stripping+injection is done only in that filter.
+          routes:
+            # --- OpenAPI docs proxied through gateway (for Swagger UI dropdown) ---
+            - id: people-docs
+              uri: ${PEOPLE_URI:http://127.0.0.1:8081}
+              predicates:
+                - Path=/docs/people/**
+              filters:
+                - RewritePath=/docs/people/(?<segment>.*), /${segment}
 
-        - id: leave-docs
-          uri: ${LEAVE_URI:http://127.0.0.1:8086}
-          predicates:
-            - Path=/docs/leave/**
-          filters:
-            - RewritePath=/docs/leave/(?<segment>.*), /${segment}
+            - id: leave-docs
+              uri: ${LEAVE_URI:http://127.0.0.1:8086}
+              predicates:
+                - Path=/docs/leave/**
+              filters:
+                - RewritePath=/docs/leave/(?<segment>.*), /${segment}
 
-        - id: time-work-docs
-          uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
-          predicates:
-            - Path=/docs/time-work/**
-          filters:
-            - RewritePath=/docs/time-work/(?<segment>.*), /${segment}
+            - id: time-work-docs
+              uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
+              predicates:
+                - Path=/docs/time-work/**
+              filters:
+                - RewritePath=/docs/time-work/(?<segment>.*), /${segment}
 
-        - id: payroll-docs
-          uri: ${PAYROLL_URI:http://127.0.0.1:8082}
-          predicates:
-            - Path=/docs/payroll/**
-          filters:
-            - RewritePath=/docs/payroll/(?<segment>.*), /${segment}
+            - id: payroll-docs
+              uri: ${PAYROLL_URI:http://127.0.0.1:8082}
+              predicates:
+                - Path=/docs/payroll/**
+              filters:
+                - RewritePath=/docs/payroll/(?<segment>.*), /${segment}
 
-        - id: notification-docs
-          uri: ${NOTIF_URI:http://127.0.0.1:8083}
-          predicates:
-            - Path=/docs/notification/**
-          filters:
-            - RewritePath=/docs/notification/(?<segment>.*), /${segment}
+            - id: notification-docs
+              uri: ${NOTIF_URI:http://127.0.0.1:8083}
+              predicates:
+                - Path=/docs/notification/**
+              filters:
+                - RewritePath=/docs/notification/(?<segment>.*), /${segment}
 
-        - id: file-docs
-          uri: ${FILES_URI:http://127.0.0.1:8084}
-          predicates:
-            - Path=/docs/files/**
-          filters:
-            - RewritePath=/docs/files/(?<segment>.*), /${segment}
+            - id: file-docs
+              uri: ${FILES_URI:http://127.0.0.1:8084}
+              predicates:
+                - Path=/docs/files/**
+              filters:
+                - RewritePath=/docs/files/(?<segment>.*), /${segment}
 
-        - id: report-docs
-          uri: ${REPORTS_URI:http://127.0.0.1:8085}
-          predicates:
-            - Path=/docs/reports/**
-          filters:
-            - RewritePath=/docs/reports/(?<segment>.*), /${segment}
+            - id: report-docs
+              uri: ${REPORTS_URI:http://127.0.0.1:8085}
+              predicates:
+                - Path=/docs/reports/**
+              filters:
+                - RewritePath=/docs/reports/(?<segment>.*), /${segment}
 
-        # --- Domain services (guide §3: People / Leave / Time&Work) ---
-        # Path-split under /hrms/** keeps the Qii BFF unchanged while routing to separate services.
-        - id: hrms-leave
-          uri: ${LEAVE_URI:http://127.0.0.1:8086}
-          predicates:
-            - Path=/hrms/api/leave-applications/**,/hrms/api/leave-balances/**,/hrms/api/leave-types/**,/hrms/api/leave-categories/**,/hrms/api/leave-policy/**,/hrms/api/leave/**,/hrms/api/approvals/**
-          filters:
-            - RewritePath=/hrms/(?<segment>.*), /${segment}
+            # --- Domain services (guide §3: People / Leave / Time&Work) ---
+            # Path-split under /hrms/** keeps the Qii BFF unchanged while routing to separate services.
+            - id: hrms-leave
+              uri: ${LEAVE_URI:http://127.0.0.1:8086}
+              predicates:
+                - Path=/hrms/api/leave-applications/**,/hrms/api/leave-balances/**,/hrms/api/leave-types/**,/hrms/api/leave-categories/**,/hrms/api/leave-policy/**,/hrms/api/leave/**,/hrms/api/approvals/**
+              filters:
+                - RewritePath=/hrms/(?<segment>.*), /${segment}
 
-        - id: hrms-time-work
-          uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
-          predicates:
-            - Path=/hrms/api/attendance/**,/hrms/api/work-schedules/**,/hrms/api/holidays/**,/hrms/api/tasks/**,/hrms/api/work-logs/**,/hrms/api/dashboard/work-hours,/hrms/api/dashboard/work-hours/**,/hrms/api/dashboard/attendance-today,/hrms/api/dashboard/attendance-today/**,/hrms/api/dashboard/employee/**
-          filters:
-            - RewritePath=/hrms/(?<segment>.*), /${segment}
+            - id: hrms-time-work
+              uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
+              predicates:
+                - Path=/hrms/api/attendance/**,/hrms/api/work-schedules/**,/hrms/api/holidays/**,/hrms/api/tasks/**,/hrms/api/work-logs/**,/hrms/api/dashboard/work-hours,/hrms/api/dashboard/work-hours/**,/hrms/api/dashboard/attendance-today,/hrms/api/dashboard/attendance-today/**,/hrms/api/dashboard/employee/**
+              filters:
+                - RewritePath=/hrms/(?<segment>.*), /${segment}
 
-        - id: people
-          uri: ${PEOPLE_URI:http://127.0.0.1:8081}
-          predicates:
-            - Path=/people/**
-          filters:
-            - RewritePath=/people/(?<segment>.*), /${segment}
+            - id: people
+              uri: ${PEOPLE_URI:http://127.0.0.1:8081}
+              predicates:
+                - Path=/people/**
+              filters:
+                - RewritePath=/people/(?<segment>.*), /${segment}
 
-        - id: leave
-          uri: ${LEAVE_URI:http://127.0.0.1:8086}
-          predicates:
-            - Path=/leave/**
-          filters:
-            - RewritePath=/leave/(?<segment>.*), /${segment}
+            - id: leave
+              uri: ${LEAVE_URI:http://127.0.0.1:8086}
+              predicates:
+                - Path=/leave/**
+              filters:
+                - RewritePath=/leave/(?<segment>.*), /${segment}
 
-        - id: time-work
-          uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
-          predicates:
-            - Path=/time-work/**
-          filters:
-            - RewritePath=/time-work/(?<segment>.*), /${segment}
+            - id: time-work
+              uri: ${TIME_WORK_URI:http://127.0.0.1:8087}
+              predicates:
+                - Path=/time-work/**
+              filters:
+                - RewritePath=/time-work/(?<segment>.*), /${segment}
 
-        - id: hrms-people
-          uri: ${PEOPLE_URI:http://127.0.0.1:8081}
-          predicates:
-            - Path=/hrms/**
-          filters:
-            - RewritePath=/hrms/(?<segment>.*), /${segment}
+            - id: hrms-people
+              uri: ${PEOPLE_URI:http://127.0.0.1:8081}
+              predicates:
+                - Path=/hrms/**
+              filters:
+                - RewritePath=/hrms/(?<segment>.*), /${segment}
 
-        - id: payroll
-          uri: ${PAYROLL_URI:http://127.0.0.1:8082}
-          predicates:
-            - Path=/payroll/**
-          filters:
-            - RewritePath=/payroll/(?<segment>.*), /${segment}
+            - id: payroll
+              uri: ${PAYROLL_URI:http://127.0.0.1:8082}
+              predicates:
+                - Path=/payroll/**
+              filters:
+                - RewritePath=/payroll/(?<segment>.*), /${segment}
 
-        - id: notification
-          uri: ${NOTIF_URI:http://127.0.0.1:8083}
-          predicates:
-            - Path=/notifications/**
-          filters:
-            - RewritePath=/notifications/(?<segment>.*), /${segment}
+            - id: notification
+              uri: ${NOTIF_URI:http://127.0.0.1:8083}
+              predicates:
+                - Path=/notifications/**
+              filters:
+                - RewritePath=/notifications/(?<segment>.*), /${segment}
 
-        - id: files
-          uri: ${FILES_URI:http://127.0.0.1:8084}
-          predicates:
-            - Path=/files/**
-          filters:
-            - RewritePath=/files/(?<segment>.*), /${segment}
+            - id: files
+              uri: ${FILES_URI:http://127.0.0.1:8084}
+              metadata:
+                response-timeout: 120000
+              predicates:
+                - Path=/files/**
+              filters:
+                - RewritePath=/files/(?<segment>.*), /${segment}
 
-        - id: reports
-          uri: ${REPORTS_URI:http://127.0.0.1:8085}
-          predicates:
-            - Path=/reports/**
-          filters:
-            - RewritePath=/reports/(?<segment>.*), /${segment}
+            - id: reports
+              uri: ${REPORTS_URI:http://127.0.0.1:8085}
+              predicates:
+                - Path=/reports/**
+              filters:
+                - RewritePath=/reports/(?<segment>.*), /${segment}
 
 platform:
   jwt:
@@ -184,7 +217,9 @@ platform:
     jwks-uri: ${GOOGLE_JWKS_URI:https://www.googleapis.com/oauth2/v3/certs}
   # JWT not required for these (swagger assets + OpenAPI JSON + health). No service key is forwarded.
   public-paths:
-    - /actuator/**
+    # Gateway-local probes only (ActuatorAccessWebFilter guards the rest of /actuator).
+    - /actuator/health
+    - /actuator/health/**
     - /swagger-ui/**
     - /swagger-ui.html
     - /v3/api-docs
@@ -223,6 +258,9 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        readiness:
+          include: readinessState,redis
   endpoints:
     web:
       exposure:

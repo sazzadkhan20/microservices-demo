@@ -14,6 +14,8 @@ import { byId, rowsOf, useEmployeesLookup, type Rec } from "@/lib/api/lookups";
 import { fmtDate, fmtDateTime, fmtLeaveDays, fmtNumber, fmtRange, fmtTime, str } from "@/lib/format";
 import type { LeaveRow } from "@/lib/schemas/leave";
 
+const PAGE_SIZES = [10, 20, 50, 100] as const;
+
 type Decision = {
   kind: "leave" | "corr";
   id: string | number;
@@ -25,6 +27,21 @@ type Decision = {
   onBehalf?: boolean;
 };
 
+function useClientPager<T>(rows: T[], pageSize: number, page: number, setPage: (n: number | ((p: number) => number)) => void, resetKey: string) {
+  const [lastKey, setLastKey] = useState(resetKey);
+  if (lastKey !== resetKey) {
+    setLastKey(resetKey);
+    if (page !== 1) setPage(1);
+  }
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const pageSafe = Math.min(page, totalPages);
+  const paged = useMemo(() => {
+    const from = (pageSafe - 1) * pageSize;
+    return rows.slice(from, from + pageSize);
+  }, [rows, pageSafe, pageSize]);
+  return { paged, pageSafe, totalPages, total: rows.length };
+}
+
 export default function ApprovalsPage() {
   const { me, can } = useAuth();
   const qc = useQueryClient();
@@ -34,6 +51,10 @@ export default function ApprovalsPage() {
   const [corrStatus, setCorrStatus] = useState("PENDING");
   const [decision, setDecision] = useState<Decision | null>(null);
   const [note, setNote] = useState("");
+  const [leavePage, setLeavePage] = useState(1);
+  const [leavePageSize, setLeavePageSize] = useState(20);
+  const [corrPage, setCorrPage] = useState(1);
+  const [corrPageSize, setCorrPageSize] = useState(20);
 
   const employees = useEmployeesLookup(canLeave);
   const names = useMemo(() => byId(employees.data, (e) => e.fullName || `#${e.id}`), [employees.data]);
@@ -53,6 +74,21 @@ export default function ApprovalsPage() {
     (r): r is LeaveRow & Rec => r != null && r.id != null && r.id !== "",
   );
   const corrRows = rowsOf<Rec>(corrections.data).filter((r): r is Rec => r != null && r.id != null);
+
+  const leavePager = useClientPager(
+    leaveRows,
+    leavePageSize,
+    leavePage,
+    setLeavePage,
+    `leave|${leaveRows.length}|${leavePageSize}`,
+  );
+  const corrPager = useClientPager(
+    corrRows,
+    corrPageSize,
+    corrPage,
+    setCorrPage,
+    `corr|${corrStatus}|${corrRows.length}|${corrPageSize}`,
+  );
 
   function refresh() {
     void qc.invalidateQueries({ queryKey: ["approvals-pending"] });
@@ -111,7 +147,27 @@ export default function ApprovalsPage() {
         <section className="card stack">
           <div className="card-head" style={{ marginBottom: 0 }}>
             <h2>Leave waiting for you</h2>
-            <span className="pill acc">{leaveRows.length}</span>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <span className="pill acc">{leaveRows.length}</span>
+              <label className="row small muted" style={{ gap: 6 }}>
+                Rows
+                <select
+                  aria-label="Leave rows per page"
+                  value={leavePageSize}
+                  onChange={(e) => {
+                    setLeavePageSize(Number(e.target.value));
+                    setLeavePage(1);
+                  }}
+                  style={{ width: 72 }}
+                >
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
           <p className="small muted" style={{ margin: 0 }}>
             Shows items at your current chain step. On-behalf rows appear only when a step has been idle
@@ -139,7 +195,7 @@ export default function ApprovalsPage() {
                     </td>
                   </tr>
                 ) : (
-                  leaveRows.map((r) => {
+                  leavePager.paged.map((r) => {
                     const who = names.get(String(r.employeeId)) ?? `Employee #${r.employeeId}`;
                     const isCancel = String(r.status ?? "").toUpperCase() === "PENDING_CANCEL";
                     const onBehalf = String(r.decisionAuthority ?? "").toUpperCase() === "ON_BEHALF";
@@ -220,6 +276,36 @@ export default function ApprovalsPage() {
               </tbody>
             </table>
           </div>
+          {leaveRows.length > 0 ? (
+            <div className="row between">
+              <span className="muted small">
+                Showing {(leavePager.pageSafe - 1) * leavePageSize + 1}–
+                {Math.min(leavePager.pageSafe * leavePageSize, leavePager.total)} of {leavePager.total}
+                {pending.isFetching ? " · refreshing" : ""}
+              </span>
+              <div className="row">
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={leavePager.pageSafe <= 1}
+                  onClick={() => setLeavePage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </button>
+                <span className="muted small">
+                  Page {leavePager.pageSafe}/{leavePager.totalPages}
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={leavePager.pageSafe >= leavePager.totalPages}
+                  onClick={() => setLeavePage((p) => Math.min(leavePager.totalPages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -227,10 +313,38 @@ export default function ApprovalsPage() {
         <section className="card stack">
           <div className="card-head" style={{ marginBottom: 0 }}>
             <h2>Attendance corrections</h2>
-            <select value={corrStatus} onChange={(e) => setCorrStatus(e.target.value)} style={{ width: 140 }} aria-label="Status">
-              <option value="PENDING">Pending</option>
-              <option value="ALL">All</option>
-            </select>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <select
+                value={corrStatus}
+                onChange={(e) => {
+                  setCorrStatus(e.target.value);
+                  setCorrPage(1);
+                }}
+                style={{ width: 140 }}
+                aria-label="Status"
+              >
+                <option value="PENDING">Pending</option>
+                <option value="ALL">All</option>
+              </select>
+              <label className="row small muted" style={{ gap: 6 }}>
+                Rows
+                <select
+                  aria-label="Correction rows per page"
+                  value={corrPageSize}
+                  onChange={(e) => {
+                    setCorrPageSize(Number(e.target.value));
+                    setCorrPage(1);
+                  }}
+                  style={{ width: 72 }}
+                >
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
           <ErrorNote error={corrections.error} />
           <div className="tbl-wrap">
@@ -253,7 +367,7 @@ export default function ApprovalsPage() {
                     </td>
                   </tr>
                 ) : (
-                  corrRows.map((r) => {
+                  corrPager.paged.map((r) => {
                     const who = str(r.employeeName, `Employee #${r.employeeId}`);
                     const isPending = String(r.status).toUpperCase() === "PENDING";
                     const isOwn = String(r.employeeId) === String(me.employeeId);
@@ -312,6 +426,36 @@ export default function ApprovalsPage() {
               </tbody>
             </table>
           </div>
+          {corrRows.length > 0 ? (
+            <div className="row between">
+              <span className="muted small">
+                Showing {(corrPager.pageSafe - 1) * corrPageSize + 1}–
+                {Math.min(corrPager.pageSafe * corrPageSize, corrPager.total)} of {corrPager.total}
+                {corrections.isFetching ? " · refreshing" : ""}
+              </span>
+              <div className="row">
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={corrPager.pageSafe <= 1}
+                  onClick={() => setCorrPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </button>
+                <span className="muted small">
+                  Page {corrPager.pageSafe}/{corrPager.totalPages}
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={corrPager.pageSafe >= corrPager.totalPages}
+                  onClick={() => setCorrPage((p) => Math.min(corrPager.totalPages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

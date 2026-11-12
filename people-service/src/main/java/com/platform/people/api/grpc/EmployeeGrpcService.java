@@ -33,7 +33,7 @@ public class EmployeeGrpcService extends EmployeeServiceGrpc.EmployeeServiceImpl
     public void getPermissions(GetPermissionsRequest request, StreamObserver<PermissionsResponse> responseObserver) {
         try {
             PermissionsResponse response = PermissionsResponse.newBuilder()
-                    .addAllPermissionKeys(rbacService.permissionKeysFor(request.getEmployeeId()))
+                    .addAllPermissionKeys(rbacService.permissionKeysForFresh(request.getEmployeeId()))
                     .build();
             responseObserver.onNext(response);
             responseObserver.onCompleted();

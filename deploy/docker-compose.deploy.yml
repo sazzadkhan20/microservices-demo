@@ -1,0 +1,344 @@
+# Qii HRMS — deployable stack for the dev and production servers (driven by .github/workflows/release.yml).
+#
+# Images are pinned by DIGEST from release-manifest.env (written by CI): what was tested is what runs.
+# Only the HTTPS ingress (Caddy :443/:80) is published; every service, database, broker and cache stays
+# on the private "backend" network (guide §9).
+#
+#   dev server:   COMPOSE_PROFILES=infra   → also runs Postgres ×3, RabbitMQ, Redis, MinIO on this host
+#   production:   COMPOSE_PROFILES=        → point *_DB_URL / RABBITMQ_* / REDIS_* / MINIO_* at managed services
+#
+# Secrets come from ./.env on the server (provisioned from a secrets manager, mode 600) — never from the repo.
+name: qii-hrms
+
+x-java: &java
+  restart: unless-stopped
+  networks: [backend]
+  read_only: true
+  tmpfs: ["/tmp:size=256m"]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  stop_grace_period: 40s
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+  deploy:
+    resources:
+      limits: { cpus: "1.0", memory: 768M }
+      reservations: { memory: 384M }
+
+x-common-env: &common-env
+  PLATFORM_ENV: ${PLATFORM_ENV:?set prod or dev}
+  SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+  PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY:?}
+  PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY:?}
+  PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY:?}
+  PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:?}
+  RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+  RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+  RABBITMQ_USER: ${RABBITMQ_USER:?}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?}
+  PLATFORM_MESSAGING_ENABLED: "true"
+  PLATFORM_DOTENV_DISABLED: "true"
+  # API docs / Swagger are off outside local development (guide §9 private surfaces).
+  SPRINGDOC_API_DOCS_ENABLED: ${SPRINGDOC_ENABLED:-false}
+  SPRINGDOC_SWAGGER_UI_ENABLED: ${SPRINGDOC_ENABLED:-false}
+  LOGGING_STRUCTURED_FORMAT_CONSOLE: ${LOG_FORMAT:-ecs}
+  PEOPLE_BASE_URL: http://people-service:8081
+  HRMS_BASE_URL: http://people-service:8081
+  GATEWAY_BASE_URL: http://api-gateway:8090
+  LEAVE_BASE_URL: http://leave-service:8086
+  TIME_WORK_BASE_URL: http://time-work-service:8087
+  PAYROLL_BASE_URL: http://payroll-service:8082
+  FILES_BASE_URL: http://file-service:8084
+  NOTIFICATION_BASE_URL: http://notification-service:8083
+  REPORT_BASE_URL: http://report-service:8085
+
+services:
+  # ------------------------------------------------------------------ public edge
+  ingress:
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?e.g. hrms.qiicreative.com.au}
+    command: caddy reverse-proxy --from ${PUBLIC_HOST} --to qii-frontend:3000
+    volumes: [caddy_data:/data, caddy_config:/config]
+    networks: [edge]
+    depends_on:
+      qii-frontend: { condition: service_healthy }
+
+  qii-frontend:
+    image: ${IMAGE_QII_FRONTEND:?}
+    restart: unless-stopped
+    networks: [edge, backend]
+    read_only: true
+    tmpfs: ["/tmp:size=64m", "/app/.next/cache:size=128m,uid=1000,gid=1000"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      GATEWAY_URL: http://api-gateway:8090
+      COOKIE_SECURE: "true"
+      DEMO_AUTH_ENABLED: "false"
+      OIDC_ENABLED: "true"
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?}
+      OIDC_BFF_KEY: ${OIDC_BFF_KEY:?}
+      OIDC_REDIRECT_URI: https://${PUBLIC_HOST}/api/auth/oidc/callback
+      GOOGLE_HD: ${GOOGLE_HD:-}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/login"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+    depends_on:
+      api-gateway: { condition: service_healthy }
+
+  # ------------------------------------------------------------------ gateway + services (private)
+  api-gateway:
+    <<: *java
+    image: ${IMAGE_API_GATEWAY:?}
+    environment:
+      <<: *common-env
+      PEOPLE_URI: http://people-service:8081
+      LEAVE_URI: http://leave-service:8086
+      TIME_WORK_URI: http://time-work-service:8087
+      PAYROLL_URI: http://payroll-service:8082
+      NOTIF_URI: http://notification-service:8083
+      FILES_URI: http://file-service:8084
+      REPORTS_URI: http://report-service:8085
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+      JWT_SECRET: ${JWT_SECRET:?}
+      TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-28800}
+      DEMO_AUTH_ENABLED: "false"
+      DEMO_AUTH_KEY: ${DEMO_AUTH_KEY:?}
+      OIDC_ENABLED: "true"
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?}
+      OIDC_BFF_KEY: ${OIDC_BFF_KEY:?}
+      OIDC_ALLOWED_EMAIL_DOMAINS: ${OIDC_ALLOWED_EMAIL_DOMAINS:-qiicreative.com.au}
+      GATEWAY_RATE_LIMIT_PER_SECOND: ${GATEWAY_RATE_LIMIT_PER_SECOND:-20}
+      GATEWAY_RATE_LIMIT_BURST: ${GATEWAY_RATE_LIMIT_BURST:-60}
+      PROBE_PORT: "8090"
+    healthcheck: &probe
+      # bash /dev/tcp probe (the JRE image ships no curl/wget); readiness covers DB / broker / Redis.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/$${PROBE_PORT} && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q UP <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    depends_on:
+      people-service: { condition: service_healthy }
+
+  people-service:
+    <<: *java
+    image: ${IMAGE_PEOPLE_SERVICE:?}
+    environment:
+      <<: *common-env
+      PROBE_PORT: "8081"
+      PEOPLE_DB_URL: ${PEOPLE_DB_URL:-jdbc:postgresql://postgres-hrms:5432/people_db}
+      PEOPLE_DB_USER: ${PEOPLE_DB_USER:-people_app}
+      PEOPLE_DB_PASSWORD: ${PEOPLE_DB_PASSWORD:?}
+      PEOPLE_DB_MIGRATION_USER: ${PEOPLE_DB_MIGRATION_USER:-people_migrator}
+      PEOPLE_DB_MIGRATION_PASSWORD: ${PEOPLE_DB_MIGRATION_PASSWORD:?}
+    healthcheck: *probe
+
+  leave-service:
+    <<: *java
+    image: ${IMAGE_LEAVE_SERVICE:?}
+    environment:
+      <<: *common-env
+      PROBE_PORT: "8086"
+      LEAVE_DB_URL: ${LEAVE_DB_URL:-jdbc:postgresql://postgres-hrms:5432/leave_db}
+      LEAVE_DB_USER: ${LEAVE_DB_USER:-leave_app}
+      LEAVE_DB_PASSWORD: ${LEAVE_DB_PASSWORD:?}
+      LEAVE_DB_MIGRATION_USER: ${LEAVE_DB_MIGRATION_USER:-leave_migrator}
+      LEAVE_DB_MIGRATION_PASSWORD: ${LEAVE_DB_MIGRATION_PASSWORD:?}
+    healthcheck: *probe
+
+  time-work-service:
+    <<: *java
+    image: ${IMAGE_TIME_WORK_SERVICE:?}
+    environment:
+      <<: *common-env
+      PROBE_PORT: "8087"
+      TIMEWORK_DB_URL: ${TIMEWORK_DB_URL:-jdbc:postgresql://postgres-hrms:5432/timework_db}
+      TIMEWORK_DB_USER: ${TIMEWORK_DB_USER:-timework_app}
+      TIMEWORK_DB_PASSWORD: ${TIMEWORK_DB_PASSWORD:?}
+      TIMEWORK_DB_MIGRATION_USER: ${TIMEWORK_DB_MIGRATION_USER:-timework_migrator}
+      TIMEWORK_DB_MIGRATION_PASSWORD: ${TIMEWORK_DB_MIGRATION_PASSWORD:?}
+    healthcheck: *probe
+
+  payroll-service:
+    <<: *java
+    image: ${IMAGE_PAYROLL_SERVICE:?}
+    environment:
+      <<: *common-env
+      PROBE_PORT: "8082"
+      PAYROLL_DB_URL: ${PAYROLL_DB_URL:-jdbc:postgresql://postgres-payroll:5432/payroll_db}
+      PAYROLL_DB_USER: ${PAYROLL_DB_USER:-payroll_app}
+      PAYROLL_DB_PASSWORD: ${PAYROLL_DB_PASSWORD:?}
+      PAYROLL_DB_MIGRATION_USER: ${PAYROLL_DB_MIGRATION_USER:-payroll_migrator}
+      PAYROLL_DB_MIGRATION_PASSWORD: ${PAYROLL_DB_MIGRATION_PASSWORD:?}
+      HRMS_GRPC_ADDRESS: static://people-service:9081
+    healthcheck: *probe
+
+  file-service:
+    <<: *java
+    image: ${IMAGE_FILE_SERVICE:?}
+    environment:
+      <<: *common-env
+      PROBE_PORT: "8084"
+      FILES_DB_URL: ${FILES_DB_URL:-jdbc:postgresql://postgres-platform:5432/files_db}
+      FILES_DB_USER: ${FILES_DB_USER:-files_app}
+      FILES_DB_PASSWORD: ${FILES_DB_PASSWORD:?}
+      FILES_DB_MIGRATION_USER: ${FILES_DB_MIGRATION_USER:-files_migrator}
+      FILES_DB_MIGRATION_PASSWORD: ${FILES_DB_MIGRATION_PASSWORD:?}
+      FILE_STORAGE_TYPE: minio
+      FILE_STORAGE_BUCKET: ${FILE_STORAGE_BUCKET:-qii-hrms-documents}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?}
+      FILE_DOWNLOAD_SIGNING_KEY: ${FILE_DOWNLOAD_SIGNING_KEY:?}
+    healthcheck: *probe
+
+  notification-service:
+    <<: *java
+    image: ${IMAGE_NOTIFICATION_SERVICE:?}
+    environment:
+      <<: *common-env
+      PROBE_PORT: "8083"
+      NOTIFICATION_DB_URL: ${NOTIFICATION_DB_URL:-jdbc:postgresql://postgres-platform:5432/notification_db}
+      NOTIFICATION_DB_USER: ${NOTIFICATION_DB_USER:-notification_app}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?}
+      NOTIFICATION_DB_MIGRATION_USER: ${NOTIFICATION_DB_MIGRATION_USER:-notification_migrator}
+      NOTIFICATION_DB_MIGRATION_PASSWORD: ${NOTIFICATION_DB_MIGRATION_PASSWORD:?}
+    healthcheck: *probe
+
+  report-service:
+    <<: *java
+    image: ${IMAGE_REPORT_SERVICE:?}
+    environment:
+      <<: *common-env
+      PROBE_PORT: "8085"
+      REPORT_DB_URL: ${REPORT_DB_URL:-jdbc:postgresql://postgres-platform:5432/reports_db}
+      REPORT_DB_USER: ${REPORT_DB_USER:-report_app}
+      REPORT_DB_PASSWORD: ${REPORT_DB_PASSWORD:?}
+      REPORT_DB_MIGRATION_USER: ${REPORT_DB_MIGRATION_USER:-report_migrator}
+      REPORT_DB_MIGRATION_PASSWORD: ${REPORT_DB_MIGRATION_PASSWORD:?}
+    healthcheck: *probe
+
+  # ------------------------------------------------------------------ self-hosted infra (dev server only)
+  postgres-hrms: &pg
+    profiles: [infra]
+    image: postgres:16.6
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?}
+      SERVICE_DBS: "people_db:PEOPLE leave_db:LEAVE timework_db:TIMEWORK"
+      PEOPLE_DB_PASSWORD: ${PEOPLE_DB_PASSWORD}
+      PEOPLE_DB_MIGRATION_PASSWORD: ${PEOPLE_DB_MIGRATION_PASSWORD}
+      LEAVE_DB_PASSWORD: ${LEAVE_DB_PASSWORD}
+      LEAVE_DB_MIGRATION_PASSWORD: ${LEAVE_DB_MIGRATION_PASSWORD}
+      TIMEWORK_DB_PASSWORD: ${TIMEWORK_DB_PASSWORD}
+      TIMEWORK_DB_MIGRATION_PASSWORD: ${TIMEWORK_DB_MIGRATION_PASSWORD}
+    volumes:
+      - ./postgres/init-service-dbs.sh:/docker-entrypoint-initdb.d/01-init-service-dbs.sh:ro
+      - ./postgres/service-db.sql:/docker-entrypoint-initdb.d/service-db.sql.tpl:ro
+      - pg_hrms:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres-payroll:
+    <<: *pg
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?}
+      SERVICE_DBS: "payroll_db:PAYROLL"
+      PAYROLL_DB_PASSWORD: ${PAYROLL_DB_PASSWORD}
+      PAYROLL_DB_MIGRATION_PASSWORD: ${PAYROLL_DB_MIGRATION_PASSWORD}
+    volumes:
+      - ./postgres/init-service-dbs.sh:/docker-entrypoint-initdb.d/01-init-service-dbs.sh:ro
+      - ./postgres/service-db.sql:/docker-entrypoint-initdb.d/service-db.sql.tpl:ro
+      - pg_payroll:/var/lib/postgresql/data
+
+  postgres-platform:
+    <<: *pg
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?}
+      SERVICE_DBS: "files_db:FILES notification_db:NOTIFICATION reports_db:REPORT"
+      FILES_DB_PASSWORD: ${FILES_DB_PASSWORD}
+      FILES_DB_MIGRATION_PASSWORD: ${FILES_DB_MIGRATION_PASSWORD}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD}
+      NOTIFICATION_DB_MIGRATION_PASSWORD: ${NOTIFICATION_DB_MIGRATION_PASSWORD}
+      REPORT_DB_PASSWORD: ${REPORT_DB_PASSWORD}
+      REPORT_DB_MIGRATION_PASSWORD: ${REPORT_DB_MIGRATION_PASSWORD}
+    volumes:
+      - ./postgres/init-service-dbs.sh:/docker-entrypoint-initdb.d/01-init-service-dbs.sh:ro
+      - ./postgres/service-db.sql:/docker-entrypoint-initdb.d/service-db.sql.tpl:ro
+      - pg_platform:/var/lib/postgresql/data
+
+  rabbitmq:
+    profiles: [infra]
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?}
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    profiles: [infra]
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    networks: [backend]
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?}", "--appendonly", "yes"]
+    volumes: [redis:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    profiles: [infra]
+    image: ${MINIO_IMAGE:?pin a MinIO (or S3-compatible) image for the dev server}
+    restart: unless-stopped
+    networks: [backend]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    command: ["server", "/data", "--address", ":9000"]
+    volumes: [minio:/data]
+
+networks:
+  edge: {}
+  # Not "internal": the gateway needs egress (Google JWKS) and production services reach managed
+  # Postgres / broker / object storage. Nothing on this network publishes a host port.
+  backend: {}
+
+volumes:
+  caddy_data: {}
+  caddy_config: {}
+  pg_hrms: {}
+  pg_payroll: {}
+  pg_platform: {}
+  rabbitmq: {}
+  redis: {}
+  minio: {}

@@ -139,6 +139,13 @@ services:
   # each an independent deployable with its own fixed database connection.
   people-service:
     profiles: ["apps"]
+    # health:people-service — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: people-service/Dockerfile
@@ -154,6 +161,7 @@ services:
       PEOPLE_DB_MIGRATION_PASSWORD: ${PEOPLE_DB_MIGRATION_PASSWORD}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
@@ -175,6 +183,13 @@ services:
 
   leave-service:
     profiles: ["apps"]
+    # health:leave-service — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8086 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: leave-service/Dockerfile
@@ -188,6 +203,7 @@ services:
       LEAVE_DB_MIGRATION_PASSWORD: ${LEAVE_DB_MIGRATION_PASSWORD}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
@@ -205,6 +221,13 @@ services:
 
   time-work-service:
     profiles: ["apps"]
+    # health:time-work-service — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8087 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: time-work-service/Dockerfile
@@ -218,6 +241,7 @@ services:
       TIMEWORK_DB_MIGRATION_PASSWORD: ${TIMEWORK_DB_MIGRATION_PASSWORD}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
@@ -237,6 +261,13 @@ services:
 
   payroll-service:
     profiles: ["apps"]
+    # health:payroll-service — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8082 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: payroll-service/Dockerfile
@@ -250,6 +281,7 @@ services:
       PAYROLL_DB_MIGRATION_PASSWORD: ${PAYROLL_DB_MIGRATION_PASSWORD}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       HRMS_BASE_URL: http://people-service:8081
       TIME_WORK_BASE_URL: http://time-work-service:8087
       LEAVE_BASE_URL: http://leave-service:8086
@@ -270,6 +302,13 @@ services:
 
   notification-service:
     profiles: ["apps"]
+    # health:notification-service — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8083 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: notification-service/Dockerfile
@@ -283,6 +322,7 @@ services:
       NOTIFICATION_DB_MIGRATION_PASSWORD: ${NOTIFICATION_DB_MIGRATION_PASSWORD}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER}
@@ -296,6 +336,13 @@ services:
 
   file-service:
     profiles: ["apps"]
+    # health:file-service — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8084 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: file-service/Dockerfile
@@ -317,6 +364,7 @@ services:
       HRMS_BASE_URL: http://people-service:8081
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER}
@@ -334,6 +382,13 @@ services:
 
   report-service:
     profiles: ["apps"]
+    # health:report-service — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8085 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: report-service/Dockerfile
@@ -349,6 +404,7 @@ services:
       TIME_WORK_BASE_URL: http://time-work-service:8087
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: 5672
       RABBITMQ_USER: ${RABBITMQ_USER}
@@ -363,6 +419,13 @@ services:
   # Sole public entry behind the BFF: verifies session JWTs, mints demo sessions, routes to services.
   api-gateway:
     profiles: ["apps"]
+    # health:api-gateway — readiness (DB / broker / Redis); bash probe because the JRE image has no curl.
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8090 && printf 'GET /actuator/health/readiness HTTP/1.0\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     build:
       context: .
       dockerfile: api-gateway/Dockerfile
@@ -389,6 +452,7 @@ services:
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-604800}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY}
+      PLATFORM_METRICS_KEY: ${PLATFORM_METRICS_KEY:-}
       PLATFORM_ADMIN_KEY: ${PLATFORM_ADMIN_KEY}
     depends_on:
       redis:

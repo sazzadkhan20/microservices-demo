@@ -404,6 +404,14 @@ public class AttendanceService {
                 .toList();
         Map<Long, AttendanceRecord> byEmp = repository.findByWorkDate(date).stream()
                 .collect(java.util.stream.Collectors.toMap(AttendanceRecord::getEmployeeId, r -> r, (a, b) -> a));
+        // Logged minutes for everyone in one query (was one query per employee).
+        Map<Long, Integer> loggedByEmp = new java.util.HashMap<>();
+        if (!emps.isEmpty()) {
+            for (WorkLog wl : workLogRepository.findByEmployeeIdInAndWorkDateBetween(
+                    emps.stream().map(EmployeeView::getId).toList(), date, date)) {
+                loggedByEmp.merge(wl.getEmployeeId(), wl.getMinutes(), Integer::sum);
+            }
+        }
         List<Map<String, Object>> out = new java.util.ArrayList<>();
         for (EmployeeView emp : emps) {
             ZoneId zone = resolveZone(emp);
@@ -423,8 +431,7 @@ public class AttendanceService {
                 row.put("totalHours", 0);
                 row.put("workingHours", "0h 0m");
             }
-            int logged = workLogRepository.findByEmployeeIdAndWorkDate(emp.getId(), date).stream()
-                    .mapToInt(WorkLog::getMinutes).sum();
+            int logged = loggedByEmp.getOrDefault(emp.getId(), 0);
             row.put("loggedMinutes", logged);
             row.put("loggedHours", Math.round(logged / 60.0 * 100.0) / 100.0);
             BigDecimal expected = workScheduleService.expectedHoursForDay(emp, date);

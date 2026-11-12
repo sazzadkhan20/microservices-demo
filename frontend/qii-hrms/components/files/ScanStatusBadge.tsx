@@ -134,7 +134,7 @@ export function DocumentScanPanel({ phase, fileName, status, detail }: PanelProp
           <div className="scan-steps" aria-hidden>
             <span className={phase === "uploading" ? "on" : "done"}>1. Upload</span>
             <span className={phase === "scanning" ? "on" : phase === "uploading" ? "" : "done"}>2. Scan</span>
-            <span className={phase === "ready" ? "on" : ""}>3. Release</span>
+            <span className={(phase as string) === "ready" ? "on" : ""}>3. Release</span>
           </div>
         ) : null}
         {pending ? <div className="scan-bar" aria-hidden /> : null}

@@ -4,9 +4,9 @@
  */
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '3.3.5' apply false
-    id 'io.spring.dependency-management' version '1.1.6' apply false
-    id 'com.google.protobuf' version '0.9.4' apply false
+    id 'org.springframework.boot' version '3.5.16' apply false
+    id 'io.spring.dependency-management' version '1.1.7' apply false
+    id 'com.google.protobuf' version '0.9.5' apply false
 }
 
 allprojects {
@@ -21,8 +21,8 @@ allprojects {
 ext {
     // Keep ALL io.grpc artifacts on one version.
     // grpc-spring-boot-starter 3.1.0 pulls 1.63.x while hrms-api used 1.68.x → NoClassDefFoundError.
-    grpcVersion = '1.68.1'
-    protobufVersion = '3.25.5'
+    grpcVersion = '1.85.1'
+    protobufVersion = '3.25.9'
 }
 
 subprojects {
@@ -37,8 +37,8 @@ subprojects {
 
     dependencyManagement {
         imports {
-            mavenBom "org.springframework.boot:spring-boot-dependencies:3.3.5"
-            mavenBom "org.springframework.cloud:spring-cloud-dependencies:2023.0.3"
+            mavenBom "org.springframework.boot:spring-boot-dependencies:3.5.16"
+            mavenBom "org.springframework.cloud:spring-cloud-dependencies:2025.0.3"
             mavenBom "io.grpc:grpc-bom:${grpcVersion}"
         }
     }

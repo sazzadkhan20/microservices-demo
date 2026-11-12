@@ -39,10 +39,15 @@ public class TimeWorkClient {
                 .build();
     }
 
+    /** Memoised per HTTP request (RequestMemo): eligibility checks per leave type reuse one lookup. */
     public Map<String, Object> resolveSchedule(Long employeeId) {
         if (employeeId == null) {
             return Map.of();
         }
+        return com.platform.common.http.RequestMemo.get("tw-schedule:" + employeeId, () -> fetchSchedule(employeeId));
+    }
+
+    private Map<String, Object> fetchSchedule(Long employeeId) {
         try {
             Map<String, Object> body = client.get()
                     .uri("/api/internal/schedules/resolve/{id}", employeeId)
@@ -74,6 +79,11 @@ public class TimeWorkClient {
         if (locationId == null || from == null || to == null) {
             return Set.of();
         }
+        return com.platform.common.http.RequestMemo.get("tw-holidays:" + locationId + ":" + from + ":" + to,
+                () -> fetchHolidays(locationId, from, to));
+    }
+
+    private Set<LocalDate> fetchHolidays(Long locationId, LocalDate from, LocalDate to) {
         try {
             List<String> dates = client.get()
                     .uri(uri -> uri.path("/api/internal/holidays/in-range")

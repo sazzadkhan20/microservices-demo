@@ -110,4 +110,21 @@ node scripts/test-payroll-e2e.mjs                # calculate → finalise → re
 node scripts/test-payroll-recovery.mjs           # ≈12 min: rejection, facts changed, lost command/result, fenced manual resolve, orphan detection
 ```
 
+System security, RBAC and traffic tests (run against the local stack; sessions are minted with the dev
+`JWT_SECRET`, so they work with demo login off):
+
+```bash
+node scripts/test-security-rbac.mjs              # 112 checks: auth boundary, header spoofing, IDOR/scope, privileged writes, exposure
+node scripts/load-test.mjs --profile smoke       # also: load | stress | spike | soak --minutes 20   (budget: p95 < 800 ms, errors < 1 %)
+```
+
 Production-readiness findings and their remediation order: [docs/BACKEND_PRODUCTION_READINESS_AUDIT.md](docs/BACKEND_PRODUCTION_READINESS_AUDIT.md).
+System test, hardening and load-test results: [docs/SYSTEM_HARDENING.md](docs/SYSTEM_HARDENING.md) ·
+operations: [docs/RUNBOOK.md](docs/RUNBOOK.md).
+
+## CI/CD
+
+GitHub Actions: `ci.yml` on every PR / push (tests, scans, full-stack system test) and `release.yml` on tags —
+`dev-*` builds and scans the images once and deploys to dev; `prod-*` promotes the **same digests** to
+production (no rebuild, approval required). Deployment stays off until `DEPLOY_ENABLED=true` is set.
+Details and one-time setup: [docs/CICD.md](docs/CICD.md).

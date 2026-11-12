@@ -302,10 +302,21 @@ public class WorkLogService {
                 .toList();
 
         List<Map<String, Object>> rows = new ArrayList<>();
+        // One range query per person for logs and attendance (was one of each per person per day),
+        // grouped by day in memory; tasks looked up once per request. Same rows as the per-day loop.
+        Map<Long, java.util.Optional<WorkTask>> tasks = new java.util.HashMap<>();
         for (EmployeeView emp : people) {
+            Map<LocalDate, List<WorkLog>> logsByDay = new java.util.HashMap<>();
+            for (WorkLog wl : workLogRepository.findByEmployeeIdAndWorkDateBetween(emp.getId(), start, end)) {
+                logsByDay.computeIfAbsent(wl.getWorkDate(), k -> new ArrayList<>()).add(wl);
+            }
+            Map<LocalDate, AttendanceRecord> attByDay = new java.util.HashMap<>();
+            for (AttendanceRecord a : attendanceRecordRepository.findByEmployeeIdAndWorkDateBetween(emp.getId(), start, end)) {
+                attByDay.putIfAbsent(a.getWorkDate(), a);
+            }
             for (LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
-                List<WorkLog> logs = workLogRepository.findByEmployeeIdAndWorkDate(emp.getId(), d);
-                AttendanceRecord att = attendanceRecordRepository.findByEmployeeIdAndWorkDate(emp.getId(), d).orElse(null);
+                List<WorkLog> logs = logsByDay.getOrDefault(d, List.of());
+                AttendanceRecord att = attByDay.get(d);
                 int logged = logs.stream().mapToInt(WorkLog::getMinutes).sum();
                 long punched = punchedMinutes(att, d, emp);
                 boolean workedDay = att != null && att.getCheckInAt() != null;
@@ -323,7 +334,8 @@ public class WorkLogService {
                 } else {
                     for (WorkLog wl : logs) {
                         if (taskId != null && !taskId.equals(wl.getTaskId())) continue;
-                        Map<String, Object> row = toView(wl, taskRepository.findById(wl.getTaskId()).orElse(null), emp);
+                        Map<String, Object> row = toView(wl,
+                                tasks.computeIfAbsent(wl.getTaskId(), taskRepository::findById).orElse(null), emp);
                         row.put("employeeName", emp.getFullName());
                         row.put("employeeCode", emp.getEmployeeCode());
                         row.put("punchedMinutes", punched);

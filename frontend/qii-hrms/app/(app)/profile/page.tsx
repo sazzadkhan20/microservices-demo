@@ -40,8 +40,7 @@ export default function ProfilePage() {
     if (d != null && String(d).trim()) return String(d);
     return cf?.[k] == null ? "—" : String(cf[k]);
   };
-  const photoFileId =
-    e?.photoFileId ?? cf?.photoFileId ?? me.photoFileId ?? null;
+  const photoFileId = (e?.photoFileId ?? cf?.photoFileId ?? me.photoFileId ?? null) as string | number | null;
 
   const permissionCount = me.permissions.length;
 

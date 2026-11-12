@@ -1,0 +1,32 @@
+# Keep dependencies patched (guide §1: supported releases selected through vulnerability checks).
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: "/"
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 10
+    groups:
+      spring:
+        patterns: ["org.springframework*", "io.spring*"]
+      grpc-protobuf:
+        patterns: ["io.grpc*", "com.google.protobuf*"]
+    ignore:
+      # Major upgrades (Spring Boot 4, Spring Cloud 2025.1, springdoc 3) need a planned migration.
+      - dependency-name: "org.springframework.boot"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "org.springdoc*"
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: npm
+    directory: "/frontend/qii-hrms"
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 10
+    groups:
+      next-react:
+        patterns: ["next", "react", "react-dom", "eslint-config-next", "@types/react*"]
+  - package-ecosystem: docker
+    directories: ["/", "/docker", "/frontend/qii-hrms", "/api-gateway", "/people-service", "/leave-service",
+                  "/time-work-service", "/payroll-service", "/file-service", "/notification-service", "/report-service"]
+    schedule: { interval: weekly }
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }

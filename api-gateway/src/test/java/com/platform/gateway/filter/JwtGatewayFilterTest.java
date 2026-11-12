@@ -4,6 +4,7 @@ import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.InternalCalls;
 import com.platform.common.security.JwtSupport;
 import com.platform.gateway.config.GatewayProperties;
+import com.platform.gateway.session.EmployeeSessionGuard;
 import com.platform.gateway.session.SessionRevocationStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +33,7 @@ class JwtGatewayFilterTest {
     private JwtSupport jwt;
     private GatewayProperties props;
     private SessionRevocationStore revocation;
+    private EmployeeSessionGuard guard;
     private JwtGatewayFilter filter;
     private final AtomicReference<ServerHttpRequest> forwarded = new AtomicReference<>();
     private final GatewayFilterChain chain = (ServerWebExchange ex) -> {
@@ -48,8 +50,10 @@ class JwtGatewayFilterTest {
         props.getDemoAuth().setKey(DEMO_KEY);
         props.setPublicPaths(java.util.List.of("/actuator/**", "/docs/*/v3/api-docs", "/docs/*/v3/api-docs/**"));
         revocation = mock(SessionRevocationStore.class);
-        when(revocation.isRevoked(any(), any())).thenReturn(Mono.just(false));
-        filter = new JwtGatewayFilter(jwt, props, revocation);
+        when(revocation.isRevoked(any(), any(), any())).thenReturn(Mono.just(false));
+        guard = mock(EmployeeSessionGuard.class);
+        when(guard.status(any())).thenReturn(Mono.just(EmployeeSessionGuard.Status.ACTIVE));
+        filter = new JwtGatewayFilter(jwt, props, revocation, guard);
     }
 
     private MockServerWebExchange run(MockServerHttpRequest.BaseBuilder<?> req) {
@@ -97,12 +101,42 @@ class JwtGatewayFilterTest {
 
     @Test
     void revokedSessionIs401() {
-        when(revocation.isRevoked(any(), any())).thenReturn(Mono.just(true));
+        when(revocation.isRevoked(any(), any(), any())).thenReturn(Mono.just(true));
         String token = jwt.issueToken("e-7", 7L, 60);
         var ex = run(MockServerHttpRequest.get("/payroll/api/payroll/payslips")
                 .header("Authorization", "Bearer " + token));
         assertEquals(HttpStatus.UNAUTHORIZED, ex.getResponse().getStatusCode());
         assertNull(forwarded.get());
+    }
+
+    @Test
+    void inactiveEmployeeSessionIs401() {
+        when(guard.status(7L)).thenReturn(Mono.just(EmployeeSessionGuard.Status.INACTIVE));
+        String token = jwt.issueToken("e-7", 7L, 60);
+        var ex = run(MockServerHttpRequest.get("/hrms/api/me").header("Authorization", "Bearer " + token));
+        assertEquals(HttpStatus.UNAUTHORIZED, ex.getResponse().getStatusCode());
+        assertNull(forwarded.get());
+    }
+
+    @Test
+    void unknownEmployeeStatusIs503NotLogout() {
+        when(guard.status(7L)).thenReturn(Mono.just(EmployeeSessionGuard.Status.UNKNOWN));
+        String token = jwt.issueToken("e-7", 7L, 60);
+        var ex = run(MockServerHttpRequest.get("/hrms/api/me").header("Authorization", "Bearer " + token));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, ex.getResponse().getStatusCode());
+        assertNull(forwarded.get());
+    }
+
+    @Test
+    void proxiedActuatorPathsAreNeverForwarded() {
+        String token = jwt.issueToken("e-7", 7L, 60);
+        for (String p : new String[]{"/payroll/actuator/prometheus", "/hrms/actuator/env", "/files/actuator", "/people/x/actuator/heapdump"}) {
+            var ex = run(MockServerHttpRequest.get(p).header("Authorization", "Bearer " + token));
+            assertEquals(HttpStatus.NOT_FOUND, ex.getResponse().getStatusCode(), p);
+        }
+        assertNull(forwarded.get());
+        org.junit.jupiter.api.Assertions.assertFalse(JwtGatewayFilter.isProxiedActuatorPath("/actuator/health"));
+        org.junit.jupiter.api.Assertions.assertFalse(JwtGatewayFilter.isProxiedActuatorPath("/hrms/api/actuatorish"));
     }
 
     @Test

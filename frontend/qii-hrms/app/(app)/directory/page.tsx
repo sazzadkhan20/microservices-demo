@@ -278,9 +278,12 @@ export default function DirectoryPage() {
 }
 
 function PersonCard({ e, href }: { e: Employee; href?: string }) {
-  const photoFileId =
-    e.photoFileId ??
-    (e as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId;
+  const photoFileId = (e.photoFileId ??
+    (e as Employee & { customFields?: Record<string, unknown> }).customFields?.photoFileId) as
+    | string
+    | number
+    | null
+    | undefined;
   const body = (
     <div className="card stack" style={{ height: "100%" }}>
       <div className="row" style={{ gap: 12, flexWrap: "nowrap" }}>

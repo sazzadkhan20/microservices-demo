@@ -2,6 +2,7 @@ package com.platform.gateway.api;
 
 import com.platform.common.security.JwtSupport;
 import com.platform.common.security.SecretMatcher;
+import com.platform.gateway.session.EmployeeSessionGuard;
 import com.platform.gateway.session.SessionRevocationStore;
 import io.jsonwebtoken.Claims;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,13 +32,16 @@ public class SessionController {
     private final JwtSupport jwtSupport;
     private final SessionRevocationStore revocationStore;
     private final String adminKey;
+    private final EmployeeSessionGuard sessionGuard;
 
     public SessionController(
             JwtSupport jwtSupport,
             SessionRevocationStore revocationStore,
+            EmployeeSessionGuard sessionGuard,
             @Value("${PLATFORM_ADMIN_KEY:}") String adminKey) {
         this.jwtSupport = jwtSupport;
         this.revocationStore = revocationStore;
+        this.sessionGuard = sessionGuard;
         this.adminKey = adminKey == null ? "" : adminKey;
     }
 
@@ -75,6 +79,7 @@ public class SessionController {
                     .body(Map.of("ok", false, "message", "Admin key required")));
         }
         Duration ttl = Duration.ofSeconds(Math.max(60, ttlSeconds));
+        sessionGuard.forget(employeeId);
         return revocationStore.revokeEmployee(employeeId, ttl)
                 .thenReturn(ResponseEntity.ok(Map.of(
                         "ok", true,

@@ -206,6 +206,27 @@ public class GatewayProperties {
         public void setTokenTtlSeconds(long tokenTtlSeconds) {
             this.tokenTtlSeconds = tokenTtlSeconds;
         }
+
+        /** Refuse sessions of employees who may no longer sign in (offboarded / deactivated). */
+        private boolean activeCheckEnabled = true;
+        /** Bounded delay before a status change is seen at the edge. */
+        private long activeCheckTtlSeconds = 30;
+
+        public boolean isActiveCheckEnabled() {
+            return activeCheckEnabled;
+        }
+
+        public void setActiveCheckEnabled(boolean activeCheckEnabled) {
+            this.activeCheckEnabled = activeCheckEnabled;
+        }
+
+        public long getActiveCheckTtlSeconds() {
+            return activeCheckTtlSeconds;
+        }
+
+        public void setActiveCheckTtlSeconds(long activeCheckTtlSeconds) {
+            this.activeCheckTtlSeconds = activeCheckTtlSeconds;
+        }
     }
 
     /** People service (employee identity source) used to validate logins. */

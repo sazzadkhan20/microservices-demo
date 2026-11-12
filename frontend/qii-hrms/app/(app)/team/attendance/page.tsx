@@ -30,6 +30,8 @@ const GROUPS: { id: string; label: string; codes: string[] }[] = [
   { id: "OL", label: "On leave", codes: ["OL"] },
 ];
 
+const PAGE_SIZES = [10, 20, 50, 100] as const;
+
 const codeOf = (r: TeamAttendanceRow) => String(r.statusCode ?? "").toUpperCase();
 
 type EditTarget = {
@@ -50,6 +52,8 @@ export default function TeamAttendancePage() {
   const [date, setDate] = useState(todayIso());
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [edit, setEdit] = useState<EditTarget | null>(null);
   const [editErr, setEditErr] = useState("");
   const depts = useDepartments();
@@ -81,6 +85,21 @@ export default function TeamAttendancePage() {
       )
       .sort((a, b) => String(a.employeeName ?? a.name ?? "").localeCompare(String(b.employeeName ?? b.name ?? "")));
   }, [rows, q, status]);
+
+  // Reset to first page when the filtered set changes (date / search / status).
+  const filterSig = `${date}|${status}|${q.trim().toLowerCase()}|${shown.length}`;
+  const [lastFilterSig, setLastFilterSig] = useState(filterSig);
+  if (lastFilterSig !== filterSig) {
+    setLastFilterSig(filterSig);
+    if (page !== 1) setPage(1);
+  }
+
+  const totalPages = Math.max(1, Math.ceil(shown.length / pageSize));
+  const pageSafe = Math.min(page, totalPages);
+  const paged = useMemo(() => {
+    const from = (pageSafe - 1) * pageSize;
+    return shown.slice(from, from + pageSize);
+  }, [shown, pageSafe, pageSize]);
 
   const isToday = date === todayIso();
 
@@ -121,7 +140,7 @@ export default function TeamAttendancePage() {
       toast.error(new Error("You cannot edit your own attendance"));
       return;
     }
-    const tz = r.timeZone ?? null;
+    const tz = (r.timeZone ?? null) as string | null;
     setEdit({
       employeeId: r.employeeId!,
       name: String(r.employeeName ?? r.name ?? `#${r.employeeId}`),
@@ -187,15 +206,46 @@ export default function TeamAttendancePage() {
       <div className="filters">
         <div className="field wide">
           <span>Search</span>
-          <input type="search" placeholder="Name or employee code" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input
+            type="search"
+            placeholder="Name or employee code"
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setPage(1);
+            }}
+          />
         </div>
         <div className="field">
           <span>Status</span>
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+          <select
+            value={status}
+            onChange={(e) => {
+              setStatus(e.target.value);
+              setPage(1);
+            }}
+          >
             <option value="">All ({rows.length})</option>
             {GROUPS.map((g) => (
               <option key={g.id} value={g.id}>
                 {g.label} ({counts[g.id]})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <span>Rows</span>
+          <select
+            aria-label="Rows per page"
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setPage(1);
+            }}
+          >
+            {PAGE_SIZES.map((n) => (
+              <option key={n} value={n}>
+                {n}
               </option>
             ))}
           </select>
@@ -207,67 +257,100 @@ export default function TeamAttendancePage() {
           The attendance API returned no active people for this date. Managers see their direct reports and team; HR sees everyone.
         </EmptyState>
       ) : (
-        <div className="tbl-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Employee</th>
-                <th>Department</th>
-                <th>Status</th>
-                <th>Check in</th>
-                <th>Check out</th>
-                <th className="n">Worked</th>
-                <th className="n">Logged</th>
-                <th>Location</th>
-                {canEdit ? <th /> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {shown.length === 0 ? (
+        <div className="stack">
+          <div className="tbl-wrap">
+            <table>
+              <thead>
                 <tr>
-                  <td colSpan={canEdit ? 9 : 8} className="empty">
-                    {team.isLoading ? "Loading…" : "No one matches these filters"}
-                  </td>
+                  <th>Employee</th>
+                  <th>Department</th>
+                  <th>Status</th>
+                  <th>Check in</th>
+                  <th>Check out</th>
+                  <th className="n">Worked</th>
+                  <th className="n">Logged</th>
+                  <th>Location</th>
+                  {canEdit ? <th /> : null}
                 </tr>
-              ) : (
-                shown.map((r, i) => (
-                  <tr key={String(r.employeeId ?? i)}>
-                    <td>
-                      <b>{r.employeeName ?? r.name ?? `#${r.employeeId}`}</b>
-                      <br />
-                      <span className="small muted mono">{r.employeeCode}</span>
+              </thead>
+              <tbody>
+                {shown.length === 0 ? (
+                  <tr>
+                    <td colSpan={canEdit ? 9 : 8} className="empty">
+                      {team.isLoading ? "Loading…" : "No one matches these filters"}
                     </td>
-                    <td>{r.departmentId != null ? (deptName.get(String(r.departmentId)) ?? "—") : "—"}</td>
-                    <td>
-                      <AttCode code={r.statusCode} label={r.status} />
-                    </td>
-                    <td className="mono">{fmtTime(r.checkIn, r.timeZone)}</td>
-                    <td className="mono">{r.checkOut ? fmtTime(r.checkOut, r.timeZone) : r.checkIn ? <span className="muted">Still in</span> : "—"}</td>
-                    <td className="n">{r.totalHours != null && r.checkIn ? fmtNumber(r.totalHours) : "—"}</td>
-                    <td className="n">
-                      {(r as TeamAttendanceRow & { loggedHours?: number }).loggedHours != null
-                        ? fmtNumber((r as TeamAttendanceRow & { loggedHours?: number }).loggedHours)
-                        : (r as { loggedMinutes?: number }).loggedMinutes != null
-                          ? fmtNumber(Number((r as { loggedMinutes?: number }).loggedMinutes) / 60)
-                          : "—"}
-                    </td>
-                    <td className="small muted">{r.locationLabel ?? "—"}</td>
-                    {canEdit ? (
-                      <td>
-                        {String(r.employeeId) !== String(me.employeeId) ? (
-                          <button type="button" className="btn sm" onClick={() => openEdit(r)}>
-                            Edit
-                          </button>
-                        ) : (
-                          <span className="muted small">Self</span>
-                        )}
-                      </td>
-                    ) : null}
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  paged.map((r, i) => (
+                    <tr key={String(r.employeeId ?? `${pageSafe}-${i}`)}>
+                      <td>
+                        <b>{r.employeeName ?? r.name ?? `#${r.employeeId}`}</b>
+                        <br />
+                        <span className="small muted mono">{r.employeeCode}</span>
+                      </td>
+                      <td>{r.departmentId != null ? (deptName.get(String(r.departmentId)) ?? "—") : "—"}</td>
+                      <td>
+                        <AttCode code={r.statusCode} label={r.status} />
+                      </td>
+                      <td className="mono">{fmtTime(r.checkIn, r.timeZone as string | null | undefined)}</td>
+                      <td className="mono">{r.checkOut ? fmtTime(r.checkOut, r.timeZone as string | null | undefined) : r.checkIn ? <span className="muted">Still in</span> : "—"}</td>
+                      <td className="n">{r.totalHours != null && r.checkIn ? fmtNumber(r.totalHours) : "—"}</td>
+                      <td className="n">
+                        {(r as TeamAttendanceRow & { loggedHours?: number }).loggedHours != null
+                          ? fmtNumber((r as TeamAttendanceRow & { loggedHours?: number }).loggedHours)
+                          : (r as { loggedMinutes?: number }).loggedMinutes != null
+                            ? fmtNumber(Number((r as { loggedMinutes?: number }).loggedMinutes) / 60)
+                            : "—"}
+                      </td>
+                      <td className="small muted">{r.locationLabel ?? "—"}</td>
+                      {canEdit ? (
+                        <td>
+                          {String(r.employeeId) !== String(me.employeeId) ? (
+                            <button type="button" className="btn sm" onClick={() => openEdit(r)}>
+                              Edit
+                            </button>
+                          ) : (
+                            <span className="muted small">Self</span>
+                          )}
+                        </td>
+                      ) : null}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          {shown.length > 0 ? (
+            <div className="row between">
+              <span className="muted small">
+                {shown.length === 0
+                  ? null
+                  : `Showing ${(pageSafe - 1) * pageSize + 1}–${Math.min(pageSafe * pageSize, shown.length)} of ${shown.length}`}
+                {team.isFetching ? " · refreshing" : ""}
+              </span>
+              <div className="row">
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={pageSafe <= 1}
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                >
+                  Prev
+                </button>
+                <span className="muted small">
+                  Page {pageSafe}/{totalPages}
+                </span>
+                <button
+                  type="button"
+                  className="btn sm"
+                  disabled={pageSafe >= totalPages}
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 

@@ -435,6 +435,59 @@ public class WorkScheduleService {
      */
     @Transactional(readOnly = true)
     public BigDecimal expectedHoursForDay(EmployeeView emp, LocalDate day) {
+        return expectedHoursForDay(emp, day, null);
+    }
+
+    /**
+     * Lookups shared by every day of one period computation. Inside one read-only call nothing is
+     * written between days, so resolving the schedule, holidays and approved leave once per period
+     * gives exactly the per-day answers: one Leave call instead of one per calendar day (the former
+     * N+1 held a DB connection while waiting on Leave for every day of the month).
+     */
+    private final class PeriodLookups {
+        private final EmployeeView emp;
+        private final LocalDate from;
+        private final LocalDate to;
+        private Optional<WorkSchedule> schedule;
+        private List<Holiday> holidays;
+        private Map<LocalDate, LeaveClient.LeaveImpact> leave;
+
+        PeriodLookups(EmployeeView emp, LocalDate from, LocalDate to) {
+            this.emp = emp;
+            this.from = from;
+            this.to = to;
+        }
+
+        Optional<WorkSchedule> schedule() {
+            if (schedule == null) {
+                schedule = resolveForEmployee(emp);
+            }
+            return schedule;
+        }
+
+        boolean holiday(Long locationId, LocalDate day) {
+            if (locationId == null || day == null) {
+                return false;
+            }
+            if (holidays == null) {
+                holidays = holidayRepository.findAll();
+            }
+            return holidayCovers(holidays, locationId, day);
+        }
+
+        LeaveImpact leave(LocalDate day) {
+            if (leave == null) {
+                leave = leaveClient.leaveImpacts(emp.getId(), from, to);
+            }
+            return switch (leave.getOrDefault(day, LeaveClient.LeaveImpact.NONE)) {
+                case FULL -> LeaveImpact.FULL;
+                case HALF -> LeaveImpact.HALF;
+                default -> LeaveImpact.NONE;
+            };
+        }
+    }
+
+    private BigDecimal expectedHoursForDay(EmployeeView emp, LocalDate day, PeriodLookups ctx) {
         if (emp == null || day == null) {
             return BigDecimal.ZERO;
         }
@@ -445,7 +498,7 @@ public class WorkScheduleService {
         if (emp.getContractEnd() != null && day.isAfter(emp.getContractEnd())) {
             return BigDecimal.ZERO;
         }
-        Optional<WorkSchedule> opt = resolveForEmployee(emp);
+        Optional<WorkSchedule> opt = ctx == null ? resolveForEmployee(emp) : ctx.schedule();
         if (opt.isEmpty()) {
             return BigDecimal.ZERO;
         }
@@ -456,13 +509,13 @@ public class WorkScheduleService {
             return hourlyCalendarDayHours(schedule);
         }
 
-        LeaveImpact leave = leaveImpact(emp.getId(), day);
+        LeaveImpact leave = ctx == null ? leaveImpact(emp.getId(), day) : ctx.leave(day);
         if (leave == LeaveImpact.FULL) {
             return BigDecimal.ZERO;
         }
 
         // FR-HOL-02 — non-optional holidays never contribute expected hours for FIXED staff.
-        if (isHoliday(emp.getLocationId(), day)) {
+        if (ctx == null ? isHoliday(emp.getLocationId(), day) : ctx.holiday(emp.getLocationId(), day)) {
             return BigDecimal.ZERO;
         }
 
@@ -558,12 +611,13 @@ public class WorkScheduleService {
         if (emp == null || from == null || to == null || to.isBefore(from)) {
             return BigDecimal.ZERO;
         }
-        if (resolveForEmployee(emp).isEmpty()) {
+        PeriodLookups ctx = new PeriodLookups(emp, from, to);
+        if (ctx.schedule().isEmpty()) {
             return BigDecimal.ZERO;
         }
         BigDecimal sum = BigDecimal.ZERO;
         for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
-            sum = sum.add(expectedHoursForDay(emp, d));
+            sum = sum.add(expectedHoursForDay(emp, d, ctx));
         }
         return sum.setScale(4, RoundingMode.HALF_UP);
     }
@@ -673,7 +727,11 @@ public class WorkScheduleService {
         if (locationId == null || day == null) {
             return false;
         }
-        for (Holiday h : holidayRepository.findAll()) {
+        return holidayCovers(holidayRepository.findAll(), locationId, day);
+    }
+
+    private static boolean holidayCovers(List<Holiday> all, Long locationId, LocalDate day) {
+        for (Holiday h : all) {
             if (!locationId.equals(h.getLocationId())) {
                 continue;
             }

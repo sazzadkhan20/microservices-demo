@@ -1,0 +1,271 @@
+# Tag-driven release pipeline (guide §9: build once in CI, promote the SAME image digest).
+#
+#   git tag dev-2026.11.20-1 && git push origin dev-2026.11.20-1     → build + scan + push images, deploy to DEV
+#   git tag prod-2026.11.20-1 <same commit> && git push origin prod-2026.11.20-1
+#                                                                    → NO rebuild: promote the digests built for that
+#                                                                      commit by its dev-* tag, deploy to PRODUCTION
+#                                                                      (GitHub Environment "production" = required reviewers)
+#
+# Deployment is OFF until configured: set repository/environment variable DEPLOY_ENABLED=true and the secrets
+# listed in docs/CICD.md. Until then the pipeline still builds, scans, publishes and records the release manifest.
+name: Release
+
+on:
+  push:
+    tags:
+      - "dev-*"
+      - "prod-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing dev-* or prod-* tag to (re)run"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/qii-hrms
+
+jobs:
+  plan:
+    name: Resolve release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      environment: ${{ steps.r.outputs.environment }}
+      sha: ${{ steps.r.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: r
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            dev-*)  ENVIRONMENT=dev ;;
+            prod-*) ENVIRONMENT=production ;;
+            *) echo "::error::Tag must start with dev- or prod- (got $TAG)"; exit 1 ;;
+          esac
+          SHA="$(git rev-list -n 1 "$TAG")"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Release $TAG → $ENVIRONMENT @ $SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- dev-*: build once
+  verify:
+    name: Verify (tests) before building images
+    needs: plan
+    if: needs.plan.outputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew build --no-daemon --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jars
+          retention-days: 7
+          path: "*/build/libs/*-1.0.0-SNAPSHOT.jar"
+
+  build:
+    name: Build & scan ${{ matrix.service }}
+    needs: [plan, verify]
+    if: needs.plan.outputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { service: api-gateway,          ports: "8090" }
+          - { service: people-service,       ports: "8081 9081" }
+          - { service: leave-service,        ports: "8086" }
+          - { service: time-work-service,    ports: "8087" }
+          - { service: payroll-service,      ports: "8082" }
+          - { service: file-service,         ports: "8084" }
+          - { service: notification-service, ports: "8083" }
+          - { service: report-service,       ports: "8085" }
+          - { service: qii-frontend,         ports: "3000" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - if: matrix.service != 'qii-frontend'
+        uses: actions/download-artifact@v4
+        with:
+          name: jars
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        run: |
+          echo "image=${IMAGE_PREFIX}-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.service }}" = "qii-frontend" ]; then
+            echo "context=frontend/qii-hrms" >> "$GITHUB_OUTPUT"; echo "file=frontend/qii-hrms/Dockerfile" >> "$GITHUB_OUTPUT"
+          else
+            echo "context=." >> "$GITHUB_OUTPUT"; echo "file=docker/java-runtime.Dockerfile" >> "$GITHUB_OUTPUT"
+            echo "jar=$(ls ${{ matrix.service }}/build/libs/${{ matrix.service }}-*.jar | grep -v plain | head -1)" >> "$GITHUB_OUTPUT"
+          fi
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.meta.outputs.context }}
+          file: ${{ steps.meta.outputs.file }}
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+          build-args: |
+            JAR=${{ steps.meta.outputs.jar }}
+            PORTS=${{ matrix.ports }}
+            VERSION=${{ needs.plan.outputs.tag }}
+            REVISION=${{ needs.plan.outputs.sha }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:sha-${{ needs.plan.outputs.sha }}
+            ${{ steps.meta.outputs.image }}:${{ needs.plan.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:dev
+      - name: Image vulnerability scan (fails on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+      - if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-image-${{ matrix.service }}
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Record digest
+        run: echo "${{ matrix.service }}=${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}" > digest-${{ matrix.service }}.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.service }}
+          path: digest-${{ matrix.service }}.txt
+          retention-days: 90
+
+  # ---------------------------------------------------------------- prod-*: promote, never rebuild
+  promote:
+    name: Promote dev-built digests
+    needs: plan
+    if: needs.plan.outputs.environment == 'production'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve the images built for this commit and retag them (no rebuild)
+        run: |
+          set -euo pipefail
+          SHA="${{ needs.plan.outputs.sha }}"; TAG="${{ needs.plan.outputs.tag }}"
+          for s in api-gateway people-service leave-service time-work-service payroll-service file-service notification-service report-service qii-frontend; do
+            SRC="${IMAGE_PREFIX}-${s}:sha-${SHA}"
+            if ! DIGEST="$(docker buildx imagetools inspect "$SRC" --format '{{json .Manifest.Digest}}' | tr -d '"')"; then
+              echo "::error::No image $SRC — tag this commit dev-* first so it is built, scanned and tested in dev."; exit 1
+            fi
+            docker buildx imagetools create -t "${IMAGE_PREFIX}-${s}:${TAG}" -t "${IMAGE_PREFIX}-${s}:prod" "${IMAGE_PREFIX}-${s}@${DIGEST}"
+            echo "${s}=${IMAGE_PREFIX}-${s}@${DIGEST}" > "digest-${s}.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-production
+          path: digest-*.txt
+          retention-days: 365
+
+  # ---------------------------------------------------------------- deploy (both environments)
+  deploy:
+    name: Deploy to ${{ needs.plan.outputs.environment }}
+    needs: [plan, build, promote]
+    if: >-
+      always() && needs.plan.result == 'success'
+      && (needs.build.result == 'success' || needs.promote.result == 'success')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ needs.plan.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest*
+          merge-multiple: true
+      - name: Release manifest (exact digests deployed)
+        run: |
+          cat digest-*.txt | sort > release-manifest.env
+          echo "### Images (${{ needs.plan.outputs.tag }})" >> "$GITHUB_STEP_SUMMARY"
+          sed 's/^/- /' release-manifest.env >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest-${{ needs.plan.outputs.environment }}
+          path: release-manifest.env
+          retention-days: 365
+      - name: Deployment disabled
+        if: vars.DEPLOY_ENABLED != 'true'
+        run: echo "::notice::DEPLOY_ENABLED is not 'true' for ${{ needs.plan.outputs.environment }} — images published, nothing deployed (see docs/CICD.md)."
+      - name: Deploy over SSH (docker compose with pinned digests)
+        if: vars.DEPLOY_ENABLED == 'true'
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/qii-hrms' }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          SSH="ssh -i ~/.ssh/id_deploy -o StrictHostKeyChecking=yes ${SSH_USER}@${SSH_HOST}"
+          $SSH "mkdir -p ${DEPLOY_PATH}"
+          scp -i ~/.ssh/id_deploy deploy/docker-compose.deploy.yml deploy/deploy.sh release-manifest.env "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/"
+          scp -i ~/.ssh/id_deploy -r docker/postgres docker/rabbitmq "${SSH_USER}@${SSH_HOST}:${DEPLOY_PATH}/"
+          $SSH "cd ${DEPLOY_PATH} && echo '${GHCR_TOKEN}' | docker login ghcr.io -u '${GHCR_USER}' --password-stdin && RELEASE_TAG='${RELEASE_TAG}' bash deploy.sh"
+      - name: Post-deploy smoke
+        if: vars.DEPLOY_ENABLED == 'true' && vars.PUBLIC_URL != ''
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ vars.PUBLIC_URL }}/login") && [ "$code" = "200" ] && exit 0
+            sleep 5
+          done
+          echo "::error::${{ vars.PUBLIC_URL }}/login not healthy after deploy"; exit 1

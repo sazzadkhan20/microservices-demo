@@ -125,7 +125,7 @@ export function canOpenEmployeeRecord(
 ): boolean {
   if (targetEmployeeId == null || targetEmployeeId === "") return false;
   if (!hasPermission(perms, "employees", "view")) return false;
-  const set = perms instanceof Set ? perms : toPermissionSet(perms);
+  const set = perms instanceof Set ? (perms as PermissionSet) : toPermissionSet(perms as readonly string[] | null | undefined);
   if (set.has("*:*")) return true;
   const scope = String(scopes?.["employees:view"] ?? scopes?.["employees:read"] ?? "")
     .trim()

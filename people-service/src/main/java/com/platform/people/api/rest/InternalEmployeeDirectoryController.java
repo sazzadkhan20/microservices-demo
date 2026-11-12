@@ -87,8 +87,13 @@ public class InternalEmployeeDirectoryController {
         } else if (Boolean.FALSE.equals(active)) {
             stream = stream.filter(e -> !e.isActive());
         }
+        // Reference data loaded once per list (was 3 lookups per employee row).
+        Lookups lookups = new Lookups(
+                toMap(locationRepository.findAll(), Location::getId),
+                toMap(designationRepository.findAll(), Designation::getId),
+                toMap(teamRepository.findAll(), Team::getId));
         List<Map<String, Object>> out = new ArrayList<>();
-        stream.forEach(e -> out.add(toView(e)));
+        stream.forEach(e -> out.add(toView(e, lookups)));
         return out;
     }
 
@@ -108,7 +113,30 @@ public class InternalEmployeeDirectoryController {
         return out;
     }
 
+    private record Lookups(Map<Long, Location> locations, Map<Long, Designation> designations, Map<Long, Team> teams) {
+    }
+
+    private static <T> Map<Long, T> toMap(List<T> rows, java.util.function.Function<T, Long> id) {
+        Map<Long, T> out = new java.util.HashMap<>();
+        for (T r : rows) {
+            Long k = id.apply(r);
+            if (k != null) {
+                out.put(k, r);
+            }
+        }
+        return out;
+    }
+
     private Map<String, Object> toView(Employee e) {
+        return toView(e, null);
+    }
+
+    /**
+     * Directory view shared with Leave / Time&amp;Work / Documents. Salary fields are deliberately NOT
+     * included (guide §3 data minimisation, audit MSG-08): no consumer of this directory uses them;
+     * Payroll reads pay data through its own {@code /api/internal/payroll} contract.
+     */
+    private Map<String, Object> toView(Employee e, Lookups lookups) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", e.getId());
         m.put("employeeCode", e.getEmployeeCode());
@@ -121,7 +149,8 @@ public class InternalEmployeeDirectoryController {
         m.put("jobTitle", e.getJobTitle());
         m.put("locationId", e.getLocationId());
         if (e.getLocationId() != null) {
-            locationRepository.findById(e.getLocationId())
+            (lookups != null ? java.util.Optional.ofNullable(lookups.locations().get(e.getLocationId()))
+                    : locationRepository.findById(e.getLocationId()))
                     .map(Location::getTimeZone)
                     .ifPresent(tz -> m.put("locationTimeZone", tz));
         }
@@ -135,19 +164,19 @@ public class InternalEmployeeDirectoryController {
         m.put("status", e.getStatus());
         m.put("phone", e.getPhone());
         m.put("workPattern", e.getWorkPattern());
-        m.put("baseSalary", e.getBaseSalary());
-        m.put("hourlyRate", e.getHourlyRate());
         m.put("customFields", e.getCustomFields());
         m.put("active", e.isActive());
         m.put("createdAt", e.getCreatedAt() == null ? null : e.getCreatedAt().toString());
         m.put("updatedAt", e.getUpdatedAt() == null ? null : e.getUpdatedAt().toString());
         if (e.getDesignationId() != null) {
-            designationRepository.findById(e.getDesignationId())
+            (lookups != null ? java.util.Optional.ofNullable(lookups.designations().get(e.getDesignationId()))
+                    : designationRepository.findById(e.getDesignationId()))
                     .map(Designation::getApproverRole)
                     .ifPresent(r -> m.put("designationApproverRole", r));
         }
         if (e.getTeamId() != null) {
-            teamRepository.findById(e.getTeamId()).ifPresent(team -> putTeam(m, team));
+            (lookups != null ? java.util.Optional.ofNullable(lookups.teams().get(e.getTeamId()))
+                    : teamRepository.findById(e.getTeamId())).ifPresent(team -> putTeam(m, team));
         }
         return m;
     }

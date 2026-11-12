@@ -62,6 +62,8 @@ public class HrmsEmployeeClient {
         headers.put(SERVICE_KEY, serviceKey);
         // API-01: explicit deadline so a slow People service cannot pin Payroll threads.
         return stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
-                .withDeadlineAfter(5, java.util.concurrent.TimeUnit.SECONDS);
+                .withDeadlineAfter(5, java.util.concurrent.TimeUnit.SECONDS)
+                // Idempotent read: during a People restart / reconnect wait (within the deadline) instead of failing fast.
+                .withWaitForReady();
     }
 }

@@ -13,6 +13,7 @@ import jakarta.persistence.Table;
  */
 @Entity
 @Table(name = "app_role")
+@jakarta.persistence.EntityListeners(com.platform.people.application.RbacCacheInvalidationListener.class)
 public class AppRole {
 
     @Id

@@ -21,31 +21,32 @@ export function DonutChart({
   const r = (size - thickness) / 2;
   const c = size / 2;
   const circ = 2 * Math.PI * r;
-  let offset = 0;
+  // Arc lengths and their running start offsets, computed up-front (no mutation during render).
+  const arcs = slices.reduce<{ sl: Slice; len: number; offset: number }[]>((acc, sl) => {
+    const prev = acc[acc.length - 1];
+    const offset = prev ? prev.offset + prev.len : 0;
+    acc.push({ sl, len: (Math.max(0, sl.value) / total) * circ, offset });
+    return acc;
+  }, []);
   return (
     <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
         <circle cx={c} cy={c} r={r} fill="none" stroke="var(--sunk)" strokeWidth={thickness} />
-        {slices.map((sl) => {
-          const len = (Math.max(0, sl.value) / total) * circ;
-          const el = (
-            <circle
-              key={sl.label}
-              cx={c}
-              cy={c}
-              r={r}
-              fill="none"
-              stroke={sl.color}
-              strokeWidth={thickness}
-              strokeDasharray={`${len} ${circ - len}`}
-              strokeDashoffset={-offset}
-              strokeLinecap="butt"
-              transform={`rotate(-90 ${c} ${c})`}
-            />
-          );
-          offset += len;
-          return el;
-        })}
+        {arcs.map(({ sl, len, offset }) => (
+          <circle
+            key={sl.label}
+            cx={c}
+            cy={c}
+            r={r}
+            fill="none"
+            stroke={sl.color}
+            strokeWidth={thickness}
+            strokeDasharray={`${len} ${circ - len}`}
+            strokeDashoffset={-offset}
+            strokeLinecap="butt"
+            transform={`rotate(-90 ${c} ${c})`}
+          />
+        ))}
       </svg>
       {center ? (
         <div

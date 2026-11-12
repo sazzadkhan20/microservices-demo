@@ -41,8 +41,10 @@ public class TimeWorkAppConfig {
         return mapper;
     }
 
+    /** Guide §7 deadlines: connect/read timeouts on every S2S client; prototype so clients never share a builder. */
     @Bean
+    @org.springframework.context.annotation.Scope("prototype")
     public RestClient.Builder restClientBuilder() {
-        return RestClient.builder();
+        return com.platform.common.http.ResilientHttp.restClientBuilder();
     }
 }

@@ -4,6 +4,7 @@ import com.platform.common.constants.PlatformHeaders;
 import com.platform.common.security.JwtSupport;
 import com.platform.common.security.SecretMatcher;
 import com.platform.gateway.config.GatewayProperties;
+import com.platform.gateway.session.EmployeeSessionGuard;
 import com.platform.gateway.session.SessionRevocationStore;
 import io.jsonwebtoken.Claims;
 import org.slf4j.Logger;
@@ -39,15 +40,18 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
     private final JwtSupport jwtSupport;
     private final GatewayProperties properties;
     private final SessionRevocationStore revocationStore;
+    private final EmployeeSessionGuard sessionGuard;
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
 
     public JwtGatewayFilter(
             JwtSupport jwtSupport,
             GatewayProperties properties,
-            SessionRevocationStore revocationStore) {
+            SessionRevocationStore revocationStore,
+            EmployeeSessionGuard sessionGuard) {
         this.jwtSupport = jwtSupport;
         this.properties = properties;
         this.revocationStore = revocationStore;
+        this.sessionGuard = sessionGuard;
     }
 
     @Override
@@ -60,6 +64,10 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
         }
         // Service-to-service endpoints must never be proxied: the gateway stamps X-Service-Key on what it forwards.
         if (isInternalPath(path)) {
+            return reject(exchange, HttpStatus.NOT_FOUND);
+        }
+        // Guide §9: service actuator endpoints (metrics, env, heap dumps…) are never proxied.
+        if (isProxiedActuatorPath(path)) {
             return reject(exchange, HttpStatus.NOT_FOUND);
         }
 
@@ -85,8 +93,9 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
             Claims claims = jwtSupport.parseAndValidate(token);
             Long employeeId = jwtSupport.requireEmployeeId(claims);
             String jti = jwtSupport.requireJti(claims);
+            Long issuedAt = claims.getIssuedAt() == null ? null : claims.getIssuedAt().toInstant().getEpochSecond();
 
-            return revocationStore.isRevoked(jti, employeeId)
+            return revocationStore.isRevoked(jti, employeeId, issuedAt)
                     .onErrorResume(err -> {
                         log.error("Session revocation store unavailable — denying request: {}", err.getMessage());
                         return Mono.just(true);
@@ -96,18 +105,29 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
                             log.warn("Revoked session jti={} emp={} path={}", jti, employeeId, path);
                             return reject(exchange, HttpStatus.UNAUTHORIZED);
                         }
-                        ServerHttpRequest request = exchange.getRequest().mutate()
-                                .headers(GatewayHeaders::stripTrustHeaders)
-                                .header(PlatformHeaders.SERVICE_KEY, properties.getSecurity().getServiceKey())
-                                .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId))
-                                .build();
-                        log.debug("Injected employee={} path={}", employeeId, path);
-                        return chain.filter(exchange.mutate().request(request).build());
+                        return sessionGuard.status(employeeId).flatMap(status -> switch (status) {
+                            case INACTIVE -> {
+                                log.warn("Session refused for inactive employee={} path={}", employeeId, path);
+                                yield reject(exchange, HttpStatus.UNAUTHORIZED);
+                            }
+                            case UNKNOWN -> reject(exchange, HttpStatus.SERVICE_UNAVAILABLE);
+                            case ACTIVE -> forward(exchange, chain, employeeId, path);
+                        });
                     });
         } catch (Exception ex) {
             log.warn("JWT rejected for path {}: {}", path, ex.getMessage());
             return reject(exchange, HttpStatus.UNAUTHORIZED);
         }
+    }
+
+    private Mono<Void> forward(ServerWebExchange exchange, GatewayFilterChain chain, Long employeeId, String path) {
+        ServerHttpRequest request = exchange.getRequest().mutate()
+                .headers(GatewayHeaders::stripTrustHeaders)
+                .header(PlatformHeaders.SERVICE_KEY, properties.getSecurity().getServiceKey())
+                .header(PlatformHeaders.EMPLOYEE_ID, String.valueOf(employeeId))
+                .build();
+        log.debug("Injected employee={} path={}", employeeId, path);
+        return chain.filter(exchange.mutate().request(request).build());
     }
 
     /**
@@ -143,6 +163,20 @@ public class JwtGatewayFilter implements GlobalFilter, Ordered {
         String raw = rawPath.toLowerCase(Locale.ROOT);
         return path.contains("..") || path.contains("//") || path.indexOf('\0') >= 0
                 || raw.contains("%2e") || raw.contains("%2f") || raw.contains("%5c") || raw.contains("%00");
+    }
+
+    /** {@code /<route>/actuator} or {@code /<route>/…/actuator/…} — gateway-own actuator is local, not proxied. */
+    static boolean isProxiedActuatorPath(String path) {
+        if (path == null) {
+            return false;
+        }
+        String p = path.toLowerCase(Locale.ROOT);
+        int idx = p.indexOf("/actuator");
+        if (idx <= 0) {
+            return false;
+        }
+        int end = idx + "/actuator".length();
+        return end == p.length() || p.charAt(end) == '/';
     }
 
     private boolean isInternalPath(String path) {

@@ -20,6 +20,7 @@ import java.util.Map;
  */
 @Entity
 @Table(name = "employee")
+@jakarta.persistence.EntityListeners(com.platform.people.application.RbacCacheInvalidationListener.class)
 public class Employee {
 
     @Id

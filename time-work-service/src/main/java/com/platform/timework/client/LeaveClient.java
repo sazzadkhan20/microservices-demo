@@ -42,10 +42,19 @@ public class LeaveClient {
                 .build();
     }
 
+    /**
+     * Memoised per HTTP request: Leave data cannot change during a Time&amp;Work request, and the
+     * same employee/day is often evaluated twice (status + expected hours).
+     */
     public LeaveImpact leaveImpact(Long employeeId, LocalDate day) {
         if (employeeId == null || day == null) {
             return LeaveImpact.NONE;
         }
+        return com.platform.common.http.RequestMemo.get("leave-impact:" + employeeId + ":" + day,
+                () -> fetchLeaveImpact(employeeId, day));
+    }
+
+    private LeaveImpact fetchLeaveImpact(Long employeeId, LocalDate day) {
         try {
             List<Map<String, Object>> rows = client.get()
                     .uri(uri -> uri.path("/api/internal/approved-leave/{id}")
@@ -54,6 +63,51 @@ public class LeaveClient {
                             .build(employeeId))
                     .retrieve()
                     .body(new ParameterizedTypeReference<>() {});
+            return impactFor(rows, day);
+        } catch (Exception e) {
+            log.warn("Leave impact lookup failed emp={} day={}: {}", employeeId, day, e.getMessage());
+            return LeaveImpact.NONE;
+        }
+    }
+
+    /**
+     * One call for a whole period (approved leave overlapping [from, to], same ordering as the per-day
+     * lookup), evaluated day by day with exactly the {@link #leaveImpact} rule. On failure every day is
+     * NONE, the same fallback the per-day lookup uses.
+     */
+    public Map<LocalDate, LeaveImpact> leaveImpacts(Long employeeId, LocalDate from, LocalDate to) {
+        Map<LocalDate, LeaveImpact> out = new java.util.HashMap<>();
+        if (employeeId == null || from == null || to == null || to.isBefore(from)) {
+            return out;
+        }
+        List<Map<String, Object>> rows;
+        try {
+            rows = client.get()
+                    .uri(uri -> uri.path("/api/internal/approved-leave/{id}")
+                            .queryParam("from", from.toString())
+                            .queryParam("to", to.toString())
+                            .build(employeeId))
+                    .retrieve()
+                    .body(new ParameterizedTypeReference<>() {});
+        } catch (Exception e) {
+            log.warn("Leave impact lookup failed emp={} {}..{}: {}", employeeId, from, to, e.getMessage());
+            rows = List.of();
+        }
+        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
+            LeaveImpact impact;
+            try {
+                impact = impactFor(rows, d);
+            } catch (Exception e) {
+                log.warn("Leave impact evaluation failed emp={} day={}: {}", employeeId, d, e.getMessage());
+                impact = LeaveImpact.NONE;
+            }
+            out.put(d, impact);
+        }
+        return out;
+    }
+
+    static LeaveImpact impactFor(List<Map<String, Object>> rows, LocalDate day) {
+        {
             if (rows == null || rows.isEmpty()) {
                 return LeaveImpact.NONE;
             }
@@ -72,9 +126,6 @@ public class LeaveClient {
                 }
                 return LeaveImpact.FULL;
             }
-            return LeaveImpact.NONE;
-        } catch (Exception e) {
-            log.warn("Leave impact lookup failed emp={} day={}: {}", employeeId, day, e.getMessage());
             return LeaveImpact.NONE;
         }
     }

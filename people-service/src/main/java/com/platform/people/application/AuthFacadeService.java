@@ -11,7 +11,13 @@ import com.platform.people.infrastructure.persistence.DesignationRepository;
 import com.platform.people.infrastructure.persistence.EmployeeRepository;
 import com.platform.people.infrastructure.persistence.LocationRepository;
 import org.springframework.stereotype.Service;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.time.Duration;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -29,6 +35,15 @@ public class AuthFacadeService {
     private final LocationRepository locationRepository;
     private final RbacService rbacService;
     private final TimeWorkClient timeWorkClient;
+    private final TransactionTemplate readTx;
+    /**
+     * Schedule mode per employee (Time&amp;Work owns schedules). Successful lookups only, 30 s:
+     * /me is the hottest People endpoint and must not wait on Time&amp;Work for every page view.
+     */
+    private final Cache<Long, String> scheduleModes = Caffeine.newBuilder()
+            .maximumSize(20_000)
+            .expireAfterWrite(Duration.ofSeconds(30))
+            .build();
 
     public AuthFacadeService(
             EmployeeRepository employeeRepository,
@@ -36,13 +51,16 @@ public class AuthFacadeService {
             DesignationRepository designationRepository,
             LocationRepository locationRepository,
             RbacService rbacService,
-            TimeWorkClient timeWorkClient) {
+            TimeWorkClient timeWorkClient,
+            PlatformTransactionManager transactionManager) {
         this.employeeRepository = employeeRepository;
         this.departmentRepository = departmentRepository;
         this.designationRepository = designationRepository;
         this.locationRepository = locationRepository;
         this.rbacService = rbacService;
         this.timeWorkClient = timeWorkClient;
+        this.readTx = new TransactionTemplate(transactionManager);
+        this.readTx.setReadOnly(true);
     }
 
     /**
@@ -69,9 +87,41 @@ public class AuthFacadeService {
         return out;
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * Guide §7: the database work runs in a short read-only transaction; the Time&amp;Work schedule
+     * lookup happens after it, so no People connection is held while waiting on a remote call.
+     */
     public Map<String, Object> me() {
         Long employeeId = AuthContext.requireEmployeeId();
+        Map<String, Object> m = readTx.execute(st -> meCore(employeeId));
+        String workPattern = m.remove("__workPattern") instanceof String wp ? wp : "";
+        String scheduleMode;
+        if ("HOURLY".equalsIgnoreCase(workPattern)) {
+            scheduleMode = "HOURLY";
+        } else {
+            scheduleMode = scheduleModeFor(employeeId);
+        }
+        boolean leaveEligible = !"HOURLY".equalsIgnoreCase(scheduleMode);
+        m.put("workPattern", workPattern.isEmpty() ? null : workPattern);
+        m.put("scheduleMode", scheduleMode.isEmpty() ? null : scheduleMode.toUpperCase(Locale.ROOT));
+        m.put("leaveEligible", leaveEligible);
+        return m;
+    }
+
+    private String scheduleModeFor(Long employeeId) {
+        String hit = scheduleModes.getIfPresent(employeeId);
+        if (hit != null) {
+            return hit;
+        }
+        String mode = timeWorkClient.resolveScheduleMode(employeeId);
+        // "" means unreachable or no schedule — not cached so the next call retries.
+        if (mode != null && !mode.isEmpty()) {
+            scheduleModes.put(employeeId, mode);
+        }
+        return mode == null ? "" : mode;
+    }
+
+    private Map<String, Object> meCore(Long employeeId) {
         Employee e = employeeRepository.findById(employeeId)
                 .orElseThrow(() -> new IllegalArgumentException("Employee not found: " + employeeId));
         List<String> roles = rbacService.roleCodesFor(employeeId);
@@ -116,18 +166,8 @@ public class AuthFacadeService {
             m.put("locationName", null);
             m.put("locationTimeZone", null);
         }
-        // FR-LV-03 — leave UI uses schedule mode (not payroll pay type).
-        String workPattern = e.getWorkPattern() == null ? "" : e.getWorkPattern().trim();
-        String scheduleMode = "";
-        if ("HOURLY".equalsIgnoreCase(workPattern)) {
-            scheduleMode = "HOURLY";
-        } else {
-            scheduleMode = timeWorkClient.resolveScheduleMode(e.getId());
-        }
-        boolean leaveEligible = !"HOURLY".equalsIgnoreCase(scheduleMode);
-        m.put("workPattern", workPattern.isEmpty() ? null : workPattern);
-        m.put("scheduleMode", scheduleMode.isEmpty() ? null : scheduleMode.toUpperCase(Locale.ROOT));
-        m.put("leaveEligible", leaveEligible);
+        // FR-LV-03 — leave UI uses schedule mode (not payroll pay type); resolved in me() after the tx.
+        m.put("__workPattern", e.getWorkPattern() == null ? "" : e.getWorkPattern().trim());
         return m;
     }
 }

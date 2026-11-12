@@ -77,16 +77,9 @@ public class ApiExceptionHandler {
                 .body(Map.of("error", "Missing required parameter: " + ex.getParameterName()));
     }
 
+    /** Unexpected errors: full detail goes to the log with the correlation id, never to the client. */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, String>> generic(Exception ex) {
-        // Include root cause — multi-tenant JDBC failures are often nested
-        Throwable root = ex;
-        while (root.getCause() != null && root.getCause() != root) {
-            root = root.getCause();
-        }
-        String top = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
-        String detail = root.getMessage() == null ? root.getClass().getSimpleName() : root.getMessage();
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Map.of("error", top, "cause", detail));
+        return com.platform.messaging.web.PlatformErrors.unexpected(ex);
     }
 }

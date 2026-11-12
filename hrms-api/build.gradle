@@ -33,12 +33,4 @@ protobuf {
     }
 }
 
-// Make generated sources visible to IDEs / compileJava
-sourceSets {
-    main {
-        java {
-            srcDirs 'build/generated/source/proto/main/java'
-            srcDirs 'build/generated/source/proto/main/grpc'
-        }
-    }
-}
+// Generated sources are registered on the main source set by the protobuf plugin (IDEs pick them up).

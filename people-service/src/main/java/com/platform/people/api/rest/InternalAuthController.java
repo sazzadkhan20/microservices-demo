@@ -75,6 +75,21 @@ public class InternalAuthController {
     }
 
     /**
+     * Gateway per-session check (cached at the edge): may this employee still use an existing session?
+     * Read-only — no login row, no audit. Same rule as login ({@link #isLoginAllowed}).
+     */
+    @GetMapping("/employees/{id}/session-status")
+    @RequiresPermission(feature = "employees", action = "view", allowInternal = true)
+    public Map<String, Object> sessionStatus(@PathVariable Long id, HttpServletRequest request) {
+        requireInternal(request);
+        Employee emp = requireEmployee(id);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("employeeId", emp.getId());
+        out.put("active", isLoginAllowed(emp));
+        return out;
+    }
+
+    /**
      * Gateway calls this when minting a session: validates active employee, ensures {@code users}
      * row, records last_login_* fields, returns auth payload.
      */

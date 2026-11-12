@@ -1,0 +1,66 @@
+# Temporary local/test mapping: bind SA / Admin / Employee work emails to Gmail accounts
+# for Google OIDC login testing. Production should use @qiicreative.com.au only.
+databaseChangeLog:
+  - changeSet:
+      id: 012-oidc-allow-gmail-alias-test
+      author: qii
+      comment: Allow gmail.com as a temporary work-email alias for OIDC test logins.
+      changes:
+        - sql:
+            sql: |
+              UPDATE tenant_settings
+              SET settings = jsonb_set(
+                    settings,
+                    '{employeeRules,workEmailDomainAliases}',
+                    (
+                      SELECT COALESCE(jsonb_agg(to_jsonb(d)), '[]'::jsonb)
+                      FROM (
+                        SELECT DISTINCT trim(both from x) AS d
+                        FROM jsonb_array_elements_text(
+                          COALESCE(settings->'employeeRules'->'workEmailDomainAliases', '[]'::jsonb)
+                          || '["qiicreative.local","gmail.com"]'::jsonb
+                        ) AS t(x)
+                        WHERE trim(both from x) <> ''
+                      ) s
+                    ),
+                    true
+                  ),
+                  updated_at = NOW()
+              WHERE id = 1;
+      rollback:
+        - sql:
+            sql: |
+              UPDATE tenant_settings
+              SET settings = jsonb_set(
+                    settings,
+                    '{employeeRules,workEmailDomainAliases}',
+                    '["qiicreative.local"]'::jsonb,
+                    true
+                  ),
+                  updated_at = NOW()
+              WHERE id = 1;
+
+  - changeSet:
+      id: 012-oidc-test-gmail-employee-emails
+      author: qii
+      comment: Map emp 1/3/9 work emails to test Gmail accounts (SA/Admin/Employee).
+      changes:
+        - sql:
+            sql: |
+              UPDATE employee SET email = 'sazzad53913@gmail.com', updated_at = NOW() WHERE id = 1;
+              UPDATE employee SET email = 'zohurulsazzad@gmail.com', updated_at = NOW() WHERE id = 3;
+              UPDATE employee SET email = 'sazzad.impit@gmail.com', updated_at = NOW() WHERE id = 9;
+
+              UPDATE users SET email = 'sazzad53913@gmail.com', updated_at = NOW() WHERE employee_id = 1;
+              UPDATE users SET email = 'zohurulsazzad@gmail.com', updated_at = NOW() WHERE employee_id = 3;
+              UPDATE users SET email = 'sazzad.impit@gmail.com', updated_at = NOW() WHERE employee_id = 9;
+      rollback:
+        - sql:
+            sql: |
+              UPDATE employee SET email = 'asman@qiicreative.local', updated_at = NOW() WHERE id = 1;
+              UPDATE employee SET email = 'rafiul@qiicreative.local', updated_at = NOW() WHERE id = 3;
+              UPDATE employee SET email = 'karim@qiicreative.local', updated_at = NOW() WHERE id = 9;
+
+              UPDATE users SET email = 'asman@qiicreative.local', updated_at = NOW() WHERE employee_id = 1;
+              UPDATE users SET email = 'rafiul@qiicreative.local', updated_at = NOW() WHERE employee_id = 3;
+              UPDATE users SET email = 'karim@qiicreative.local', updated_at = NOW() WHERE employee_id = 9;

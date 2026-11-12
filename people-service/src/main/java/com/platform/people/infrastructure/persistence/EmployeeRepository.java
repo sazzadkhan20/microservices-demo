@@ -18,4 +18,7 @@ public interface EmployeeRepository extends JpaRepository<Employee, Long>, JpaSp
     boolean existsByEmailIgnoreCase(String email);
 
     boolean existsByEmailIgnoreCaseAndIdNot(String email, Long id);
+
+    /** OIDC first-login match on work email (FR-AUTH-04). */
+    Optional<Employee> findByEmailIgnoreCase(String email);
 }

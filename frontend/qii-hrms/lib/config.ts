@@ -8,6 +8,12 @@ function str(name: string, fallback?: string): string {
   return fallback ?? "";
 }
 
+function bool(name: string, fallback = false): boolean {
+  const v = process.env[name];
+  if (v == null || !v.trim()) return fallback;
+  return ["1", "true", "yes", "on"].includes(v.trim().toLowerCase());
+}
+
 const isProd = process.env.NODE_ENV === "production";
 
 /**
@@ -26,7 +32,17 @@ export const config = {
     ? process.env.COOKIE_SECURE.toLowerCase() === "true"
     : isProd,
   demoAuthKey: resolveDemoAuthKey(),
+  demoAuthEnabled: bool("DEMO_AUTH_ENABLED", false),
   gatewayTimeoutMs: Number(str("GATEWAY_TIMEOUT_MS", "30000")) || 30000,
   /** Fallback session lifetime when the token response has no expiresInSeconds. */
   defaultSessionSeconds: 60 * 60 * 8,
+
+  // --- Google OIDC (BFF-only secrets) ---
+  oidcEnabled: bool("OIDC_ENABLED", false),
+  googleClientId: str("GOOGLE_CLIENT_ID"),
+  googleClientSecret: str("GOOGLE_CLIENT_SECRET"),
+  oidcRedirectUri: str("OIDC_REDIRECT_URI", "http://localhost:3000/api/auth/oidc/callback"),
+  oidcBffKey: str("OIDC_BFF_KEY"),
+  /** Optional Google hosted-domain hint (e.g. qiicreative.com.au). Empty for Gmail test logins. */
+  googleHd: str("GOOGLE_HD"),
 } as const;

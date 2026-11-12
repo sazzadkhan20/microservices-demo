@@ -11,6 +11,7 @@ public class GatewayProperties {
     private Jwt jwt = new Jwt();
     private Security security = new Security();
     private DemoAuth demoAuth = new DemoAuth();
+    private Oidc oidc = new Oidc();
     private List<String> publicPaths = new ArrayList<>();
     private Session session = new Session();
     private People people = new People();
@@ -37,6 +38,14 @@ public class GatewayProperties {
 
     public void setDemoAuth(DemoAuth demoAuth) {
         this.demoAuth = demoAuth;
+    }
+
+    public Oidc getOidc() {
+        return oidc;
+    }
+
+    public void setOidc(Oidc oidc) {
+        this.oidc = oidc;
     }
 
     public Session getSession() {
@@ -129,6 +138,60 @@ public class GatewayProperties {
 
         public void setKey(String key) {
             this.key = key;
+        }
+    }
+
+    /**
+     * Google OIDC session mint (guide §4 / SEC-01). BFF exchanges the auth code, then posts the
+     * Google ID token here with {@code X-Oidc-Bff-Key}. Gateway re-verifies the token, maps
+     * identity via People, and issues the platform session JWT.
+     */
+    public static class Oidc {
+        private boolean enabled = false;
+        private String googleClientId;
+        private String bffKey;
+        /** Comma-separated email domains allowed after Google verification (e.g. qiicreative.com.au,gmail.com). */
+        private String allowedEmailDomains = "qiicreative.com.au";
+        private String jwksUri = "https://www.googleapis.com/oauth2/v3/certs";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getGoogleClientId() {
+            return googleClientId;
+        }
+
+        public void setGoogleClientId(String googleClientId) {
+            this.googleClientId = googleClientId;
+        }
+
+        public String getBffKey() {
+            return bffKey;
+        }
+
+        public void setBffKey(String bffKey) {
+            this.bffKey = bffKey;
+        }
+
+        public String getAllowedEmailDomains() {
+            return allowedEmailDomains;
+        }
+
+        public void setAllowedEmailDomains(String allowedEmailDomains) {
+            this.allowedEmailDomains = allowedEmailDomains;
+        }
+
+        public String getJwksUri() {
+            return jwksUri;
+        }
+
+        public void setJwksUri(String jwksUri) {
+            this.jwksUri = jwksUri;
         }
     }
 

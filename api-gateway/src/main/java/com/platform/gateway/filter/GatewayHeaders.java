@@ -14,6 +14,7 @@ final class GatewayHeaders {
         headers.remove(PlatformHeaders.SERVICE_KEY);
         headers.remove(PlatformHeaders.ADMIN_KEY);
         headers.remove(PlatformHeaders.DEMO_AUTH_KEY);
+        headers.remove(PlatformHeaders.OIDC_BFF_KEY);
         headers.remove(com.platform.common.security.InternalCalls.HEADER);
     }
 }

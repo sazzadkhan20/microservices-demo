@@ -59,8 +59,12 @@ Or everything in containers: `bash scripts/up-local.sh` (`docker compose --profi
 
 Converting an environment created with the old multi-tenant registry: `bash scripts/migrate-local-to-fixed-db.sh` (one time).
 
-Demo login (local only, `DEMO_AUTH_ENABLED=true`): the login page's account picker → BFF → gateway
-`POST /api/auth/token`. Production must use OIDC (guide §4); the prod profile refuses demo auth.
+Google OIDC login (guide §4 / SEC-01): login page → BFF `GET /api/auth/oidc/start` (PKCE) → Google →
+`GET /api/auth/oidc/callback` → gateway `POST /api/auth/oidc/token` (verifies Google ID token) → People
+`/api/internal/auth/oidc-login` (bind `google_sub`) → httpOnly `qii_session` cookie.
+Set `OIDC_ENABLED=true`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OIDC_BFF_KEY`, and
+`OIDC_REDIRECT_URI=http://localhost:3000/api/auth/oidc/callback` in root `.env`, then
+`node scripts/sync-frontend-env.mjs`. Demo account-picker (`DEMO_AUTH_ENABLED`) must stay false.
 
 ## Databases
 

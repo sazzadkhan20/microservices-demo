@@ -98,6 +98,13 @@ public class UserAccountService {
         return repository.findByEmployeeId(employeeId);
     }
 
+    public Optional<UserAccount> findByGoogleSub(String googleSub) {
+        if (googleSub == null || googleSub.isBlank()) {
+            return Optional.empty();
+        }
+        return repository.findByGoogleSub(googleSub.trim());
+    }
+
     private static String normalizeEmail(String email) {
         return email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
     }

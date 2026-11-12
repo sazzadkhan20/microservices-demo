@@ -58,8 +58,11 @@ export const WORK_PATTERNS = ["LOCATION_DEFAULT", "DAYS_5", "DAYS_6", "HOURLY"] 
 export const EMPLOYEE_STATUSES = ["Active", "On leave", "Inactive", "Resigned", "Terminated"] as const;
 export const DOC_TYPES = ["Contract", "NDA", "Agreement", "ID copy", "Certificate", "Other"] as const;
 export const WORK_EMAIL_DOMAIN = "qiicreative.com.au";
-/** Seed / legacy aliases accepted by tenant employeeRules.workEmailDomainAliases. */
-export const WORK_EMAIL_DOMAIN_ALIASES = ["qiicreative.local"] as const;
+/**
+ * Seed / legacy aliases accepted by tenant employeeRules.workEmailDomainAliases.
+ * `gmail.com` is temporary for local OIDC testing only.
+ */
+export const WORK_EMAIL_DOMAIN_ALIASES = ["qiicreative.local", "gmail.com"] as const;
 export const CONTRACT_TYPES_NEED_END = new Set(["CONTRACT", "INTERN"]);
 export const OFFBOARD_STATUSES = new Set(["Resigned", "Terminated"]);
 /** FR-EMP-11 — statuses that deactivate the account (self / last Super Admin rules). */

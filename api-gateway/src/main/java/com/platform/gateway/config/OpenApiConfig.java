@@ -22,7 +22,7 @@ public class OpenApiConfig {
                         .title("API Gateway")
                         .description("""
                                 Sole entry point. Flow:
-                                1) Obtain a session token: POST /api/auth/token (demo only; X-Demo-Auth-Key)
+                                1) Obtain a session token via Google OIDC (BFF) or POST /api/auth/oidc/token (X-Oidc-Bff-Key)
                                 2) Authorize with Bearer <accessToken>
                                 3) Select a service from the dropdown → Try it out
                                 

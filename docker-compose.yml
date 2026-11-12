@@ -381,6 +381,10 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-false}
       DEMO_AUTH_KEY: ${DEMO_AUTH_KEY}
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      OIDC_BFF_KEY: ${OIDC_BFF_KEY:-}
+      OIDC_ALLOWED_EMAIL_DOMAINS: ${OIDC_ALLOWED_EMAIL_DOMAINS:-qiicreative.com.au}
       JWT_SECRET: ${JWT_SECRET}
       TOKEN_TTL_SECONDS: ${TOKEN_TTL_SECONDS:-604800}
       PLATFORM_SERVICE_KEY: ${PLATFORM_SERVICE_KEY}
@@ -401,7 +405,14 @@ services:
       - "3000:3000"
     environment:
       GATEWAY_URL: http://api-gateway:8090
+      DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-false}
       DEMO_AUTH_KEY: ${DEMO_AUTH_KEY}
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:3000/api/auth/oidc/callback}
+      OIDC_BFF_KEY: ${OIDC_BFF_KEY:-}
+      GOOGLE_HD: ${GOOGLE_HD:-}
       COOKIE_NAME: qii_session
       NODE_ENV: production
     depends_on:

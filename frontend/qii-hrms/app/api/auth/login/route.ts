@@ -36,11 +36,14 @@ function isCrossOriginMutation(req: NextRequest): boolean {
 }
 
 /**
- * Account-picker login → gateway session JWT (jti) → httpOnly cookie.
- * OIDC deferred; cookie is never exposed to browser JS. Session rotates on each login.
+ * Legacy account-picker login. Disabled when demo auth is off — use Google OIDC
+ * ({@code /api/auth/oidc/start}) instead (guide §4 / SEC-01).
  */
 export async function POST(req: NextRequest) {
   if (isCrossOriginMutation(req)) return jsonError(403, "Cross-origin request blocked");
+  if (!config.demoAuthEnabled || !config.demoAuthKey) {
+    return jsonError(410, "Demo login is disabled. Sign in with Google.");
+  }
 
   let json: unknown;
   try {

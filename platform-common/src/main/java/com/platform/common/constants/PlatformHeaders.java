@@ -22,6 +22,11 @@ public final class PlatformHeaders {
     public static final String ADMIN_KEY = "X-Platform-Admin-Key";
     /** Shared secret for the demo account-picker endpoints (token mint / account list). */
     public static final String DEMO_AUTH_KEY = "X-Demo-Auth-Key";
+    /**
+     * Shared secret for BFF → gateway OIDC session mint ({@code POST /api/auth/oidc/token}).
+     * Held only by the Next.js BFF; never sent by the browser.
+     */
+    public static final String OIDC_BFF_KEY = "X-Oidc-Bff-Key";
     public static final String GRPC_SERVICE_KEY = "x-service-key";
 
     /** Propagated across HTTP / gRPC / broker messages (guide §7 / §9). */

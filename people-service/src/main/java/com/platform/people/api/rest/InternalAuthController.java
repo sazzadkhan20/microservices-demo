@@ -2,6 +2,7 @@ package com.platform.people.api.rest;
 
 import com.platform.common.security.InternalCalls;
 import com.platform.people.application.AuditService;
+import com.platform.people.application.OidcAuthService;
 import com.platform.people.application.UserAccountService;
 import com.platform.people.domain.Employee;
 import com.platform.people.domain.UserAccount;
@@ -35,20 +36,32 @@ public class InternalAuthController {
     private final EmployeeRepository employeeRepository;
     private final UserAccountService userAccountService;
     private final AuditService auditService;
+    private final OidcAuthService oidcAuthService;
     private final String internalKey;
 
     public InternalAuthController(
             EmployeeRepository employeeRepository,
             UserAccountService userAccountService,
             AuditService auditService,
+            OidcAuthService oidcAuthService,
             @Value("${platform.security.internal-key}") String internalKey) {
         this.employeeRepository = employeeRepository;
         this.userAccountService = userAccountService;
         this.auditService = auditService;
+        this.oidcAuthService = oidcAuthService;
         this.internalKey = internalKey;
     }
 
     public record LoginBody(String ip, String location, String userAgent) {
+    }
+
+    public record OidcLoginBody(
+            String googleSub,
+            String email,
+            Boolean emailVerified,
+            String ip,
+            String location,
+            String userAgent) {
     }
 
     @GetMapping("/employees/{id}/auth-check")
@@ -104,6 +117,29 @@ public class InternalAuthController {
         auditService.record(emp.getId(), "SIGN_IN", "UserAccount",
                 String.valueOf(account.getId()), null, after, ip);
         return authBody(emp, account);
+    }
+
+    /**
+     * Gateway OIDC path: verify Google identity already checked at the edge, bind {@code google_sub},
+     * record login audit, return employee identity for session mint (FR-AUTH-01–04).
+     */
+    @PostMapping("/auth/oidc-login")
+    @RequiresPermission(feature = "employees", action = "view", allowInternal = true)
+    public Map<String, Object> oidcLogin(
+            @RequestBody(required = false) OidcLoginBody body,
+            HttpServletRequest request) {
+        requireInternal(request);
+        if (body == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "OIDC login body is required");
+        }
+        String ip = body.ip() != null && !body.ip().isBlank() ? body.ip() : clientIp(request);
+        String ua = body.userAgent() != null && !body.userAgent().isBlank()
+                ? body.userAgent()
+                : request.getHeader("User-Agent");
+        boolean verified = Boolean.TRUE.equals(body.emailVerified());
+        return oidcAuthService.login(
+                new OidcAuthService.OidcClaims(body.googleSub(), body.email(), verified),
+                new OidcAuthService.LoginMeta(ip, body.location(), ua));
     }
 
     private void requireInternal(HttpServletRequest request) {

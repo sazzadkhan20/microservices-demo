@@ -35,7 +35,17 @@ const next = {
   GATEWAY_URL: existing.GATEWAY_URL || "http://127.0.0.1:8090",
   COOKIE_NAME: existing.COOKIE_NAME || "qii_session",
   GATEWAY_TIMEOUT_MS: existing.GATEWAY_TIMEOUT_MS || "30000",
+  DEMO_AUTH_ENABLED: rootVars.DEMO_AUTH_ENABLED || "false",
   DEMO_AUTH_KEY: rootVars.DEMO_AUTH_KEY || "",
+  OIDC_ENABLED: rootVars.OIDC_ENABLED || "false",
+  GOOGLE_CLIENT_ID: rootVars.GOOGLE_CLIENT_ID || "",
+  GOOGLE_CLIENT_SECRET: rootVars.GOOGLE_CLIENT_SECRET || "",
+  OIDC_REDIRECT_URI:
+    rootVars.OIDC_REDIRECT_URI ||
+    existing.OIDC_REDIRECT_URI ||
+    "http://localhost:3000/api/auth/oidc/callback",
+  OIDC_BFF_KEY: rootVars.OIDC_BFF_KEY || "",
+  GOOGLE_HD: rootVars.GOOGLE_HD || "",
 };
 if (existing.COOKIE_SECURE) next.COOKIE_SECURE = existing.COOKIE_SECURE;
 
@@ -45,4 +55,6 @@ const body =
     .join("\n") + "\n";
 
 fs.writeFileSync(feEnv, body);
-console.log(`Synced ${path.relative(root, feEnv)} DEMO_AUTH_KEY from root .env`);
+console.log(
+  `Synced ${path.relative(root, feEnv)} OIDC/DEMO auth vars from root .env`,
+);

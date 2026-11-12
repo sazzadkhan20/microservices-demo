@@ -93,9 +93,9 @@ service_db postgres-platform reports_db REPORT
 echo "==> 3/4 Documents: ${OLD_BUCKET} -> ${NEW_BUCKET}"
 NETWORK="${PROJECT}_default"
 MC_HOST="http://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@minio:9000"
-docker run --rm --network "$NETWORK" -e MC_HOST_local="$MC_HOST" minio/mc mb -p "local/${NEW_BUCKET}" >/dev/null
-if docker run --rm --network "$NETWORK" -e MC_HOST_local="$MC_HOST" minio/mc ls "local/${OLD_BUCKET}" >/dev/null 2>&1; then
-  docker run --rm --network "$NETWORK" -e MC_HOST_local="$MC_HOST" minio/mc mirror --overwrite \
+docker run --rm --network "$NETWORK" -e MC_HOST_local="$MC_HOST" --entrypoint mc ${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:786cb11d340b1a657de8dc899560e36e1d1fb371d3d6f3eb6c903a0bb0cec714} mb -p "local/${NEW_BUCKET}" >/dev/null
+if docker run --rm --network "$NETWORK" -e MC_HOST_local="$MC_HOST" --entrypoint mc ${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:786cb11d340b1a657de8dc899560e36e1d1fb371d3d6f3eb6c903a0bb0cec714} ls "local/${OLD_BUCKET}" >/dev/null 2>&1; then
+  docker run --rm --network "$NETWORK" -e MC_HOST_local="$MC_HOST" --entrypoint mc ${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:786cb11d340b1a657de8dc899560e36e1d1fb371d3d6f3eb6c903a0bb0cec714} mirror --overwrite \
     "local/${OLD_BUCKET}" "local/${NEW_BUCKET}" >/dev/null
   echo "  mirrored objects"
 fi

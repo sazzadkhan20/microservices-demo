@@ -115,9 +115,13 @@ services:
       retries: 10
 
   # Private object storage for company documents (file-service, bucket FILE_STORAGE_BUCKET).
+  # The upstream minio/minio Docker Hub image no longer exists (MinIO community edition archived, binaries
+  # 410 Gone). Chainguard's maintained MinIO build, pinned by digest (same S3 API / on-disk format).
+  # Runs as root like the former image so existing volumes (owned by uid 0) stay writable.
   minio:
-    image: ${MINIO_IMAGE:-minio/minio:latest}
+    image: ${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:786cb11d340b1a657de8dc899560e36e1d1fb371d3d6f3eb6c903a0bb0cec714}
     pull_policy: if_not_present
+    user: "0:0"
     restart: unless-stopped
     ports:
       - "127.0.0.1:9000:9000"
@@ -129,7 +133,8 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      # Image ships the MinIO client but no curl; 'mc ready local' checks the server health endpoint.
+      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 5s
       retries: 12

@@ -41,7 +41,7 @@ or on the server `deploy.sh` rolls back automatically when health checks fail.
    or GitHub App token with `read:packages`).
 4. **Server** (Docker Engine + compose v2.20+): create `${DEPLOY_PATH}/.env` (mode 600) from your secrets
    manager. Required keys are the `${VAR:?}` entries in `deploy/docker-compose.deploy.yml`; set
-   `PLATFORM_ENV=dev|prod`, `PUBLIC_HOST`, and for the dev server `COMPOSE_PROFILES=infra` (+ `MINIO_IMAGE`).
+   `PLATFORM_ENV=dev|prod`, `PUBLIC_HOST`, and for the dev server `COMPOSE_PROFILES=infra` (MinIO defaults to a maintained build pinned by digest — the old `minio/minio` image no longer exists).
    Production points `*_DB_URL`, `RABBITMQ_HOST`, `REDIS_HOST`, `MINIO_ENDPOINT` at managed services
    (guide §1/§9) and leaves `COMPOSE_PROFILES` empty.
 5. Open only 80/443 on the server firewall. Every service, DB, broker and cache stays on the private Docker

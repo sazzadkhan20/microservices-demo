@@ -318,7 +318,10 @@ services:
 
   minio:
     profiles: [infra]
-    image: ${MINIO_IMAGE:?pin a MinIO (or S3-compatible) image for the dev server}
+    # Upstream minio/minio images are gone (community edition archived); maintained build pinned by digest.
+    # Root keeps named volumes writable (the image has no /data owned by its non-root user).
+    image: ${MINIO_IMAGE:-cgr.dev/chainguard/minio@sha256:786cb11d340b1a657de8dc899560e36e1d1fb371d3d6f3eb6c903a0bb0cec714}
+    user: "0:0"
     restart: unless-stopped
     networks: [backend]
     environment:
@@ -326,6 +329,11 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
     command: ["server", "/data", "--address", ":9000"]
     volumes: [minio:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
 
 networks:
   edge: {}

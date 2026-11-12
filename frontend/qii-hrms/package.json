@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.105.0",
-    "jose": "^5.10.0",
+    "jose": "^6.2.16",
     "next": "16.4.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",

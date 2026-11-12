@@ -1,9 +1,9 @@
-FROM eclipse-temurin:21-jdk AS build
+FROM eclipse-temurin:24-jdk AS build
 WORKDIR /workspace
 COPY . .
 RUN chmod +x gradlew && ./gradlew :report-service:bootJar --no-daemon
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:24-jre
 WORKDIR /app
 RUN useradd -r -u 10001 appuser
 COPY --from=build /workspace/report-service/build/libs/report-service-*.jar app.jar

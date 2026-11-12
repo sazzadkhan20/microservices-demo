@@ -27,6 +27,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
       - name: Build, unit and contract tests
         run: ./gradlew build --no-daemon --console=plain
       - name: Publish test reports
@@ -86,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Trivy filesystem scan (dependencies, Dockerfiles, IaC, secrets)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -117,7 +118,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v4.9.0
         with:
           fail-on-severity: high
           comment-summary-in-pr: on-failure
@@ -144,6 +145,8 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.language == 'java-kotlin' && 'manual' || 'none' }}
+      - if: matrix.language == 'java-kotlin'
+        run: chmod +x gradlew
       - if: matrix.language == 'java-kotlin'
         run: ./gradlew compileJava --no-daemon --console=plain
       - uses: github/codeql-action/analyze@v3

@@ -74,6 +74,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@v4
+      - run: chmod +x gradlew
       - run: ./gradlew build --no-daemon --console=plain
       - uses: actions/upload-artifact@v4
         with:
@@ -149,7 +150,7 @@ jobs:
             ${{ steps.meta.outputs.image }}:${{ needs.plan.outputs.tag }}
             ${{ steps.meta.outputs.image }}:dev
       - name: Image vulnerability scan (fails on fixable CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}
           severity: CRITICAL
